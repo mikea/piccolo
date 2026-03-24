@@ -39,7 +39,6 @@ import type { ZodObject } from "zod";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
-// TODO(item-4): implement — placeholder only
 export interface SessionRecord {
   id: string; // UUID v4
   userId: string;
@@ -50,7 +49,6 @@ export interface SessionRecord {
 }
 
 // Lightweight summary returned by listSessions().
-// TODO(item-4): implement — placeholder only
 export interface SessionInfo {
   id: string;
   userId: string;

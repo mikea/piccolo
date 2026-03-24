@@ -59,6 +59,112 @@ Pi extensions are `.ts` files dropped in a directory. Piccolo extensions are ind
 
 ---
 
+## Deploy piccolo
+
+> Full deployment requires all implementation steps to be complete. Each
+> subsection below notes which step must be finished before that component
+> can be meaningfully deployed.
+
+### Prerequisites
+
+- Cloudflare account with the **Workers paid plan** (required for Durable
+  Objects and Workers for Platforms)
+- Wrangler CLI installed and authenticated:
+  ```bash
+  pnpm wrangler login
+  ```
+- Node.js 22+ and pnpm installed
+
+### 1. Create Cloudflare resources (one-time)
+
+These resources are shared across all piccolo components. Create them once per
+Cloudflare account.
+
+```bash
+# D1 database — stores session records and conversation history
+pnpm wrangler d1 create piccolo-sessions
+
+# KV namespace — extension registry, model catalog, per-user config
+pnpm wrangler kv namespace create piccolo-config
+
+# R2 bucket — file storage for the R2 tool and web SPA assets
+pnpm wrangler r2 bucket create piccolo-assets
+
+# Workers for Platforms dispatch namespace — hosts extension Workers
+pnpm wrangler dispatch-namespace create piccolo-extensions
+```
+
+Copy the IDs printed by each command — you need them in the next step.
+
+### 2. Configure wrangler
+
+Each component ships a `wrangler.template.jsonc` that contains placeholder
+values. Copy it to `wrangler.jsonc` and fill in the real IDs. `wrangler.jsonc`
+is gitignored and must never be committed.
+
+```bash
+cp packages/core/wrangler.template.jsonc packages/core/wrangler.jsonc
+```
+
+Open `packages/core/wrangler.jsonc` and replace the two placeholders:
+
+```jsonc
+// Before:
+{ "binding": "SESSIONS_DB", "database_name": "piccolo-sessions", "database_id": "<PICCOLO_D1_ID>" }
+{ "binding": "CONFIG", "id": "<PICCOLO_KV_ID>" }
+
+// After (example — use your own IDs):
+{ "binding": "SESSIONS_DB", "database_name": "piccolo-sessions", "database_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" }
+{ "binding": "CONFIG", "id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5" }
+```
+
+R2 and the dispatch namespace are referenced by name — no IDs to fill in.
+
+### 3. Deploy piccolo-core
+
+> Requires: implementation steps 1–4 (project setup + agent package + D1
+> schema + session persistence layer).
+>
+> Before step 9 the Worker boots and holds state but serves no JSRPC calls
+> (`IPiccoloCore` / `ISession` are wired in step 9).
+
+```bash
+# Apply the D1 schema migrations
+pnpm wrangler d1 migrations apply piccolo-sessions \
+  --config packages/core/wrangler.jsonc
+
+# Set the Cloudflare AI Gateway token secret
+pnpm wrangler secret put CF_AI_GATEWAY_TOKEN \
+  --config packages/core/wrangler.jsonc
+
+# Deploy the Worker
+pnpm wrangler deploy --config packages/core/wrangler.jsonc
+```
+
+Verify the Worker started cleanly:
+
+```bash
+pnpm wrangler tail --config packages/core/wrangler.jsonc
+```
+
+### 4. Deploy gateways
+
+> Requires: implementation step 10 (web gateway) and step 11 (Telegram
+> gateway). Deploy piccolo-core first — gateways depend on it via service
+> binding.
+
+*(Details added when gateway implementation is complete.)*
+
+### 5. Deploy extensions
+
+> Requires: implementation steps 12–15. Extensions are deployed into the
+> `piccolo-extensions` dispatch namespace independently of the core — no
+> core redeploy required.
+
+*(Details added when extension implementation is complete.)*
+
+---
+
 ## Specification
 
 The full specification lives in [`specs/`](specs/). Start with the overview:

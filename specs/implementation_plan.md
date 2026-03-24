@@ -188,7 +188,7 @@ Set up the database layer before any logic touches it. All subsequent core items
 
 ---
 
-## 4. `piccolo-core` — Session Persistence Layer
+## 4. `piccolo-core` — Session Persistence Layer ✅
 
 The stateless functions that read/write session data. No DO or Worker code yet — pure functions over D1 + the entry tree.
 
@@ -204,6 +204,36 @@ The stateless functions that read/write session data. No DO or Worker code yet �
 - Unit tests: `buildSessionContext` with all entry type combinations, branch paths, compaction entries, empty sessions; all persistence functions against mock D1
 
 **Spec refs:** [core.md — Context Reconstruction](core.md), [core.md — Persistence](core.md), [core.md — Fork Session](core.md)
+
+### 4.1 Implementation Notes
+
+**Status:** Complete. All deliverables present. `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors. 114 tests pass (30 context + 26 persistence + 58 carried from step 3), coverage: statements 100%, functions 100%, lines 100%, branches 94.66%.
+
+#### File layout
+
+| File | Contents |
+|---|---|
+| `packages/core/src/session/context.ts` | `walkToRoot`, `buildSessionContext`, `DEFAULT_MODEL_ID` |
+| `packages/core/src/session/persistence.ts` | `createSession`, `commitSession`, `appendEntry`, `flushPendingEntries`, `listSessions`, `forkSession`, `deleteSession` |
+| `packages/core/src/session/index.ts` | Re-exports from both modules |
+| `packages/core/test/session/context.test.ts` | 30 tests for context reconstruction |
+| `packages/core/test/session/persistence.test.ts` | 26 tests against real Miniflare D1 |
+
+#### `createSession` signature — no `db` argument
+
+`createSession()` takes no arguments (not even `db`) because it is purely lazy — it only returns `crypto.randomUUID()` without touching D1. The `db` argument listed in the plan deliverables was dropped as unnecessary.
+
+#### `forkSession` signature — additional required arguments
+
+`forkSession` requires `currentLeafId`, `userId`, and `modelId` in addition to `sessionId`, `fromEntryId`, and `db`. These are needed to create the new session row and to resolve the active leaf when `fromEntryId` is omitted.
+
+#### Compaction layout and message ordering
+
+The compaction entry in the tree sits **after** its `firstKeptEntryId` in the parent-child chain:
+```
+... firstKeptEntry → compactionEntry → nextEntry ...
+```
+`buildSessionContext` emits the synthetic summary message first, then `firstKeptEntry` onward (skipping the compaction entry node itself, which was already represented by the summary). This matches the spec output: `[ summaryMsg, firstKeptMsg, ..., nextMsg ]`.
 
 ---
 
