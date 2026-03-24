@@ -1,31 +1,41 @@
 /**
  * Shared type stubs — piccolo-core public JSRPC API types.
  *
- * Every type here is a TODO placeholder that mirrors the shape declared in
- * specs/api.md §Shared Types exactly. Each will be replaced with a full
- * implementation as the relevant milestone is completed. The field names,
- * optionality, and comments must remain in sync with specs/api.md at all
- * times per AGENTS.md Rule 1.
+ * Every type here mirrors the shape declared in specs/api.md §Shared Types
+ * exactly. Each will be replaced with a full implementation as the relevant
+ * milestone is completed. The field names, optionality, and comments must
+ * remain in sync with specs/api.md at all times per AGENTS.md Rule 1.
  *
  * Do NOT add logic here. This file is pure types.
+ *
+ * Layering:
+ *   packages/agent   — minimal agent-loop types (AgentToolDescriptor, IAgentTool,
+ *                       AgentToolResult, AgentEvent, LanguageModel, ModelMessage, …)
+ *   packages/core    — extends those with the full piccolo surface:
+ *                       ToolDescriptor extends AgentToolDescriptor (adds label, snippets)
+ *                       ITool extends IAgentTool (adds getGatewayUI)
+ *                       ToolResult extends AgentToolResult (adds details)
+ *                       AgentEvent re-exported (canonical definition in agent)
  */
 
-// ── External dependencies (will be real imports once packages are installed) ──
-// import type { ModelMessage, LanguageModelUsage, FinishReason } from "ai";
-// import type { ZodObject } from "zod";
+// ── Re-export agent types ────────────────────────────────────────────────────
+// packages/core consumers import from here; they don't need to depend on
+// @piccolo/agent directly.
+export type {
+  AgentEvent,
+  AgentToolDescriptor,
+  AgentToolResult,
+  IAgentTool,
+  LanguageModel,
+  ModelMessage,
+  LanguageModelUsage,
+  FinishReason,
+  ImagePart,
+} from "@piccolo/agent";
 
-// Temporary stand-ins until `ai` and `zod` packages are installed in item 2.
-// TODO(item-2): replace with `import type { ModelMessage, LanguageModelUsage, FinishReason } from "ai"`
-// and `import type { ZodObject } from "zod"`.
-type ModelMessage = unknown;
-type LanguageModelUsage = unknown;
-type FinishReason = string;
-// ZodObject<any> is required by Zod's own API — no safer type exists.
-// TODO(item-2): replace with ZodObject<any> from "zod" (permitted per code.md §any Policy)
-type ZodObjectAny = unknown;
-
-// Re-export so consuming packages can import from this single location.
-export type { ModelMessage, LanguageModelUsage, FinishReason };
+// ── External dependencies ────────────────────────────────────────────────────
+import type { AgentToolDescriptor, AgentToolResult, IAgentTool } from "@piccolo/agent";
+import type { ZodObject } from "zod";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -61,7 +71,6 @@ export interface NewSessionOptions {
 
 // ─── Model ────────────────────────────────────────────────────────────────────
 
-// TODO(item-2): implement — placeholder only
 export interface ModelInfo {
   id: string; // "{provider}/{model-id}", e.g. "anthropic/claude-sonnet-4-5"
   label: string; // human-readable display name
@@ -70,7 +79,6 @@ export interface ModelInfo {
 
 // ─── Attachments ──────────────────────────────────────────────────────────────
 
-// TODO(item-2): implement — placeholder only
 export interface Attachment {
   name: string;
   mimeType: string;
@@ -78,49 +86,21 @@ export interface Attachment {
   size: number;
 }
 
-// ─── Agent Events ─────────────────────────────────────────────────────────────
-
-// Streamed from IAgentSessionDO → IPiccoloCore → gateways over JSRPC ReadableStream.
-// Also dispatched to extensions via ExtensionRunner.
-// TODO(item-2): implement — placeholder only
-export type AgentEvent =
-  | { type: "agent_start" }
-  | { type: "agent_end"; totalUsage: LanguageModelUsage }
-  | { type: "turn_start"; stepNumber: number }
-  | {
-      type: "turn_end";
-      stepNumber: number;
-      finishReason: FinishReason;
-      usage: LanguageModelUsage;
-    }
-  | { type: "text_delta"; delta: string }
-  | { type: "reasoning_delta"; delta: string }
-  | { type: "tool_start"; toolCallId: string; toolName: string; input: unknown }
-  | {
-      type: "tool_end";
-      toolCallId: string;
-      toolName: string;
-      output: unknown;
-      isError: boolean;
-    }
-  | { type: "error"; message: string };
-
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
-// ToolDescriptor — pure data, no logic.
-// Describes the tool to the LLM and to the piccolo core.
-// Placed as a static property on every ITool Worker class.
-// See tools.md for full authoring guidance.
+// ToolDescriptor extends AgentToolDescriptor with piccolo-core-specific fields
+// used by SystemPromptAssembler and gateway UIs.
+//
+// AgentToolDescriptor (in @piccolo/agent) carries:
+//   name, description, inputSchema
+//
+// ToolDescriptor adds:
+//   label, promptSnippet?, promptGuidelines?
+//
 // TODO(item-12): implement — placeholder only
-export interface ToolDescriptor {
-  // Identifier the LLM uses to call this tool. Snake_case, unique within a session.
-  name: string;
-
+export interface ToolDescriptor extends AgentToolDescriptor {
   // Human-readable display name shown in gateway UIs and logs.
   label: string;
-
-  // Full description sent to the LLM in the system prompt.
-  description: string;
 
   // Optional one-line entry added to "Available tools" in the system prompt.
   promptSnippet?: string;
@@ -128,14 +108,39 @@ export interface ToolDescriptor {
   // Optional bullets appended to "Guidelines" while this tool is active.
   promptGuidelines?: string[];
 
-  // Zod schema for the tool's input parameters.
-  // TODO(item-2): type becomes ZodObject<any> once zod is installed (permitted per code.md §any Policy)
-  inputSchema: ZodObjectAny;
+  // Inherits from AgentToolDescriptor:
+  //   name: string
+  //   description: string
+  //   inputSchema: ZodObject<any>  — biome-ignore lint/suspicious/noExplicitAny: Zod API
 }
 
-// ITool — the full interface every tool Worker must implement.
+// ToolResult extends AgentToolResult with the piccolo-core-specific `details` field.
+// AgentToolResult carries: content, isError?
+// ToolResult adds:         details? (stored in session entry, NOT sent to LLM)
+//
 // TODO(item-12): implement — placeholder only
-export interface ITool {
+export interface ToolResult extends AgentToolResult {
+  // Arbitrary metadata stored in the session entry for gateway UI rendering.
+  // NOT sent to the LLM.
+  details?: unknown;
+
+  // Inherits from AgentToolResult:
+  //   content: Array<{ type: "text"; text: string } | { type: "image"; ... }>
+  //   isError?: boolean
+}
+
+// ITool extends IAgentTool with the piccolo-core-specific getGatewayUI hook.
+// IAgentTool (in @piccolo/agent) carries:
+//   descriptor: AgentToolDescriptor
+//   execute(toolCallId, params, ctx, signal?): Promise<AgentToolResult>
+//
+// ITool adds:
+//   descriptor: ToolDescriptor  (narrower — adds label, snippets)
+//   execute(...): Promise<ToolResult>  (narrower — adds details)
+//   getGatewayUI?(gatewayId): Promise<ITextUI | undefined>
+//
+// TODO(item-12): implement — placeholder only
+export interface ITool extends IAgentTool {
   readonly descriptor: ToolDescriptor;
 
   execute(
@@ -145,27 +150,16 @@ export interface ITool {
     signal?: AbortSignal,
   ): Promise<ToolResult>;
 
-  getGatewayUI?(gatewayId: GatewayId): Promise<ITextUI | undefined>;
-}
-
-// Returned by tool execute() and extension executeTool() calls.
-// TODO(item-12): implement — placeholder only
-export interface ToolResult {
-  content: Array<
-    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
-  >;
-  // Arbitrary metadata stored in the session entry for gateway UI rendering.
-  // NOT sent to the LLM.
-  details?: unknown;
-  // Prefer throwing from execute() over setting isError manually.
-  isError?: boolean;
+  getGatewayUI?(gatewayId: string): Promise<ITextUI | undefined>;
 }
 
 // ─── Gateway UI ───────────────────────────────────────────────────────────────
 
-// Well-known gateway identifiers.
+// Well-known gateway identifiers. Defined as a plain string type here;
+// specific gateway implementations declare their own constants.
+// The agent layer has no knowledge of gateway IDs.
 // TODO(item-10): implement — placeholder only
-export type GatewayId = "web" | "telegram" | (string & Record<never, never>);
+export type GatewayId = string;
 
 // ITextUI — minimal shared interface implemented by every gateway.
 // TODO(item-10): implement — placeholder only
@@ -201,6 +195,12 @@ export interface CustomEntry {
 // ─── Extension Context (forward reference) ───────────────────────────────────
 
 // IExtensionContext is defined fully in item 8. This forward declaration allows
-// ITool.execute() to reference it in this stub file without circular imports.
+// ITool.execute() to reference it without circular imports.
 // TODO(item-8): replace with full implementation
 export type IExtensionContext = unknown;
+
+// Prevent unused import lint error — ZodObject is used in the JSDoc comment
+// for ToolDescriptor.inputSchema which is inherited. Explicitly reference it
+// so the import is not flagged.
+// biome-ignore lint/suspicious/noExplicitAny: Zod's own API requires ZodObject<any>
+type _ZodRef = ZodObject<any>;

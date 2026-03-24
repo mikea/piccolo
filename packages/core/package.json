@@ -12,6 +12,11 @@
     "deploy": "wrangler deploy",
     "types": "wrangler types"
   },
+  "dependencies": {
+    "@piccolo/agent": "workspace:*",
+    "ai": "^6.0.138",
+    "zod": "^3.25.76"
+  },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "*",
     "vitest": "*",

@@ -6,6 +6,8 @@ Agent runtime layer. Orchestrates multi-turn, tool-calling conversations using t
 
 Runs inside Cloudflare Workers / Durable Objects. No Node.js dependencies.
 
+**Genericity principle:** `packages/agent` knows nothing about gateways, sessions, or extensions. It exposes only what the LLM loop itself needs: tool registration (`AgentToolDescriptor` / `IAgentTool`), event emission (`AgentEvent`), and conversation state (`AgentState`). All piccolo-core-specific types (`ToolDescriptor` with label/snippets, `ITool` with `getGatewayUI`, gateway IDs) are defined in `packages/core`. Gateway construction (`createAiGateway`, `ai-gateway-provider`) is a `piccolo-core` concern — `packages/agent` has no dependency on `ai-gateway-provider`.
+
 ---
 
 ## LLM Backend: Cloudflare AI Gateway
@@ -29,43 +31,71 @@ Models are addressed as `{provider}/{model-id}`, e.g.:
 ### Setup
 
 ```typescript
+// In piccolo-core (not in packages/agent):
 import { createAiGateway } from "ai-gateway-provider";
 import { createUnified } from "ai-gateway-provider/providers/unified";
-import { streamText, generateText, tool } from "ai";
-import { z } from "zod";
 
-// Constructed once per Worker instance from env bindings
-function createGateway(env: Env) {
-  return createAiGateway({
-    accountId: env.CF_ACCOUNT_ID,
-    gateway: env.CF_AI_GATEWAY_NAME,
-    apiKey: env.CF_AI_GATEWAY_TOKEN,
-  });
-}
+const gateway = createAiGateway({ accountId, gateway, apiKey });
+const model = gateway(createUnified()("anthropic/claude-sonnet-4-5"));
 
-const unified = createUnified();
+// Then pass to the Agent — which has no knowledge of how the model was built:
+import { Agent } from "@piccolo/agent";
+const agent = new Agent({ model, systemPrompt, tools });
 ```
 
 ### Performing a streaming call
 
 ```typescript
 const result = streamText({
-  model: aigateway(unified("anthropic/claude-sonnet-4-5")),
+  model,             // LanguageModel from createModel() or MockLanguageModelV3 in tests
   system: systemPrompt,
   messages,          // ModelMessage[] from AI SDK
-  tools,             // Record<string, Tool> from AI SDK
+  tools,             // ToolSet from AI SDK (built by toAiSdkTools())
   stopWhen: stepCountIs(maxSteps),
   abortSignal: signal,
   onStepFinish({ stepNumber, toolCalls, toolResults, finishReason, usage }) {
     // persist step to session storage
   },
-  onFinish({ text, finishReason, totalUsage, response }) {
-    // final persistence
+  onFinish({ totalUsage, response }) {
+    // final persistence — response.messages contains the full updated history
   },
 });
+await result.consumeStream();
 ```
 
 All provider differences (Anthropic thinking blocks, OpenAI reasoning, Google grounding, etc.) are handled by the AI Gateway — piccolo-agent receives a standard OpenAI-compatible streaming response regardless of which underlying provider is used.
+
+---
+
+## ai v6 API Notes
+
+This implementation targets `ai` v6.x. Key differences from v5:
+
+### `onChunk` callback type (v6)
+
+The `onChunk` callback in v6 only fires for a subset of stream parts:
+`'text-delta' | 'reasoning-delta' | 'source' | 'tool-call' | 'tool-input-start' | 'tool-input-delta' | 'tool-result' | 'raw'`.
+
+**Tool errors (`tool-error`)** do NOT appear in `onChunk`. They appear in `onStepFinish`'s `content` array as parts with `type === "tool-error"`. The `Agent._runStream()` method reads `content` in `onStepFinish` to detect and emit `tool_end` events with `isError: true`.
+
+### `LanguageModelUsage` fields (v6)
+
+Field names changed from v5:
+- `inputTokens` (was `promptTokens`)
+- `outputTokens` (was `completionTokens`)
+- `totalTokens`
+
+### `prepareStep` (v6)
+
+`experimental_prepareStep` was promoted to stable `prepareStep`. The steering queue implementation uses this callback.
+
+### `stopWhen: stepCountIs(N)` (v6)
+
+This API is unchanged and available in v6. `generateText` defaults to `stopWhen: stepCountIs(1)`.
+
+### `onFinish` shape (v6)
+
+`onFinish` receives `OnFinishEvent<TOOLS>` which extends `StepResult<TOOLS>`. Access response messages via `event.response.messages`. Access total usage via `event.totalUsage`.
 
 ---
 
@@ -110,32 +140,80 @@ Multi-step tool calling is handled natively via `stopWhen: stepCountIs(N)` — n
 
 ---
 
-## `ITool` Interface
+## `IAgentTool` Interface
 
-`ITool` is defined in [api.md — Shared Types](api.md). It wraps the `tool()` helper from `ai` to add piccolo-specific metadata (`label`, `promptSnippet`, `promptGuidelines`).
+The minimal tool interface used by `packages/agent`. Contains only what the agent loop needs: a descriptor for LLM registration and an `execute` method.
 
-`ITool` instances are converted to the `ToolSet` format (from `ai`) before each `streamText` call:
+**NOT included at this layer:** `label`, `promptSnippet`, `promptGuidelines` (system-prompt concerns), `getGatewayUI` (gateway rendering concern). Those are added by `packages/core`'s `ITool` which extends `IAgentTool`.
 
 ```typescript
-function toAiSdkTools(tools: ITool[]): Record<string, Tool> {
+// packages/agent/src/types.ts
+interface AgentToolDescriptor {
+  name: string;         // snake_case, LLM-facing
+  description: string;  // full description sent to LLM
+  inputSchema: ZodObject<any>;
+}
+
+interface IAgentTool {
+  readonly descriptor: AgentToolDescriptor;
+  execute(
+    toolCallId: string,
+    params: unknown,
+    ctx: unknown,         // IExtensionContext — opaque at this layer
+    signal?: AbortSignal,
+  ): Promise<AgentToolResult>;
+}
+
+interface AgentToolResult {
+  content: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+  isError?: boolean;
+}
+```
+
+`IAgentTool` instances are converted to the `ToolSet` format (from `ai`) before each `streamText` call:
+
+```typescript
+// packages/agent/src/tools.ts
+function toAiSdkTools(tools: IAgentTool[]): ToolSet {
   return Object.fromEntries(
     tools.map(t => [
-      t.name,
+      t.descriptor.name,
       tool({
-        description: t.description,
-        inputSchema: t.inputSchema,
-        execute: (input, opts) => t.execute(input, opts),
+        description: t.descriptor.description,
+        inputSchema: t.descriptor.inputSchema,
+        execute: async (input, { toolCallId, abortSignal }) =>
+          t.execute(toolCallId, input, undefined, abortSignal),
       }),
     ])
   );
 }
 ```
 
+Note: `ctx` is passed as `undefined` here. `piccolo-core` wraps tools in a closure that injects the real `IExtensionContext` before passing them to the `Agent`.
+
 ---
 
 ## `AgentEvent`
 
-`AgentEvent` is defined in [api.md — Shared Types](api.md). Events map directly onto `streamText`'s `onChunk`, `onStepFinish`, `onFinish`, and `onError` callbacks.
+`AgentEvent` is defined in `packages/agent/src/types.ts` and re-exported from `packages/core/src/types.ts`. Events map directly onto `streamText`'s `onChunk`, `onStepFinish`, `onFinish`, and `onError` callbacks.
+
+```typescript
+type AgentEvent =
+  | { type: "agent_start" }
+  | { type: "agent_end";       totalUsage: LanguageModelUsage }
+  | { type: "turn_start";      stepNumber: number }
+  | { type: "turn_end";        stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
+  | { type: "text_delta";      delta: string }
+  | { type: "reasoning_delta"; delta: string }
+  | { type: "tool_start";      toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool_end";        toolCallId: string; toolName: string; output: unknown; isError: boolean }
+  | { type: "error";           message: string };
+```
+
+Note: `turn_start` is emitted in the `prepareStep` callback, not from a direct stream event. `tool_end` with `isError: true` is emitted from `onStepFinish` content (not `onChunk`) due to ai v6 API constraints.
 
 ---
 
@@ -145,10 +223,9 @@ function toAiSdkTools(tools: ITool[]): Record<string, Tool> {
 
 ```typescript
 interface AgentOptions {
-  gateway: ReturnType<typeof createAiGateway>;
-  modelId: string;          // e.g. "anthropic/claude-sonnet-4-5"
+  model: LanguageModel;   // from ai package — createModel(env, modelId) or MockLanguageModelV3
   systemPrompt: string;
-  tools?: ITool[];
+  tools?: IAgentTool[];
   maxSteps?: number;        // default: 20
   steeringMode?: "one-at-a-time" | "all";
   followUpMode?: "one-at-a-time" | "all";
@@ -163,9 +240,9 @@ class Agent {
 
 ```typescript
 interface AgentState {
-  modelId: string;
+  model: LanguageModel;   // current model — replaced by setModel()
   systemPrompt: string;
-  tools: ITool[];         // see api.md Shared Types
+  tools: IAgentTool[];
   messages: ModelMessage[];   // from `ai` package
   isStreaming: boolean;
   error?: string;
@@ -200,8 +277,8 @@ class Agent {
   clearFollowUp(): ModelMessage[];
 
   // Synchronous state mutations
-  setModel(modelId: string): void;
-  setTools(tools: ITool[]): void;
+  setModel(model: LanguageModel): void;
+  setTools(tools: IAgentTool[]): void;
   setSystemPrompt(prompt: string): void;
   appendMessages(messages: ModelMessage[]): void;
   replaceMessages(messages: ModelMessage[]): void;
@@ -216,61 +293,84 @@ class Agent {
 ```typescript
 async prompt(input: string | ModelMessage[], images?: ImagePart[]) {
   // 1. Build user message(s) and append to this.state.messages
-  // 2. Build AI SDK tool set from this.state.tools
-  // 3. Check for steering / follow-up messages to prepend
-  // 4. Call streamText:
+  // 2. Call _runStream()
+}
+
+private async _runStream() {
+  // 1. Create AbortController, set isStreaming = true, emit agent_start
+  // 2. Build AI SDK tool set from this.state.tools via toAiSdkTools()
+  // 3. Call streamText:
 
   const result = streamText({
-    model: this.gateway(unified(this.state.modelId)),
+    model: this._state.model,
     system: this.state.systemPrompt,
     messages: this.state.messages,
-    tools: toAiSdkTools(this.state.tools),
-    stopWhen: stepCountIs(this.maxSteps),
-    abortSignal: this.abortController.signal,
+    tools: toolSet,
+    stopWhen: stepCountIs(this._maxSteps),
+    abortSignal: this._abortController.signal,
 
-    onChunk: ({ chunk }) => {
-      if (chunk.type === "text-delta")       this._emit({ type: "text_delta", delta: chunk.text });
-      if (chunk.type === "reasoning-delta")  this._emit({ type: "reasoning_delta", delta: chunk.text });
-      if (chunk.type === "tool-call")        this._emit({ type: "tool_start", toolCallId: chunk.toolCallId, toolName: chunk.toolName, input: chunk.input });
-      if (chunk.type === "tool-result")      this._emit({ type: "tool_end", toolCallId: chunk.toolCallId, toolName: chunk.toolName, output: chunk.output, isError: false });
+    prepareStep: ({ stepNumber, messages }) => {
+      // After step 0, inject pending steering messages
+      if (stepNumber > 0 && this._steeringQueue.length > 0) {
+        const steering = this._dequeueSteer();
+        return { messages: [...messages, ...steering] };
+      }
+      return undefined;
     },
 
-    onStepFinish: ({ stepNumber, finishReason, usage }) => {
+    onChunk: ({ chunk }) => {
+      if (chunk.type === "text-delta")    this._emit({ type: "text_delta", delta: chunk.text });
+      if (chunk.type === "reasoning-delta") this._emit({ type: "reasoning_delta", delta: chunk.text });
+      if (chunk.type === "tool-call")     this._emit({ type: "tool_start", ... });
+      if (chunk.type === "tool-result")   this._emit({ type: "tool_end", isError: false, ... });
+      // NOTE: tool-error is NOT in onChunk (ai v6) — handled in onStepFinish
+    },
+
+    onStepFinish: ({ stepNumber, finishReason, usage, content }) => {
+      // Emit tool_end for tool errors (not available in onChunk in ai v6)
+      for (const part of content) {
+        if (part.type === "tool-error") {
+          this._emit({ type: "tool_end", isError: true, ... });
+        }
+      }
       this._emit({ type: "turn_end", stepNumber, finishReason, usage });
     },
 
     onFinish: ({ totalUsage, response }) => {
-      // Append all response messages to state (AI SDK returns full updated history)
+      // Append response messages to state history
       this.state.messages.push(...response.messages);
-      this._emit({ type: "agent_end", totalUsage });
+      finalUsage = totalUsage;
     },
 
     onError: ({ error }) => {
-      this._emit({ type: "error", message: String(error) });
+      this._emit({ type: "error", message: ... });
     },
+
+    onAbort: () => { aborted = true; },
   });
 
-  // Consume stream to drive execution
   await result.consumeStream();
+
+  // 4. Emit agent_end (unless aborted)
+  // 5. If follow-up queue non-empty and not aborted: call continue()
 }
 ```
 
 ### Steering vs Follow-up Semantics
 
-piccolo-agent implements steering and follow-up on top of the AI SDK's `prepareStep` callback:
+**Steering** uses `prepareStep` to inject messages mid-turn:
 
 ```typescript
-prepareStep: async ({ stepNumber, messages }) => {
-  // After a tool-use step, dequeue steering messages
+prepareStep: ({ stepNumber, messages }) => {
   if (stepNumber > 0 && this._steeringQueue.length > 0) {
     const steering = this._dequeueSteer();
     return { messages: [...messages, ...steering] };
   }
-  return {};
+  return undefined;
 },
 ```
 
-Follow-up is handled by calling `agent.continue()` (which calls `streamText` again with the follow-up messages appended) after `onFinish` fires and the follow-up queue is non-empty.
+**Follow-up** is handled by calling `agent.continue()` (which calls `_runStream()` again with the follow-up messages appended) after `onFinish` fires and the follow-up queue is non-empty.
 
 ---
 
@@ -279,21 +379,23 @@ Follow-up is handled by calling `agent.continue()` (which calls `streamText` aga
 Context compaction uses `generateText` (non-streaming) with the same gateway and model:
 
 ```typescript
-async function compact(
+async function agentCompact(
   messages: ModelMessage[],
   keepRecentTokens: number,
-  gateway: ReturnType<typeof createAiGateway>,
-  modelId: string,
+  model: LanguageModel,   // same model as the Agent uses — no separate gateway needed
 ): Promise<{ summary: string; keptMessages: ModelMessage[] }> {
   // 1. Split messages: summarize early ones, keep recent ones
   const { toSummarize, toKeep } = splitForCompaction(messages, keepRecentTokens);
 
-  // 2. Serialize messages to compact text
+  // 2. If nothing to summarize, return immediately
+  if (toSummarize.length === 0) return { summary: "", keptMessages: toKeep };
+
+  // 3. Serialize messages to compact text
   const conversationText = serializeConversation(toSummarize);
 
-  // 3. Call LLM for summary
+  // 4. Call LLM for summary (non-streaming)
   const { text: summary } = await generateText({
-    model: gateway(unified(modelId)),
+    model,   // same LanguageModel as the Agent
     system: SUMMARIZATION_SYSTEM_PROMPT,
     messages: [{ role: "user", content: conversationText }],
   });
@@ -302,14 +404,16 @@ async function compact(
 }
 ```
 
+Token estimation uses a heuristic of 4 characters per token. At least one message is always kept.
+
 ---
 
 ## Error Handling
 
 - **LLM errors** — surface via `onError` callback → emit `{ type: "error" }` event; the DO handles retry logic.
-- **Tool errors** — the `ai` package catches tool `execute()` exceptions and adds `tool-error` parts to the step, which are sent back to the LLM in the next step automatically (multi-step mode). Extension hooks (`onToolCall` / `onToolResult`) can override this.
-- **Context overflow** — detected by checking `finishReason === "length"` or provider error patterns; triggers compaction in the DO.
-- **Abort** — `agent.abort()` calls `abortController.abort()`; the AI SDK propagates the signal to the gateway fetch and to all tool `execute()` calls.
+- **Tool errors** — in ai v6, tool errors appear as `"tool-error"` parts in `onStepFinish`'s `content` array (NOT in `onChunk`). The agent emits `tool_end` with `isError: true`.
+- **Context overflow** — detected by `finishReason === "length"`; triggers compaction in the DO.
+- **Abort** — `agent.abort()` calls `abortController.abort()`; the AI SDK propagates the signal to the gateway fetch and to all tool `execute()` calls. `agent_end` is NOT emitted after abort.
 
 ---
 

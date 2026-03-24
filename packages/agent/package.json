@@ -10,7 +10,13 @@
     "test:watch": "vitest",
     "build": "echo 'No build step for agent (Wrangler/Vite handle bundling)'"
   },
+  "dependencies": {
+    "ai": "^6.0.138",
+    "zod": "^3.25.76"
+  },
   "devDependencies": {
+    "@ai-sdk/provider": "^3.0.8",
+    "@vitest/coverage-v8": "^4.1.1",
     "vitest": "*"
   }
 }

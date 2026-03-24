@@ -102,7 +102,7 @@ Each package that has no source code yet contains a two-line `src/index.ts` with
 
 ---
 
-## 2. `piccolo-agent` — Core Agent Loop
+## 2. `piccolo-agent` — Core Agent Loop ✅
 
 The agent loop library. Pure TypeScript, no Workers-specific globals. The most foundational package — everything else depends on it for LLM streaming.
 
@@ -114,12 +114,67 @@ The agent loop library. Pure TypeScript, no Workers-specific globals. The most f
 - Follow-up queue (`followUp()`, `clearFollowUp()`) via `agent.continue()` after `onFinish`
 - `setModel()`, `setTools()`, `setSystemPrompt()`, `replaceMessages()`, `appendMessages()`
 - `subscribe()` / unsubscribe
-- `toAiSdkTools()` — converts `ITool[]` to AI SDK `ToolSet`
+- `toAiSdkTools()` — converts `IAgentTool[]` to AI SDK `ToolSet`
 - `agentCompact()` — `generateText`-based compaction helper
-- Unit tests: all state transitions, steering semantics, follow-up semantics, abort, tool execution paths (parallel + error), compaction split logic
+- Unit tests: all state transitions, steering semantics, follow-up semantics, abort, tool execution paths, compaction split logic (50 tests, all passing)
 - Mock AI Gateway: `createMockGateway()` in `test/mock-gateway.ts`
 
 **Spec refs:** [agent.md](agent.md), [api.md — Shared Types](api.md), [code.md — Mocking](code.md)
+
+### 2.1 Implementation Notes
+
+**Status:** Complete. All deliverables present. `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors. 50 tests pass, coverage: lines 88%, functions 98%, branches 74%.
+
+#### Genericity — minimal types in `packages/agent`
+
+`packages/agent` defines only what the agent loop itself needs. Deliberately excluded from this package:
+- Gateway IDs (`"web"`, `"telegram"`) and UI interfaces (`ITextUI`, `IWebUI`, `ITelegramUI`)
+- System-prompt metadata (`label`, `promptSnippet`, `promptGuidelines`) — used by `SystemPromptAssembler` in core
+- `ITool.getGatewayUI?` — gateway rendering method, not an agent-loop concern
+- `details?` in `ToolResult` — stored in session entries by core
+- Session/model/context types (`ModelInfo`, `SessionRecord`, `ContextUsage`)
+
+`packages/core` defines the full `ITool` and `ToolDescriptor` that extend `IAgentTool`/`AgentToolDescriptor` from this package.
+
+#### `skipLibCheck: true` added to `tsconfig.base.json`
+
+The `ai` v6 package's `.d.ts` files have known incompatibilities with `exactOptionalPropertyTypes: true` and reference Node-only types (`Buffer`, `node:http`). Added `"skipLibCheck": true` to `tsconfig.base.json`. Our own code is fully type-checked; only third-party `.d.ts` files are skipped.
+
+#### ai v6 API differences from spec
+
+1. **`onChunk` does not include `tool-error`** — Tool errors must be detected from `onStepFinish`'s `content` array. The `_runStream()` method iterates `content` in `onStepFinish` and emits `tool_end` with `isError: true` for `tool-error` parts.
+
+2. **`LanguageModelUsage` fields** — v6 uses `inputTokens`/`outputTokens`/`totalTokens` (not `promptTokens`/`completionTokens`).
+
+3. **`prepareStep`** — Promoted from `experimental_prepareStep` to stable in v6.
+
+4. **`stopWhen: stepCountIs(N)`** — Still present and unchanged in v6.
+
+#### Mock model — no fetch interception
+
+`createMockModel()` in `test/mock-gateway.ts` uses `MockLanguageModelV3` and `simulateReadableStream` from the official `ai/test` package. No `fetch` interception, no SSE format knowledge, no streaming detection heuristics required.
+
+- `doStream` is used by `streamText` — returns `ReadableStream<LanguageModelV3StreamPart>`
+- `doGenerate` is used by `generateText` — returns `LanguageModelV3GenerateResult`
+
+Both share the same `MockModelOptions`.
+
+#### `Agent` accepts `LanguageModel` directly — no `ai-gateway-provider` in `packages/agent`
+
+`AgentOptions.model` is a `LanguageModel` (from `ai`) — not a `gateway + modelId` pair. The gateway/model construction (`createAiGateway`, `ai-gateway-provider`) is entirely a `piccolo-core` concern. `packages/agent` has **no dependency on `ai-gateway-provider`** and no `gateway.ts` file. In tests, pass `new MockLanguageModelV3(...)` directly.
+
+#### `agentCompact` accepts `LanguageModel` directly
+
+Same principle: `agentCompact(messages, keepRecentTokens, model)` takes the same `LanguageModel` as the `Agent`. No separate gateway argument.
+
+#### `packages/core/src/types.ts` updated — extends agent types
+
+`packages/core` now depends on `@piccolo/agent` (workspace dependency):
+- `ToolDescriptor extends AgentToolDescriptor` — adds `label`, `promptSnippet`, `promptGuidelines`
+- `ITool extends IAgentTool` — adds `descriptor: ToolDescriptor` and `getGatewayUI`
+- `ToolResult extends AgentToolResult` — adds `details`
+- `AgentEvent`, `IAgentTool`, `AgentToolDescriptor`, `AgentToolResult`, `ModelMessage`, `LanguageModel` etc. are re-exported from `@piccolo/agent` — no duplication.
+- `ai` and `zod` remain direct dependencies of `packages/core` for non-agent types.
 
 ---
 

@@ -36,6 +36,13 @@
     "allowImportingTsExtensions": true,
 
     // Output — Vite/Wrangler handle emission; tsc is type-check only
-    "noEmit": true
+    "noEmit": true,
+
+    // Skip type-checking of declaration files in node_modules.
+    // Required because the `ai` package's .d.ts files have known incompatibilities
+    // with exactOptionalPropertyTypes: true and reference Node-only types (Buffer,
+    // node:http) that are not available in the WebWorker lib. Our own code is still
+    // fully type-checked; only third-party .d.ts files are skipped.
+    "skipLibCheck": true
   }
 }

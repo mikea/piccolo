@@ -76,6 +76,16 @@ type AgentEvent =
 
 import type { ZodObject } from "zod";
 
+// Implementation layering note:
+//   AgentToolDescriptor (packages/agent) — name, description, inputSchema
+//   ToolDescriptor      (packages/core)  — extends AgentToolDescriptor; adds label, snippets
+//
+//   AgentToolResult     (packages/agent) — content, isError?
+//   ToolResult          (packages/core)  — extends AgentToolResult; adds details?
+//
+//   IAgentTool          (packages/agent) — descriptor: AgentToolDescriptor, execute()
+//   ITool               (packages/core)  — extends IAgentTool; adds getGatewayUI
+
 // ToolDescriptor — pure data, no logic.
 // Describes the tool to the LLM and to the piccolo core.
 // Placed as a static property on every ITool Worker class.
