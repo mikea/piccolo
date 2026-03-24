@@ -47,7 +47,8 @@ Declared in `packages/core/wrangler.template.jsonc`:
   ],
   "vars": {
     "CF_ACCOUNT_ID": "<account_id>",
-    "CF_AI_GATEWAY_NAME": "piccolo"
+    "CF_AI_GATEWAY_NAME": "piccolo",
+    "AGENT_NAME": "Piccolo"    // display name injected into the base system prompt
   }
   // Secrets (set via: pnpm wrangler secret put <NAME>):
   //   CF_AI_GATEWAY_TOKEN  — CF API token with AI Gateway Write permission
@@ -68,7 +69,7 @@ CREATE TABLE sessions (
   updated_at  INTEGER NOT NULL,             -- Unix ms
   name        TEXT,
   cwd         TEXT,
-  model_id    TEXT    NOT NULL DEFAULT 'anthropic/claude-sonnet-4-5',
+  model_id    TEXT    NOT NULL,             -- no SQL default; callers always supply explicitly
   leaf_id     TEXT                          -- current active entry ID
 );
 
@@ -78,7 +79,7 @@ CREATE TABLE entries (
   parent_id   TEXT,                         -- null for root entry
   type        TEXT    NOT NULL,             -- discriminant (see Entry Types)
   timestamp   TEXT    NOT NULL,             -- ISO 8601
-  data        TEXT    NOT NULL,             -- JSON payload
+  data        TEXT    NOT NULL CHECK (json_valid(data)),  -- JSON payload; DB-level validity enforced
   PRIMARY KEY (session_id, id)
 );
 
@@ -303,22 +304,44 @@ interface DOState {
   modelId: string;
   leafId: string | null;
   name: string | undefined;
+  createdAt: number;   // Unix ms; 0 = session not yet committed to D1
+  updatedAt: number;
 
   // In-memory message list; rebuilt from D1 on cold start
   messages: ModelMessage[];
 
   // Pending entries not yet flushed to D1
-  pendingEntries: EntryBase[];
+  pendingEntries: AnyEntry[];
 
   // Active agent instance
-  agent: Agent | null;
+  agent: Agent;
   abortController: AbortController | null;
 
   // Follow-up queue (filled by ctx.sendFollowUp())
   followUpQueue: string[];
 
-  // Extension stubs loaded at session start
-  extensionRunner: ExtensionRunner | null;
+  // Extension runner (stub at step 5, real ExtensionRunner from step 6)
+  extensionRunner: ExtensionRunner;
+
+  // System prompt assembler (stub at step 5, real SystemPromptAssembler from step 7)
+  assembler: SystemPromptAssembler;
+
+  // The assembled system prompt for the current session
+  assembledSystemPrompt: string;
+
+  // Maps ModelMessage object reference → entry ID.
+  // Used by compact() to locate firstKeptEntryId without an extra D1 round-trip.
+  messageToEntryId: Map<ModelMessage, string>;
+
+  // Token counts from the last completed agent turn.
+  // lastInputTokens: updated from agent_end.totalUsage; used for compaction threshold.
+  // lastContextWindowTokens: model's declared context window size (default 200_000).
+  lastInputTokens: number;
+  lastContextWindowTokens: number;
+
+  // Count of agent.state.messages at the start of the current prompt() call.
+  // _handleAgentEnd() slices from this index to find new messages to persist.
+  messagesAtTurnStart: number;
 }
 ```
 
@@ -342,6 +365,27 @@ When the DO starts cold (evicted and restarted), `initialize()` runs before any 
 6. Restore agent.modelId
 7. Load extension registry and initialise ExtensionRunner
 ```
+
+### `initSession()`
+
+Called by `IPiccoloCore.newSession()` (step 9) to initialise the DO before the first `prompt()` call. Idempotent — if `sessionId` is already set, it is a no-op.
+
+```typescript
+async initSession(
+  sessionId: string,
+  userId: string,
+  options?: { name?: string; modelId?: string },
+): Promise<void>
+```
+
+1. If `state.sessionId !== ""` → return immediately (already initialised).
+2. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name`.
+3. Persist `sessionId` to DO storage (`ctx.storage.put("sessionId", sessionId)`) for cold-start recovery.
+4. Reconstruct the `LanguageModel` from `env` via `createModel(env, modelId)` and call `state.agent.setModel(model)`.
+
+The D1 `sessions` row is **not** written here — it is written lazily on the first `agent_end` (see §Lazy session creation).
+
+---
 
 ### `prompt()` pipeline
 
@@ -510,10 +554,14 @@ The parsed `commandName` and `commandArgs` are attached to the `InputEvent` befo
 
 Called once per `prompt()` call (or once at session start and cached until reload).
 
+The `PICCOLO_SYSTEM_PROMPT` constant is a template that accepts an `agentName` parameter
+(sourced from the `AGENT_NAME` environment variable, default `"Piccolo"`).
+`buildBasePrompt(agentName)` renders the template before passing it to `assemble()`.
+
 ```typescript
 class SystemPromptAssembler {
   assemble(
-    base: string,                           // PICCOLO_SYSTEM_PROMPT constant
+    base: string,                           // rendered by buildBasePrompt(env.AGENT_NAME)
     additions: SystemPromptAddition[],      // from ExtensionRunner.getSystemPromptAdditions()
     activeTools: ITool[],                   // registered tools
     override?: string,                      // from BeforeAgentStartResult.systemPrompt
@@ -578,18 +626,32 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
+`compact()` takes a `CompactionState` struct rather than individual parameters, so all the mutable DO state it needs to update (leafId, pendingEntries) is passed as a bundle.
+
 ```typescript
+interface CompactionState {
+  sessionId: string;
+  leafId: string | null;
+  agent: Agent;
+  extensionRunner: ExtensionRunner;
+  /** Maps ModelMessage object reference → entry ID for firstKeptEntryId lookup. */
+  messageToEntryId: Map<ModelMessage, string>;
+  /** Accumulated entries not yet flushed to D1. Compaction entry is appended here. */
+  pendingEntries: AnyEntry[];
+  /** Last known input token count — used for CompactionEntry.tokensBefore. */
+  lastInputTokens: number;
+}
+
 async function compact(
-  agent: Agent,
-  extensionRunner: ExtensionRunner,
+  state: CompactionState,
   ctx: IExtensionContext,
   options: CompactOptions = {},
 ): Promise<void> {
   const keepRecentTokens = options.keepRecentTokens ?? 20_000;
 
   // 1. Let extensions cancel or provide a pre-built summary
-  const extResult = await extensionRunner.emitBeforeCompact(
-    { messages: agent.state.messages, keepRecentTokens }, ctx
+  const extResult = await state.extensionRunner.emitBeforeCompact(
+    { messages: state.agent.state.messages, keepRecentTokens }, ctx
   );
   if (extResult?.cancel) return;
 
@@ -599,41 +661,48 @@ async function compact(
   if (extResult?.summary) {
     // Extension provided a ready-made summary — skip LLM call
     summary = extResult.summary;
-    keptMessages = splitForCompaction(agent.state.messages, keepRecentTokens).toKeep;
+    keptMessages = splitForCompaction(state.agent.state.messages, keepRecentTokens).toKeep;
   } else {
-    // Use piccolo-agent's compact() function (generateText call)
+    // Use piccolo-agent's agentCompact() (generateText call)
     ({ summary, keptMessages } = await agentCompact(
-      agent.state.messages,
+      state.agent.state.messages,
       keepRecentTokens,
-      gateway,
-      agent.state.modelId,
+      state.agent.state.model,
     ));
   }
 
-  // 2. Build and persist CompactionEntry
-  const lastKeptId = getEntryIdForMessage(keptMessages[0]);
+  // Guard: if nothing was summarised (toSummarize was empty), skip writing an entry.
+  if (summary === "" && !extResult?.summary) return;
+
+  // 2. Build and queue CompactionEntry
+  const firstKeptMessage = keptMessages[0];
+  const firstKeptEntryId = firstKeptMessage
+    ? (state.messageToEntryId.get(firstKeptMessage) ?? "")
+    : "";
   const compactionEntry: CompactionEntry = {
     id: generateEntryId(),
-    sessionId, parentId: leafId,
+    sessionId: state.sessionId,
+    parentId: state.leafId,
     type: "compaction",
     timestamp: new Date().toISOString(),
     data: {
       summary,
-      firstKeptEntryId: lastKeptId,
-      tokensBefore: contextUsage.inputTokens,
+      firstKeptEntryId,
+      tokensBefore: state.lastInputTokens,
     },
   };
-  await appendEntry(compactionEntry);
+  state.pendingEntries.push(compactionEntry);
+  state.leafId = compactionEntry.id;
 
   // 3. Rebuild agent message list
   const summaryMessage: ModelMessage = {
     role: "user",
     content: `[Conversation Summary]\n\n${summary}`,
   };
-  agent.replaceMessages([summaryMessage, ...keptMessages]);
+  state.agent.replaceMessages([summaryMessage, ...keptMessages]);
 
-  // 4. Notify extensions
-  await extensionRunner.emit("onCompact",
+  // 4. Notify extensions (fire-and-forget)
+  await state.extensionRunner.emit("onCompact",
     { summary, keptMessageCount: keptMessages.length }, ctx
   );
 }
@@ -649,22 +718,26 @@ Triggered when `AgentEvent { type: "error" }` fires and the error is transient.
 const TRANSIENT_ERROR_RE = /overloaded|rate.?limit|429|503|504|timeout/i;
 const CONTEXT_OVERFLOW_RE = /context.?length|too.?many.?token|prompt.?too.?long/i;
 
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1_000;
+const MAX_DELAY_MS = 30_000;
+
 async function checkRetry(
   errorMessage: string,
   agent: Agent,
   signal: AbortSignal,
+  // Called when error is a context-length overflow so the caller can trigger compaction.
+  // Returns false after invoking the callback (not a retryable error).
+  onContextOverflow: () => Promise<void>,
 ): Promise<boolean> {
   if (CONTEXT_OVERFLOW_RE.test(errorMessage)) {
-    // Not a transient error — hand off to compaction
+    // Not a transient error — invoke compaction callback and return false
+    await onContextOverflow();
     return false;
   }
   if (!TRANSIENT_ERROR_RE.test(errorMessage)) {
     return false;
   }
-
-  const MAX_RETRIES = 3;
-  const BASE_DELAY_MS = 1_000;
-  const MAX_DELAY_MS = 30_000;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const delay = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);

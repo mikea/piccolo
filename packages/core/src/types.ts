@@ -153,11 +153,11 @@ export interface ITool extends IAgentTool {
 
 // ─── Gateway UI ───────────────────────────────────────────────────────────────
 
-// Well-known gateway identifiers. Defined as a plain string type here;
-// specific gateway implementations declare their own constants.
-// The agent layer has no knowledge of gateway IDs.
-// TODO(item-10): implement — placeholder only
-export type GatewayId = string;
+// Well-known gateway identifiers.
+// The branded union `"web" | "telegram" | (string & {})` provides IDE autocomplete
+// for the two built-in gateways while still accepting arbitrary extension gateway IDs.
+// TODO(item-10): gateway implementations declare their own ID constants
+export type GatewayId = "web" | "telegram" | (string & {});
 
 // ITextUI — minimal shared interface implemented by every gateway.
 // TODO(item-10): implement — placeholder only
@@ -169,14 +169,12 @@ export interface ITextUI {
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
 
-// TODO(item-5): implement — placeholder only
 export interface ContextUsage {
   inputTokens: number;
   contextWindowTokens: number; // model's context window size
   usedFraction: number; // inputTokens / contextWindowTokens
 }
 
-// TODO(item-5): implement — placeholder only
 export interface CompactOptions {
   keepRecentTokens?: number; // default: 20_000
 }

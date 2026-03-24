@@ -57,8 +57,18 @@
       "binding": "EXTENSIONS",
       "namespace": "piccolo-extensions"
     }
-  ]
+  ],
+
+  // ── Environment variables ──────────────────────────────────────────────
+  "vars": {
+    // Cloudflare account ID — used by ai-gateway-provider to build the gateway URL.
+    "CF_ACCOUNT_ID": "<CF_ACCOUNT_ID>",
+    // AI Gateway name / slug (the "gateway" portion of the unified endpoint URL).
+    "CF_AI_GATEWAY_NAME": "piccolo",
+    // Display name used in the base system prompt template (e.g. "Piccolo", "MyBot").
+    "AGENT_NAME": "Piccolo"
+  }
 
   // ── Secrets (set via wrangler secret put, never committed) ─────────────
-  // CF_AI_GATEWAY_TOKEN  — Cloudflare AI Gateway authentication token
+  // CF_AI_GATEWAY_TOKEN  — Cloudflare AI Gateway API token with Write permission
 }

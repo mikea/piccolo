@@ -237,7 +237,7 @@ The compaction entry in the tree sits **after** its `firstKeptEntryId` in the pa
 
 ---
 
-## 5. `piccolo-core` — `AgentSessionDO`
+## 5. `piccolo-core` — `AgentSessionDO` ✅
 
 The Durable Object that owns a live session. Wires `piccolo-agent` to persistence, manages the prompt pipeline, auto-retry, and compaction.
 
@@ -253,6 +253,40 @@ The Durable Object that owns a live session. Wires `piccolo-agent` to persistenc
 - Integration tests: full prompt → response cycle with mock AI Gateway + mock D1; cold start rehydration; retry; compaction trigger; abort; branch
 
 **Spec refs:** [core.md — `AgentSessionDO`](core.md), [core.md — Auto-Retry](core.md), [core.md — Compaction](core.md)
+
+### 5.1 Implementation Notes
+
+**Status:** Complete. 158 tests pass, 71.36% branch coverage (threshold: 70%). `tsc --noEmit` passes with zero errors.
+
+#### Files created
+
+| File | Purpose |
+|---|---|
+| `packages/core/src/do/agent-session.ts` | `AgentSessionDO` class — full DO implementation |
+| `packages/core/src/do/compaction.ts` | `compact()` helper; creates `CompactionEntry`, calls `agentCompact()` |
+| `packages/core/src/do/retry.ts` | `checkRetry()` with exponential backoff, transient/overflow classification |
+| `packages/core/src/do/gateway.ts` | `createModel()` — wraps `ai-gateway-provider` with env bindings |
+| `packages/core/src/do/system-prompt.ts` | `buildBasePrompt(agentName)` — renders the base prompt template |
+| `packages/core/src/do/stubs.ts` | `ExtensionRunnerStub`, `SystemPromptAssemblerStub` — no-op stubs for steps 6–7 |
+| `packages/core/src/do/types-internal.ts` | `SystemPromptAddition`, `MODEL_CATALOG`, `resolveModel()` |
+| `packages/core/test/do/agent-session.test.ts` | 26 integration tests using Miniflare + `runInDurableObject` |
+| `packages/core/test/do/mock-model.ts` | `createMockModel()` — Workers-compatible mock for `LanguageModel` |
+| `packages/core/test/do/retry.test.ts` | 9 unit tests for retry classification and backoff logic |
+| `packages/core/test/do/system-prompt.test.ts` | 7 unit tests for `buildBasePrompt` and `resolveModel` |
+
+#### Key design decisions
+
+**`AGENT_NAME` var**: The agent's display name (e.g. `"Piccolo"`) is sourced from `env.AGENT_NAME` (set in `wrangler.template.jsonc`). `buildBasePrompt(agentName)` renders it into the base system prompt. Steps 6–7 will extend this further.
+
+**Model creation deferred**: `createModel(env, modelId)` is called at construction time (in `#initialize()`) and on `initSession()`. Tests override the model via `_setModelForTest(mock)` before calling `initSession()` — the `modelOverridden` flag prevents `initSession` from replacing the mock.
+
+**`waitForFlush()` pattern**: `_handleAgentEnd()` is triggered from the agent's subscribe callback (fire-and-forget). A `#flushPromise` field stores the in-flight promise. Tests call `await instance.waitForFlush()` after draining the event stream to ensure D1 writes complete before assertions.
+
+**`TransformStream` streaming**: `prompt()` returns a `ReadableStream<AgentEvent>` constructed via `TransformStream`. The agent's `subscribe()` listener writes events to the writable side; the readable side is returned to the caller. Compatible with Cloudflare DO JSRPC `ReadableStream` return values.
+
+**Context usage**: Computed as `lastInputTokens + heuristicDelta`. `lastInputTokens` is updated from the real AI SDK `totalUsage` on `agent_end`. `heuristicDelta` estimates tokens for any messages added since the last turn using chars/4.
+
+**`compaction.ts` no-op guard**: If `agentCompact` returns `summary: ""` (nothing to summarize — `toSummarize` was empty), `compact()` returns without writing a `CompactionEntry`. This prevents spurious entries on over-large `keepRecentTokens` budgets.
 
 ---
 
@@ -279,7 +313,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 Assembles the system prompt from the base constant and extension additions.
 
 **Deliverables:**
-- `PICCOLO_SYSTEM_PROMPT` constant — base system prompt text
+- `buildBasePrompt(agentName)` renders the base prompt template (already implemented in step 5); step 7 wires `SystemPromptAssembler` to use it
 - `SystemPromptAssembler.assemble(base, additions, activeTools, override?)` — full algorithm from [core.md](core.md)
 - "Available Tools" section builder — one line per tool with `promptSnippet`
 - "Tool Guidelines" section builder — bullet list from `promptGuidelines`
