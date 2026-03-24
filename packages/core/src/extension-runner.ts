@@ -16,7 +16,8 @@
  */
 
 import type { AgentToolResult, IAgentSession, IAgentTool } from "@piccolo/agent";
-import type { ISession } from "../types.ts";
+import type { ZodObject } from "zod";
+import type { ISession } from "./types.ts";
 import type { CommandDescriptor, SystemPromptAddition } from "./types-internal.ts";
 
 // Re-export so callers can import everything from extension-runner.ts
@@ -120,7 +121,7 @@ class ExtensionToolAdapter implements IAgentTool {
     name: string;
     description: string;
     // biome-ignore lint/suspicious/noExplicitAny: Zod's own API requires ZodObject<any>
-    inputSchema: import("zod").ZodObject<any>;
+    inputSchema: ZodObject<any>;
   };
 
   readonly descriptorLike: ToolDescriptorLike;
@@ -134,7 +135,7 @@ class ExtensionToolAdapter implements IAgentTool {
       name: desc.name,
       description: desc.description,
       // biome-ignore lint/suspicious/noExplicitAny: extension stubs return dynamic schemas
-      inputSchema: desc.inputSchema as import("zod").ZodObject<any>,
+      inputSchema: desc.inputSchema as ZodObject<any>,
     };
   }
 

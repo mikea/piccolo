@@ -17,47 +17,46 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import type { AgentEvent, ModelMessage } from "@piccolo/agent";
+import type { AgentEvent, LanguageModel, ModelMessage } from "@piccolo/agent";
 import { Agent } from "@piccolo/agent";
-import type {
-  AnyEntry,
-  MessageEntry,
-  ModelChangeEntry,
-  SessionInfoEntry,
-} from "../db/entry-types.ts";
-import { generateEntryId, parseEntry } from "../db/entry-types.ts";
-import { getEntries, getSession } from "../db/schema.ts";
-import { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "../session/context.ts";
+import type { CompactionState } from "./compaction.ts";
+import { compact } from "./compaction.ts";
+import type { MessageEntry, ModelChangeEntry, SessionInfoEntry } from "./db/entry-types.ts";
+import { generateEntryId, parseEntry } from "./db/entry-types.ts";
+import { getEntries, getSession } from "./db/schema.ts";
+import type { DOState } from "./do-state.ts";
+import { ExtensionRunner } from "./extension-runner.ts";
+import { createModel } from "./gateway.ts";
+import { checkRetry } from "./retry.ts";
+import { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
   deleteSession,
   flushPendingEntries,
   forkSession,
-} from "../session/persistence.ts";
+} from "./session/persistence.ts";
+import { SessionImpl } from "./session-impl.ts";
+import { buildBasePrompt } from "./system-prompt.ts";
+import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import type {
   Attachment,
   CompactOptions,
   ContextUsage,
+  IAgentSessionDO,
+  ISession,
   ModelInfo,
+  NewSessionOptions,
   SessionRecord,
-} from "../types.ts";
-import type { CompactionState } from "./compaction.ts";
-import { compact } from "./compaction.ts";
-import type { DOState } from "./do-state.ts";
-import { ExtensionRunner } from "./extension-runner.ts";
-import { createModel } from "./gateway.ts";
-import { checkRetry } from "./retry.ts";
-import { SessionImpl } from "./session-impl.ts";
-import { buildBasePrompt } from "./system-prompt.ts";
-import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
+} from "./types.ts";
 import { resolveModel } from "./types-internal.ts";
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
 /**
  * Implements IAgentSessionDO from specs/api.md §4.
+ * Spec ref: specs/core.md §AgentSessionDO
  */
-export class AgentSessionDO extends DurableObject<Env> {
+export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionDO {
   #state: DOState | null = null;
   /** Pending flush promise — tests await this via waitForFlush() to ensure D1 is up-to-date. */
   #flushPromise: Promise<void> | null = null;
@@ -79,7 +78,7 @@ export class AgentSessionDO extends DurableObject<Env> {
    * Replace the agent's model. Used in tests to inject a mock model.
    * Sets modelOverridden = true so initSession does not re-create the model.
    */
-  _setModelForTest(model: import("@piccolo/agent").LanguageModel): void {
+  _setModelForTest(model: LanguageModel): void {
     const state = this.#requireState();
     state.agent.setModel(model);
     state.modelId = "test-mock";
@@ -184,7 +183,14 @@ export class AgentSessionDO extends DurableObject<Env> {
       messagesAtTurnStart: 0,
       session: null,
       modelOverridden: false,
+      // Bound to the DO instance so SessionImpl.prompt() can start a full agent
+      // turn without an extra JSRPC hop. Set after the state object is created
+      // (placeholder avoids the TS "used before assigned" error).
+      promptFn: () => Promise.reject(new Error("promptFn not yet bound")),
     };
+
+    // Bind promptFn to this DO instance — avoids circular import.
+    state.promptFn = this.prompt.bind(this);
 
     // Create the SessionImpl now — it holds a live reference to state so all
     // mutations during initialize() are visible immediately.
@@ -228,12 +234,38 @@ export class AgentSessionDO extends DurableObject<Env> {
   // ─── Session (ISession) ───────────────────────────────────────────────────
 
   /**
-   * Return the live ISession for the current turn.
+   * Return the live SessionImpl for this DO.
+   *
+   * Called by PiccoloCore.newSession() / PiccoloCore.getSession() to obtain an
+   * RpcTarget that can be returned directly to a gateway over JSRPC. Because
+   * SessionImpl extends RpcTarget, Workers JSRPC serialises it transparently
+   * across the WorkerEntrypoint → gateway boundary — no wrapper stub needed.
+   *
+   * @param userId  The authenticated user ID to stamp on this session view.
+   *                PiccoloCore passes the gateway-supplied userId here.
+   *
+   * Spec ref: specs/core.md §ISession — Core-Side Implementation
+   */
+  getSession(userId: string): ISession {
+    const s = this.#requireState();
+    // Only update userId if a non-empty value is provided (newSession passes the
+    // real userId; getSession passes "" to avoid a D1 round-trip).
+    if (userId !== "") {
+      s.userId = userId;
+    }
+    if (s.session === null) {
+      s.session = new SessionImpl(s, this.env);
+    }
+    return s.session;
+  }
+
+  /**
+   * Return the live ISession for the current turn (internal use only).
    * If no session has been created yet for this turn, create one now (lazy).
    * The session holds a live reference to state, so mutations are shared.
    * Spec ref: specs/core.md §ISession — Core-Side Implementation
    */
-  #getOrCreateSession(): import("../types.ts").ISession {
+  #getOrCreateSession(): ISession {
     const s = this.#requireState();
     if (s.session === null) {
       s.session = new SessionImpl(s, this.env);
@@ -578,11 +610,7 @@ export class AgentSessionDO extends DurableObject<Env> {
   }
 
   /** Run context compaction. Mutates state directly. */
-  async #compact(
-    state: DOState,
-    ctx: import("../types.ts").ISession,
-    options: CompactOptions,
-  ): Promise<void> {
+  async #compact(state: DOState, ctx: ISession, options: CompactOptions): Promise<void> {
     const compactionState: CompactionState = {
       sessionId: state.sessionId,
       leafId: state.leafId,
@@ -598,11 +626,7 @@ export class AgentSessionDO extends DurableObject<Env> {
   }
 
   /** Persist new messages after an agent turn completes. */
-  async #handleAgentEnd(
-    state: DOState,
-    ctx: import("../types.ts").ISession,
-    signal: AbortSignal,
-  ): Promise<void> {
+  async #handleAgentEnd(state: DOState, ctx: ISession, signal: AbortSignal): Promise<void> {
     const currentMessages = state.agent.state.messages;
     const newMessages = currentMessages.slice(state.messagesAtTurnStart);
 

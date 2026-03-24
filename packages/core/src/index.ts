@@ -1,19 +1,18 @@
 /**
  * piccolo-core entry point.
  *
- * The full WorkerEntrypoint (IPiccoloCore) is implemented in item 9.
- * This stub satisfies the Wrangler `main` requirement so Miniflare can
- * start the Worker for unit tests (items 3–8) before the entrypoint exists.
+ * PiccoloCore is the WorkerEntrypoint (IPiccoloCore) that gateways connect to.
+ * AgentSessionDO must also be a named export for Wrangler DO registration.
  *
- * AgentSessionDO must be exported from the top-level entry point so Wrangler
- * can register it as a Durable Object class (required by wrangler.template.jsonc).
+ * Spec ref: specs/api.md §1 IPiccoloCore, specs/core.md §IPiccoloCore WorkerEntrypoint
  */
-export default {} satisfies ExportedHandler<Env>;
 
 // ── Durable Objects ───────────────────────────────────────────────────────────
-// AgentSessionDO (item 5) — must be a named export for Wrangler DO registration
-export { AgentSessionDO } from "./do/agent-session.ts";
+// AgentSessionDO — must be a named export for Wrangler DO registration
+export { AgentSessionDO } from "./agent-session-do.ts";
+// ── Worker entrypoint ─────────────────────────────────────────────────────────
+export { PiccoloCore as default } from "./piccolo-core.ts";
 
 // ── Public library API ────────────────────────────────────────────────────────
-// Session persistence layer (item 4)
+// Session persistence layer
 export * from "./session/index.ts";

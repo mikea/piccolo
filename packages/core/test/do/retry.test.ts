@@ -9,7 +9,7 @@
 
 import { Agent } from "@piccolo/agent";
 import { describe, expect, it, vi } from "vitest";
-import { CONTEXT_OVERFLOW_RE, checkRetry, TRANSIENT_ERROR_RE } from "../../src/do/retry.ts";
+import { CONTEXT_OVERFLOW_RE, checkRetry, TRANSIENT_ERROR_RE } from "../../src/retry.ts";
 import { createMockModel } from "./mock-model.ts";
 
 // ─── Regex classification tests ───────────────────────────────────────────────

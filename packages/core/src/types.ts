@@ -259,7 +259,8 @@ export interface ISession extends IAgentSession {
 
   /** Returns descriptors of all currently active tools. */
   getActiveTools(): Promise<ToolDescriptor[]>;
-  setActiveTools(toolNames: string[]): Promise<void>;
+  /** Set the active tools. Accepts IAgentTool RpcTargets directly over JSRPC. */
+  setActiveTools(tools: IAgentTool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────────
 
@@ -300,6 +301,48 @@ export interface ISession extends IAgentSession {
   // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
   delete(): Promise<void>;
+}
+
+// ─── IAgentSessionDO — Durable Object internal interface ─────────────────────
+//
+// Called by IPiccoloCore internally. Not directly accessible to gateways.
+// Implements the stateful runtime behind ISession.
+//
+// Spec ref: specs/api.md §4
+export interface IAgentSessionDO {
+  // ─── Conversation ────────────────────────────────────────────────────────────
+  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+  steer(text: string): Promise<void>;
+  followUp(text: string): Promise<void>;
+  abort(): Promise<void>;
+
+  // ─── Accessors ───────────────────────────────────────────────────────────────
+  getInfo(): Promise<SessionRecord>;
+  getName(): Promise<string | undefined>;
+  setName(name: string): Promise<void>;
+  getModel(): Promise<ModelInfo>;
+  setModel(modelId: string): Promise<void>;
+  getContextUsage(): Promise<ContextUsage>;
+
+  // ─── Session control ──────────────────────────────────────────────────────────
+  branch(entryId: string): Promise<void>;
+  compact(options?: CompactOptions): Promise<void>;
+  delete(): Promise<void>;
+  fork(fromEntryId?: string): Promise<string>;
+
+  // ─── Core-internal: returns the live ISession RpcTarget for this DO ───────────
+  initSession(sessionId: string, userId: string, options?: NewSessionOptions): Promise<void>;
+  getSession(userId: string): ISession;
+}
+
+// ─── IPiccoloCore — WorkerEntrypoint interface ────────────────────────────────
+//
+// Spec ref: specs/api.md §1
+export interface IPiccoloCore {
+  newSession(userId: string, options?: NewSessionOptions): Promise<ISession>;
+  getSession(sessionId: string): Promise<ISession>;
+  listSessions(userId: string): Promise<ISession[]>;
+  listModels(): Promise<ModelInfo[]>;
 }
 
 // Prevent unused import lint error — ZodObject is used in the JSDoc comment

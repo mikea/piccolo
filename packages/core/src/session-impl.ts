@@ -19,22 +19,25 @@
  */
 
 import { RpcTarget } from "cloudflare:workers";
-import type { AnyEntry, CustomEntry, CustomMessageEntry } from "../db/entry-types.ts";
-import { generateEntryId } from "../db/entry-types.ts";
+import type { AgentEvent, ModelMessage } from "@piccolo/agent";
+import type { CompactionState } from "./compaction.ts";
+import { compact } from "./compaction.ts";
+import type { AnyEntry, CustomEntry, CustomMessageEntry } from "./db/entry-types.ts";
+import { generateEntryId } from "./db/entry-types.ts";
+import type { DOState } from "./do-state.ts";
+import { createModel } from "./gateway.ts";
+import { forkSession } from "./session/persistence.ts";
 import type {
   Attachment,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
+  IAgentTool,
   ISession,
   ModelInfo,
   SessionRecord,
   ToolDescriptor,
-} from "../types.ts";
-import type { CompactionState } from "./compaction.ts";
-import { compact } from "./compaction.ts";
-import type { DOState } from "./do-state.ts";
-import { createModel } from "./gateway.ts";
+} from "./types.ts";
 import { MODEL_CATALOG, resolveModel } from "./types-internal.ts";
 
 /**
@@ -97,18 +100,11 @@ export class SessionImpl extends RpcTarget implements ISession {
 
   // ─── Conversation ────────────────────────────────────────────────────────────
 
-  async prompt(
-    _text: string,
-    _attachments?: Attachment[],
-  ): Promise<ReadableStream<import("@piccolo/agent").AgentEvent>> {
-    // Extensions receive ISession as context, not as the primary way to start
-    // a new turn. Calling prompt() from within a tool or extension handler is
-    // unusual and may cause re-entrancy issues. Delegating to AgentSessionDO
-    // directly is the correct pattern (step 9). For now: not implemented.
-    throw new Error(
-      "SessionImpl.prompt() is not available from tool/extension context. " +
-        "Use sendFollowUp() or sendUserMessage() instead.",
-    );
+  async prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>> {
+    // Delegates to AgentSessionDO.prompt() via the promptFn bound during
+    // #initialize(). This avoids an extra JSRPC hop and works both when called
+    // from gateway context (via JSRPC) and from tool/extension context.
+    return this.doState.promptFn(text, attachments);
   }
 
   async sendUserMessage(content: string): Promise<void> {
@@ -157,8 +153,7 @@ export class SessionImpl extends RpcTarget implements ISession {
     return this.doState.agent.state.tools.map((t) => t.descriptor as ToolDescriptor);
   }
 
-  async setActiveTools(toolNames: string[]): Promise<void> {
-    const tools = this.doState.extensionRunner.getToolsByNames(toolNames);
+  async setActiveTools(tools: IAgentTool[]): Promise<void> {
     this.doState.agent.setTools(tools);
   }
 
@@ -252,9 +247,22 @@ export class SessionImpl extends RpcTarget implements ISession {
     throw new Error("SessionImpl.branch() is not available from tool/extension context.");
   }
 
-  async fork(_fromEntryId?: string): Promise<ISession> {
-    // Forking from within a tool/extension context is not supported directly.
-    throw new Error("SessionImpl.fork() is not available from tool/extension context.");
+  async fork(fromEntryId?: string): Promise<ISession> {
+    const s = this.doState;
+    const newSessionId = await forkSession(
+      s.sessionId,
+      fromEntryId,
+      s.leafId,
+      s.userId,
+      s.modelId,
+      this.env.SESSIONS_DB,
+    );
+    // initSession() persists the sessionId to DO storage so the new DO can
+    // cold-start correctly. forkSession() only writes D1 — DO storage needs
+    // to be set separately.
+    const newStub = this.env.AGENT_SESSION.get(this.env.AGENT_SESSION.idFromName(newSessionId));
+    await newStub.initSession(newSessionId, s.userId, { modelId: s.modelId });
+    return newStub.getSession(s.userId);
   }
 
   async delete(): Promise<void> {
@@ -278,7 +286,7 @@ export class SessionImpl extends RpcTarget implements ISession {
 // ─── Token estimation ─────────────────────────────────────────────────────────
 
 /** Estimate token count for messages added since last turn (4 chars/token heuristic). */
-function estimateTokens(messages: import("@piccolo/agent").ModelMessage[]): number {
+function estimateTokens(messages: ModelMessage[]): number {
   let chars = 0;
   for (const msg of messages) {
     if (typeof msg.content === "string") {

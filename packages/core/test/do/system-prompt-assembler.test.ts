@@ -6,9 +6,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { ToolDescriptorLike } from "../../src/do/extension-runner.ts";
-import { SystemPromptAssembler } from "../../src/do/system-prompt-assembler.ts";
-import type { SystemPromptAddition } from "../../src/do/types-internal.ts";
+import type { ToolDescriptorLike } from "../../src/extension-runner.ts";
+import { SystemPromptAssembler } from "../../src/system-prompt-assembler.ts";
+import type { SystemPromptAddition } from "../../src/types-internal.ts";
 
 const BASE = "You are a helpful assistant.";
 

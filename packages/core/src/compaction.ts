@@ -17,10 +17,10 @@
 
 import type { Agent, ModelMessage } from "@piccolo/agent";
 import { agentCompact, splitForCompaction } from "@piccolo/agent";
-import type { AnyEntry, CompactionEntry } from "../db/entry-types.ts";
-import { generateEntryId } from "../db/entry-types.ts";
-import type { ISession } from "../types.ts";
+import type { AnyEntry, CompactionEntry } from "./db/entry-types.ts";
+import { generateEntryId } from "./db/entry-types.ts";
 import type { BeforeCompactEvent, IExtensionRunner } from "./extension-runner.ts";
+import type { ISession } from "./types.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 

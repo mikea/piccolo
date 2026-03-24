@@ -225,66 +225,61 @@ null ← session_info  (root, parentId = null)
 The `IPiccoloCore` Worker handles incoming JSRPC calls from gateways. It does minimal work itself, delegating everything session-specific to `AgentSessionDO`.
 
 ```typescript
-class PiccloCore extends WorkerEntrypoint<Env> {
+class PiccoloCore extends WorkerEntrypoint<Env> {
 
-  async newSession(options?: NewSessionOptions): Promise<ISession> {
+  async newSession(userId: string, options?: NewSessionOptions): Promise<ISession> {
     // 1. Generate sessionId = crypto.randomUUID()
-    // 2. Determine DO ID: env.AGENT_SESSION.idFromName(sessionId)
-    // 3. Return ISession RpcTarget stub bound to that DO ID
+    // 2. Resolve DO stub: env.AGENT_SESSION.idFromName(sessionId)
+    // 3. Call stub.initSession(sessionId, userId, options) to initialise the DO
+    // 4. Return stub.getSession(userId) — the DO's own SessionImpl RpcTarget
     // Note: D1 row is NOT written here — lazy creation on first assistant response
   }
 
   async getSession(sessionId: string): Promise<ISession> {
     // 1. Resolve DO stub: env.AGENT_SESSION.idFromName(sessionId)
-    // 2. Return ISession RpcTarget stub
+    // 2. Return stub.getSession("") — the DO's own SessionImpl RpcTarget
     // Does NOT verify session exists — the DO will error on first method call if not
+    // userId is NOT available without a D1 round-trip; callers needing it
+    // should call session.info() and read info.userId.
   }
 
-  async listSessions(): Promise<SessionInfo[]> {
-    // SELECT with join against entries for messageCount + firstMessage preview
-    // Filtered by userId from the authenticated request context
-    // ORDER BY updated_at DESC
+  async listSessions(userId: string): Promise<ISession[]> {
+    // 1. Query D1 for session IDs ordered by updated_at DESC (via dbListSessions)
+    // 2. Return a DO getSession() stub for each — gateways call session.info() for metadata
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    // Static list of models accessible via the configured CF AI Gateway
-    // Loaded from CONFIG KV key "models:catalog" or hardcoded fallback
+    // Loaded from CONFIG KV key "models:catalog" or hardcoded MODEL_CATALOG fallback
   }
 }
 ```
 
-### `ISession` stub
+### `ISession` — gateway-facing RpcTarget
 
-`ISession` is an `RpcTarget` created by `IPiccoloCore` and returned to the gateway. It holds the DO stub and forwards all calls:
+`PiccoloCore` returns the DO's own `SessionImpl` directly to the gateway. Because `SessionImpl extends RpcTarget`, Workers JSRPC serialises it transparently across the WorkerEntrypoint → gateway boundary — no separate wrapper class is needed.
+
+`AgentSessionDO` exposes a `getSession(userId): ISession` method for this purpose:
 
 ```typescript
-class Session extends RpcTarget {
-  #doStub: DurableObjectStub<AgentSessionDO>;
-  #sessionId: string;
+// On AgentSessionDO:
+getSession(userId: string): ISession {
+  // Creates or re-uses the SessionImpl for this DO, stamping userId.
+  // Returns it as ISession — same instance used by tools and extensions.
+}
+```
 
-  async id()      { return this.#sessionId; }
-  async info()    { return this.#doStub.getInfo(); }
-  async getName() { return this.#doStub.getName(); }
-  async setName(name: string) { return this.#doStub.setName(name); }
+The `fork()` method on `SessionImpl` (called by a gateway via this RpcTarget) creates the forked session's DO stub and returns its `SessionImpl` the same way:
 
-  async prompt(text: string, attachments?: Attachment[]) {
-    return this.#doStub.prompt(text, attachments);
-  }
-  async steer(text: string)    { return this.#doStub.steer(text); }
-  async followUp(text: string) { return this.#doStub.followUp(text); }
-  async abort()                { return this.#doStub.abort(); }
+```typescript
+async fork(fromEntryId?: string): Promise<ISession> {
+  const newSessionId = await forkSession(...);
+  return env.AGENT_SESSION
+    .get(env.AGENT_SESSION.idFromName(newSessionId))
+    .getSession(this.doState.userId);
+}
 
-  async getModel()           { return this.#doStub.getModel(); }
-  async setModel(modelId: string) { return this.#doStub.setModel(modelId); }
-  async getContextUsage()    { return this.#doStub.getContextUsage(); }
-  async compact(opts?)       { return this.#doStub.compact(opts); }
-  async branch(entryId: string) { return this.#doStub.branch(entryId); }
-  async delete()             { return this.#doStub.delete(); }
-
-  async fork(fromEntryId?: string): Promise<ISession> {
-    const newSessionId = await this.#doStub.fork(fromEntryId);
-    // Returns a new ISession stub for the forked session
-    return new Session(env.AGENT_SESSION.idFromName(newSessionId), newSessionId);
+  async appendCustomMessage(customType: string, content: string, display: boolean) {
+    return this.#doStub.appendCustomMessage(customType, content, display);
   }
 }
 ```
@@ -850,7 +845,7 @@ class SessionImpl extends RpcTarget implements ISession {
 
   // Tools
   async getActiveTools()     { return doState.agent.state.tools.map(t => t.descriptor) as ToolDescriptor[]; }
-  async setActiveTools(names){ doState.agent.setTools(doState.extensionRunner.getToolsByNames(names)); }
+  async setActiveTools(tools: IAgentTool[]){ doState.agent.setTools(tools); }
 
   // Session control
   async abort()              { doState.abortController?.abort(); }

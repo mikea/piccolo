@@ -13,12 +13,12 @@ import { Agent } from "@piccolo/agent";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AnyEntry } from "../../src/db/entry-types.ts";
-import type { DOState } from "../../src/do/do-state.ts";
-import type { ExtensionRunner } from "../../src/do/extension-runner.ts";
-import { SessionImpl } from "../../src/do/session-impl.ts";
-import type { SystemPromptAssembler } from "../../src/do/system-prompt-assembler.ts";
-import { MODEL_CATALOG } from "../../src/do/types-internal.ts";
+import type { DOState } from "../../src/do-state.ts";
+import type { ExtensionRunner } from "../../src/extension-runner.ts";
+import { SessionImpl } from "../../src/session-impl.ts";
+import type { SystemPromptAssembler } from "../../src/system-prompt-assembler.ts";
 import type { ISession } from "../../src/types.ts";
+import { MODEL_CATALOG } from "../../src/types-internal.ts";
 import { createMockModel } from "./mock-model.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -77,6 +77,9 @@ function makeMockDOState(overrides: Partial<DOState> = {}): DOState {
     messagesAtTurnStart: 0,
     session: null,
     modelOverridden: false,
+    // promptFn is bound to AgentSessionDO.prompt() in production; in unit tests
+    // use a stub that rejects so prompt() is not accidentally exercised here.
+    promptFn: () => Promise.reject(new Error("promptFn not available in unit test")),
     ...overrides,
   };
 }
@@ -214,16 +217,14 @@ describe("SessionImpl — tools", () => {
     expect(tools[0]?.name).toBe("my_tool");
   });
 
-  it("setActiveTools() calls agent.setTools with filtered tools", async () => {
+  it("setActiveTools() calls agent.setTools with the provided tools", async () => {
     const toolA = makeMockTool("tool_a");
     const state = makeMockDOState();
     const setToolsSpy = vi.spyOn(state.agent, "setTools");
-    // Override extensionRunner.getToolsByNames to return toolA
-    (state.extensionRunner as { getToolsByNames: (n: string[]) => IAgentTool[] }).getToolsByNames =
-      (names: string[]) => (names.includes("tool_a") ? [toolA] : []);
 
     const session = makeSession(state);
-    await session.setActiveTools(["tool_a"]);
+    // setActiveTools now accepts IAgentTool[] directly (JSRPC RpcTargets)
+    await session.setActiveTools([toolA]);
 
     expect(setToolsSpy).toHaveBeenCalledWith([toolA]);
   });
@@ -477,10 +478,13 @@ describe("SessionImpl — ISession implements IAgentSession", () => {
 });
 
 describe("SessionImpl — not-yet-implemented methods throw", () => {
-  it("prompt() throws with a clear message", async () => {
+  it("prompt() delegates to promptFn (rejects in unit test context)", async () => {
+    // prompt() is now fully implemented — it delegates to doState.promptFn.
+    // In unit tests promptFn is a stub that rejects. Full prompt() integration
+    // is tested in piccolo-core.test.ts via Miniflare.
     const state = makeMockDOState();
     const session = makeSession(state);
-    await expect(session.prompt("hello")).rejects.toThrow("SessionImpl.prompt()");
+    await expect(session.prompt("hello")).rejects.toThrow("promptFn not available in unit test");
   });
 
   it("branch() throws with a clear message", async () => {
@@ -489,10 +493,13 @@ describe("SessionImpl — not-yet-implemented methods throw", () => {
     await expect(session.branch("some-entry-id")).rejects.toThrow("SessionImpl.branch()");
   });
 
-  it("fork() throws with a clear message", async () => {
+  it("fork() rejects when called with no real DB (unit test context)", async () => {
+    // fork() now delegates to forkSession() + DO stub — it will fail in the
+    // unit test context (mock state has no real SESSIONS_DB or AGENT_SESSION).
+    // Full fork() integration is tested in piccolo-core.test.ts.
     const state = makeMockDOState();
     const session = makeSession(state);
-    await expect(session.fork()).rejects.toThrow("SessionImpl.fork()");
+    await expect(session.fork()).rejects.toThrow();
   });
 
   it("delete() throws with a clear message", async () => {

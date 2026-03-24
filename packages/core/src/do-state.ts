@@ -9,11 +9,11 @@
  * Spec ref: specs/core.md §AgentSessionDO §Internal state
  */
 
-import type { Agent, ModelMessage } from "@piccolo/agent";
-import type { AnyEntry } from "../db/entry-types.ts";
-import type { ISession } from "../types.ts";
+import type { Agent, AgentEvent, ModelMessage } from "@piccolo/agent";
+import type { AnyEntry } from "./db/entry-types.ts";
 import type { ExtensionRunner } from "./extension-runner.ts";
 import type { SystemPromptAssembler } from "./system-prompt-assembler.ts";
+import type { Attachment, ISession } from "./types.ts";
 
 /**
  * In-memory state of a live session.
@@ -98,4 +98,14 @@ export interface DOState {
    * Not used in production — tests only.
    */
   modelOverridden: boolean;
+
+  /**
+   * Reference to AgentSessionDO.prompt() bound to the DO instance.
+   * Set in #initialize() so SessionImpl.prompt() can start a full agent turn
+   * without needing a DO stub (which would add an extra JSRPC hop).
+   *
+   * Using a function reference avoids a circular import between do-state.ts
+   * and agent-session-do.ts.
+   */
+  promptFn: (text: string, attachments?: Attachment[]) => Promise<ReadableStream<AgentEvent>>;
 }

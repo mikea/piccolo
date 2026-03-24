@@ -30,12 +30,12 @@ import type {
   ToolDescriptorLike,
   ToolResultEvent,
   ToolResultOverride,
-} from "../../src/do/extension-runner.ts";
-import type { CommandDescriptor, SystemPromptAddition } from "../../src/do/types-internal.ts";
+} from "../../src/extension-runner.ts";
 import type { ISession } from "../../src/types.ts";
+import type { CommandDescriptor, SystemPromptAddition } from "../../src/types-internal.ts";
 
 // Re-export types for convenience in test files
-export type { CommandDescriptor, SystemPromptAddition } from "../../src/do/types-internal.ts";
+export type { CommandDescriptor, SystemPromptAddition } from "../../src/types-internal.ts";
 
 export interface MockExtensionOptions {
   /** Extension name (informational, for debugging). */

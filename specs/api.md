@@ -214,13 +214,16 @@ class IPiccoloCore extends WorkerEntrypoint {
   // ─── Session lifecycle ────────────────────────────────────────────────────
 
   // Create a new session. Returns an ISession stub bound to the new session.
-  newSession(options?: NewSessionOptions): Promise<ISession>;
+  // userId is provided by the calling gateway after it has authenticated the user.
+  newSession(userId: string, options?: NewSessionOptions): Promise<ISession>;
 
   // Retrieve an existing session by ID. Returns an ISession stub.
   getSession(sessionId: string): Promise<ISession>;
 
-  // List sessions accessible to the authenticated caller.
-  listSessions(): Promise<SessionInfo[]>;
+  // List sessions for a given user as live ISession RpcTargets.
+  // Gateways call session.info() on each to retrieve metadata.
+  // userId is provided by the calling gateway after it has authenticated the user.
+  listSessions(userId: string): Promise<ISession[]>;
 
   // ─── Global model registry ───────────────────────────────────────────────
 
@@ -287,7 +290,8 @@ class ISession extends RpcTarget {
 
   // Returns descriptors of all currently active tools.
   getActiveTools(): Promise<ToolDescriptor[]>;
-  setActiveTools(toolNames: string[]): Promise<void>;
+  // Accepts IAgentTool RpcTargets directly over JSRPC.
+  setActiveTools(tools: IAgentTool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────
 

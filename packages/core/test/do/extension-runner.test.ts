@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ExtensionRunner, parseCommand } from "../../src/do/extension-runner.ts";
+import { ExtensionRunner, parseCommand } from "../../src/extension-runner.ts";
 import {
   createMockDispatchNamespace,
   createMockExtension,

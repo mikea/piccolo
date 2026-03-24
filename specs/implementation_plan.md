@@ -466,18 +466,31 @@ receives a callable stub back to the session, not a plain data object.
 
 The public JSRPC surface that gateways connect to.
 
-**Deliverables:**
-- `PiccoloCore extends WorkerEntrypoint` implementing `IPiccoloCore` from [api.md §1](api.md)
-- `newSession(options?)` → `Session` stub (lazy, no D1 write)
-- `getSession(sessionId)` → `Session` stub
-- `listSessions()` → query via `listSessions()` from item 4
-- `listModels()` → static catalog from KV or hardcoded fallback
-- `Session extends RpcTarget` implementing `ISession` from [api.md §2](api.md) — thin delegation to `AgentSessionDO`
-- `Session.fork()` → creates new `Session` stub for the forked session
-- `wrangler.template.jsonc` for `piccolo-core` with all bindings
-- Integration tests: `newSession` → `session.prompt()` → stream events → `session.info()`; `listSessions`; `getSession` on non-existent → meaningful error
+**Status: Complete**
 
-**Spec refs:** [api.md §1–2](api.md), [core.md — `IPiccoloCore`](core.md), [core.md — `ISession` stub](core.md)
+**Deliverables:**
+- `src/piccolo-core.ts` — `PiccoloCore extends WorkerEntrypoint implements IPiccoloCore`
+- `src/agent-session-do.ts` — `AgentSessionDO extends DurableObject implements IAgentSessionDO` (renamed from `do/agent-session.ts`)
+- `IAgentSessionDO` and `IPiccoloCore` interfaces added to `src/types.ts`
+- `newSession(userId, options?)` → initiates DO, returns `SessionImpl` RpcTarget directly
+- `getSession(sessionId)` → returns `SessionImpl` RpcTarget (no D1 round-trip)
+- `listSessions(userId)` → queries D1, returns `ISession[]` (live RpcTarget stubs, not `SessionInfo[]`)
+- `listModels()` → tries `CONFIG KV "models:catalog"`, falls back to `MODEL_CATALOG`
+- No separate `Session` stub class — `SessionImpl` IS the gateway-facing RpcTarget (JSRPC passes `RpcTarget` across Worker boundaries natively)
+- `SessionImpl.fork()` → calls `forkSession()` + `initSession()` on new DO + returns new `SessionImpl` via `getSession()`
+- `SessionImpl.prompt()` → delegates to `doState.promptFn` (bound to `AgentSessionDO.prompt()` during `#initialize()`)
+- `do/` folder flattened: all files moved to `src/` (compaction, extension-runner, gateway, retry, session-impl, system-prompt, types-internal, do-state, etc.)
+- `setActiveTools(tools: IAgentTool[])` accepts RpcTarget tool objects directly (not string names)
+- `listModels()` removed from `AgentSessionDO` (belongs only on `PiccoloCore`)
+- Integration tests in `test/do/piccolo-core.test.ts` (22 tests)
+
+**Key decisions:**
+- `userId` passed explicitly to `newSession()`/`listSessions()` — gateways authenticate and supply it
+- `getSession()` passes `""` as userId (no D1 round-trip); callers use `session.info()` for the committed userId
+- `promptFn` callback in `DOState` avoids circular import between `do-state.ts` and `agent-session-do.ts`
+- Miniflare in-process JSRPC cannot reliably stream `ReadableStream<AgentEvent>` across boundaries; test prompts via `runInDurableObject()` directly
+
+**Spec refs:** [api.md §1–2, §4](api.md), [core.md — `IPiccoloCore`](core.md), [core.md — `ISession` stub](core.md)
 
 ---
 

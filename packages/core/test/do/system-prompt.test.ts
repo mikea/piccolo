@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { buildBasePrompt, DEFAULT_AGENT_NAME } from "../../src/do/system-prompt.ts";
-import { MODEL_CATALOG, resolveModel } from "../../src/do/types-internal.ts";
+import { buildBasePrompt, DEFAULT_AGENT_NAME } from "../../src/system-prompt.ts";
+import { MODEL_CATALOG, resolveModel } from "../../src/types-internal.ts";
 
 describe("buildBasePrompt", () => {
   it("uses the provided agent name", () => {
