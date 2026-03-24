@@ -7,7 +7,7 @@
  *   - Context compaction (compaction.ts)
  *   - Auto-retry (retry.ts)
  *   - Extension dispatch (real ExtensionRunner from step 6)
- *   - System prompt assembly (SystemPromptAssemblerStub at step 6, real at step 7)
+ *   - System prompt assembly (SystemPromptAssembler)
  *
  * The DO is addressed by sessionId via `env.AGENT_SESSION.idFromName(sessionId)`.
  *
@@ -47,8 +47,8 @@ import type { IExtensionContextLike } from "./extension-runner.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
 import { checkRetry } from "./retry.ts";
-import { SystemPromptAssemblerStub } from "./stubs.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
+import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { resolveModel } from "./types-internal.ts";
 
 // ─── DOState ──────────────────────────────────────────────────────────────────
@@ -86,8 +86,8 @@ interface DOState {
   /** Extension runner — real ExtensionRunner from step 6. */
   extensionRunner: ExtensionRunner;
 
-  /** System prompt assembler (stub at step 6, replaced in step 7). */
-  assembler: SystemPromptAssemblerStub;
+  /** System prompt assembler. */
+  assembler: SystemPromptAssembler;
 
   /** The assembled system prompt for the current session. */
   assembledSystemPrompt: string;
@@ -219,8 +219,8 @@ export class AgentSessionDO extends DurableObject<Env> {
     const ctx: IExtensionContextLike = { sessionId, userId };
     await extensionRunner.initialize(ctx, this.env.CONFIG, this.env.EXTENSIONS, modelId);
 
-    // 7. Assemble system prompt (assembler stub at step 6)
-    const assembler = new SystemPromptAssemblerStub();
+    // 7. Assemble system prompt
+    const assembler = new SystemPromptAssembler();
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
     const assembledSystemPrompt = assembler.assemble(
       basePrompt,

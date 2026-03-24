@@ -338,7 +338,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 ---
 
-## 7. `piccolo-core` — `SystemPromptAssembler`
+## 7. `piccolo-core` — `SystemPromptAssembler` ✅
 
 Assembles the system prompt from the base constant and extension additions.
 
@@ -352,6 +352,31 @@ Assembles the system prompt from the base constant and extension additions.
 - Unit tests: empty additions, all section types, tool guidelines, override, priority ordering
 
 **Spec refs:** [core.md — `SystemPromptAssembler`](core.md)
+
+### 7.1 Implementation Notes
+
+**Status:** Complete. 233 tests pass (26 new assembler tests). Coverage: statements 86.81%, functions 85.23%, branches 76.21% — all above thresholds (80/80/70). `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors.
+
+#### File layout
+
+| File | Contents |
+|---|---|
+| `packages/core/src/do/system-prompt-assembler.ts` | `SystemPromptAssembler` class |
+| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` removed; re-exports `IExtensionContextLike` only |
+| `packages/core/src/do/agent-session.ts` | Import and type updated to use `SystemPromptAssembler` |
+| `packages/core/test/do/system-prompt-assembler.test.ts` | 26 unit tests covering all assembly cases |
+
+#### Key design decisions
+
+**`ToolDescriptorLike[]` instead of `ITool[]`**: The `assemble()` method takes `ToolDescriptorLike[]` (the duck-typed shape from `ExtensionRunner`) rather than `ITool[]` (the full `piccolo-core` interface defined in step 12). Only `promptSnippet` and `promptGuidelines` are accessed — both present on `ToolDescriptorLike`. When step 12 implements real `ITool` / `ToolDescriptor`, the type is structurally compatible with no changes needed to the assembler.
+
+**Section ordering**: `base → context → skills → available-tools → guidelines → tool-guidelines → footer`. The "Available Tools" section (from `promptSnippet`) is placed between skills and guidelines additions, matching the spec's intent that tool discovery information comes before usage guidelines.
+
+**Override short-circuit**: If `override` is truthy, it is returned verbatim. All additions and tool processing are skipped entirely — consistent with spec.
+
+**Priority default of 100**: Additions without an explicit `priority` field are sorted as if `priority === 100`. This places them after items with `priority < 100` and before items with `priority > 100`.
+
+**Empty section filtering**: `parts.filter(Boolean)` removes any empty strings before joining with `\n\n`, so sections that produce no output (e.g. no tools with snippets) leave no blank separators in the output.
 
 ---
 
