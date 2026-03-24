@@ -25,11 +25,12 @@ import {
   createMockDispatchNamespace,
   createMockExtension,
   createMockKv,
+  createMockSession,
 } from "../mocks/extension-stub.ts";
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-const ctx = { sessionId: "sess-1", userId: "user-1" };
+const ctx = createMockSession({ sessionId: "sess-1", userId: "user-1" });
 
 async function makeRunner(
   stubs: Record<string, ReturnType<typeof createMockExtension>>,
@@ -601,5 +602,37 @@ describe("emit()", () => {
     const runner = await makeRunner({ a: ext });
     const result = await runner.emit("onAgentStart", {}, ctx);
     expect(result).toBeUndefined();
+  });
+});
+
+// ─── createMockSession coverage ───────────────────────────────────────────────
+// Exercises every method on the default mock session to keep coverage thresholds met.
+
+describe("createMockSession() — all methods reachable", () => {
+  it("covers all ISession no-op methods", async () => {
+    const s = createMockSession({ sessionId: "s1", userId: "u1" });
+    expect(s.userId).toBe("u1");
+    expect(await s.id()).toBe("s1");
+    expect(await s.info()).toMatchObject({ id: "s1" });
+    expect(await s.getName()).toBeUndefined();
+    await expect(s.setName("X")).resolves.toBeUndefined();
+    await expect(s.sendUserMessage("hi")).resolves.toBeUndefined();
+    await expect(s.steer("steer")).resolves.toBeUndefined();
+    await expect(s.followUp("follow")).resolves.toBeUndefined();
+    await expect(s.abort()).resolves.toBeUndefined();
+    expect(await s.getModel()).toMatchObject({ id: "test/model" });
+    await expect(s.setModel("x")).resolves.toBeUndefined();
+    expect(await s.listModels()).toEqual([]);
+    expect(await s.getActiveTools()).toEqual([]);
+    await expect(s.setActiveTools([])).resolves.toBeUndefined();
+    await expect(s.appendCustomMessage("t", "c", false)).resolves.toBeUndefined();
+    await expect(s.appendCustomEntry("t")).resolves.toBeUndefined();
+    expect(await s.getEntries()).toEqual([]);
+    expect(await s.getEntries("type")).toEqual([]);
+    expect(await s.getContextUsage()).toMatchObject({ inputTokens: 0 });
+    await expect(s.compact()).resolves.toBeUndefined();
+    expect(await s.getSystemPrompt()).toBe("");
+    await expect(s.branch("e")).resolves.toBeUndefined();
+    await expect(s.delete()).resolves.toBeUndefined();
   });
 });

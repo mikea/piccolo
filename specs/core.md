@@ -329,6 +329,17 @@ interface DOState {
   // The assembled system prompt for the current session
   assembledSystemPrompt: string;
 
+  // In-memory cache of all AnyEntry objects on the current branch path (root→leaf order).
+  // Populated on cold start from D1. New custom/custom_message entries appended here
+  // when SessionImpl.appendCustomEntry/appendCustomMessage are called.
+  // Used by ISession.getEntries() to avoid a D1 round-trip.
+  branchEntries: AnyEntry[];
+
+  // The live ISession for the current turn. Set at the start of prompt(), null when idle.
+  // Also passed to agent.setContext() so tools receive it via execute().
+  // Typed as ISession — implementation is SessionImpl, but DOState never references the Impl class.
+  session: ISession | null;
+
   // Maps ModelMessage object reference → entry ID.
   // Used by compact() to locate firstKeptEntryId without an extra D1 round-trip.
   messageToEntryId: Map<ModelMessage, string>;
@@ -462,17 +473,50 @@ Manages dispatch to all installed extension Workers.
 
 ```typescript
 class ExtensionRunner {
-  async initialize(ctx: IExtensionContext): Promise<void> {
+  async initialize(ctx: SessionImpl): Promise<void> {
     // 1. Read extensions:registry from CONFIG KV → string[]
     // 2. For each name:
     //    stub = env.EXTENSIONS.get(name)
-    //    tools = await stub.getTools()           // register with agent
+    //    tools = await stub.getTools()           // wrapped in ExtensionToolAdapter
     //    commands = await stub.getCommands(ctx)  // store for onInput routing
     //    sysPromptAdditions = await stub.getSystemPromptAdditions(ctx)
-    // 3. Store stubs, commands, and sysPromptAdditions
+    // 3. Store stubs as IAgentTool[] (via ExtensionToolAdapter), commands, sysPromptAdditions
   }
 }
 ```
+
+### `ExtensionToolAdapter`
+
+Each tool descriptor returned by `getTools()` is wrapped in an `ExtensionToolAdapter` that implements `IAgentTool`. When the LLM calls a tool, the adapter dispatches to the extension Worker via `executeTool()`, passing the full `SessionImpl` as `ctx`:
+
+```typescript
+class ExtensionToolAdapter implements IAgentTool {
+  readonly descriptor: AgentToolDescriptor; // ToolDescriptorLike satisfies AgentToolDescriptor
+
+  constructor(
+    private readonly stub: IExtensionWorkerLike,
+    descriptorLike: ToolDescriptorLike,
+  ) {
+    this.descriptor = descriptorLike;
+  }
+
+  async execute(toolCallId, params, ctx, signal?) {
+    // ctx is the live SessionImpl, injected by agent.setContext()
+    return await this.stub.executeTool?.(
+      this.descriptor.name, toolCallId, params as Record<string, unknown>,
+      ctx as SessionImpl,
+    ) ?? { content: [] };
+  }
+}
+```
+
+### `getToolsByNames`
+
+```typescript
+getToolsByNames(names: string[]): IAgentTool[]
+```
+
+Filters the stored `IAgentTool[]` list by `descriptor.name`. Used by `ISession.setActiveTools(names)`.
 
 ### Dispatch and merge rules
 
@@ -489,8 +533,10 @@ All dispatch calls are `Promise.all` across all extension stubs. Each method fol
 | All fire-and-forget events | All stubs called concurrently; results discarded |
 
 ```typescript
+// All emit methods accept the full SessionImpl (not a minimal stub).
+// This is the live RpcTarget that extensions call back on over JSRPC.
 class ExtensionRunner {
-  async emitInput(event: InputEvent, ctx: IExtensionContext): Promise<InputResult> {
+  async emitInput(event: InputEvent, ctx: SessionImpl): Promise<InputResult> {
     const results = await Promise.all(
       this.stubs.map(s => s.onInput?.(event, ctx).catch(() => undefined))
     );
@@ -498,7 +544,7 @@ class ExtensionRunner {
       ?? { action: "continue" };
   }
 
-  async emitToolCall(event: ToolCallEvent, ctx: IExtensionContext): Promise<ToolCallResult> {
+  async emitToolCall(event: ToolCallEvent, ctx: SessionImpl): Promise<ToolCallResult> {
     const results = await Promise.all(
       this.stubs.map(s => s.onToolCall?.(event, ctx).catch(() => undefined))
     );
@@ -506,7 +552,7 @@ class ExtensionRunner {
       ?? { block: false };
   }
 
-  async emitToolResult(event: ToolResultEvent, ctx: IExtensionContext): Promise<ToolResultOverride | undefined> {
+  async emitToolResult(event: ToolResultEvent, ctx: SessionImpl): Promise<ToolResultOverride | undefined> {
     // Chain: each handler receives the output of the previous
     let current: ToolResultOverride | undefined;
     for (const stub of this.stubs) {
@@ -518,7 +564,7 @@ class ExtensionRunner {
     return current;
   }
 
-  async emitBeforeAgentStart(event: BeforeAgentStartEvent, ctx: IExtensionContext): Promise<BeforeAgentStartResult> {
+  async emitBeforeAgentStart(event: BeforeAgentStartEvent, ctx: SessionImpl): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
       this.stubs.map(s => s.onBeforeAgentStart?.(event, ctx).catch(() => undefined))
     );
@@ -644,7 +690,7 @@ interface CompactionState {
 
 async function compact(
   state: CompactionState,
-  ctx: IExtensionContext,
+  ctx: ISession,
   options: CompactOptions = {},
 ): Promise<void> {
   const keepRecentTokens = options.keepRecentTokens ?? 20_000;
@@ -758,55 +804,72 @@ async function checkRetry(
 
 ---
 
-## `IExtensionContext` — Core-Side Implementation
+## `ISession` — Core-Side Implementation
 
-The core creates a concrete `IExtensionContext` instance and passes it to each extension call. It is a thin RpcTarget that delegates to `IAgentSessionDO` methods.
+`SessionImpl extends RpcTarget` holds a **live reference to `DOState`**. All mutations (model changes, custom entries, etc.) write directly into `doState.pendingEntries` / `doState.branchEntries`. No D1 flush happens here — flushing occurs at `agent_end` as usual.
+
+One instance is created per `prompt()` call and stored in `doState.session` (typed as `ISession`). It is also passed to `agent.setContext(session)` so the agent can inject it into every tool `execute()` call. `DOState.session` is always typed as `ISession` — no code outside `session-impl.ts` references `SessionImpl` directly.
 
 ```typescript
-class ExtensionContextImpl extends RpcTarget implements IExtensionContext {
-  readonly sessionId: string;
-  readonly userId: string;
+class SessionImpl extends RpcTarget implements ISession {
+  // Constructor receives a live DOState reference and env bindings.
+  constructor(private readonly doState: DOState, private readonly env: Env) { super(); }
+
+  // ISession.id() and ISession.userId resolved from doState
 
   // Messaging
   async sendUserMessage(content: string) {
-    await doStub.steer(content);
+    doState.agent.steer({ role: "user", content });
   }
   async sendFollowUp(content: string) {
     doState.followUpQueue.push(content);
   }
   async appendCustomMessage(customType, content, display) {
-    await appendEntry({ type: "custom_message", data: { customType, content, display } });
+    // Creates CustomMessageEntry, pushes to pendingEntries + branchEntries, updates leafId.
+    // No D1 flush — flush happens at agent_end.
   }
   async appendCustomEntry(customType, data?) {
-    await appendEntry({ type: "custom", data: { customType, payload: data } });
+    // Creates CustomEntry, pushes to pendingEntries + branchEntries, updates leafId.
+    // No D1 flush — flush happens at agent_end.
   }
   async getEntries(customType?) {
-    // Walk current branch entries, filter by customType
-    return branchEntries
-      .filter(e => e.type === "custom" && (!customType || e.data.customType === customType))
-      .map(e => ({ id: e.id, customType: e.data.customType, data: e.data.payload, timestamp: e.timestamp }));
+    // Filter doState.branchEntries by type === "custom" and optional customType match.
+    return doState.branchEntries
+      .filter(e => e.type === "custom" && (!customType || (e.data as { customType: string }).customType === customType))
+      .map(e => ({ id: e.id, customType: (e.data as { customType: string; payload?: unknown }).customType, data: (e.data as { payload?: unknown }).payload, timestamp: e.timestamp }));
   }
 
   // Model
   async getModel()           { return resolveModel(doState.modelId); }
-  async setModel(modelId)    { doState.modelId = modelId; await appendEntry({ type: "model_change", data: { modelId } }); }
-  async listModels()         { return coreWorker.listModels(); }
+  async setModel(modelId)    {
+    doState.modelId = modelId;
+    doState.agent.setModel(createModel(env, modelId));
+    // Pushes ModelChangeEntry to pendingEntries + branchEntries, updates leafId.
+  }
+  async listModels()         { return MODEL_CATALOG; }
 
   // Tools
-  async getActiveTools()     { return doState.agent?.state.tools.map(t => t.descriptor) ?? []; }
-  async setActiveTools(names){ doState.agent?.setTools(doState.extensionRunner.getToolsByNames(names)); }
+  async getActiveTools()     { return doState.agent.state.tools.map(t => t.descriptor) as ToolDescriptor[]; }
+  async setActiveTools(names){ doState.agent.setTools(doState.extensionRunner.getToolsByNames(names)); }
 
   // Session control
   async abort()              { doState.abortController?.abort(); }
-  async getContextUsage()    { return computeContextUsage(doState.agent); }
-  async compact(opts?)       { await compact(doState.agent, doState.extensionRunner, this, opts); }
+  async getContextUsage()    { return computeContextUsage(doState); }
+  async compact(opts?)       { await compact(compactionState, this, opts); }
 
   // Metadata
   async getName()            { return doState.name; }
-  async setName(name)        { doState.name = name; await appendEntry({ type: "session_info", data: { name } }); }
+  async setName(name)        {
+    doState.name = name;
+    // Pushes SessionInfoEntry to pendingEntries + branchEntries, updates leafId.
+  }
   async getSystemPrompt()    { return doState.assembledSystemPrompt; }
 }
 ```
+
+### Context injection into tool execute()
+
+`AgentSessionDO.prompt()` calls `state.agent.setContext(session)` immediately after creating the session (typed as `ISession`). The agent stores it as `IAgentSession` and passes it to `toAiSdkTools(tools, ctx)`, which threads it into every tool `execute()` call. This is the JSRPC-correct approach: the full `RpcTarget` crosses the Worker dispatch boundary with the tool call.
 
 ---
 

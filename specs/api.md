@@ -128,7 +128,7 @@ interface ITool {
   execute(
     toolCallId: string,
     params: unknown,               // validated against descriptor.inputSchema before this is called
-    ctx: IExtensionContext,
+    ctx: ISession,
     signal?: AbortSignal,
   ): Promise<ToolResult>;
 
@@ -187,7 +187,7 @@ interface CompactOptions {
   keepRecentTokens?: number;    // default: 20_000
 }
 
-// Entry returned by IExtensionContext.getEntries()
+// Entry returned by ISession.getEntries()
 interface CustomEntry {
   id: string;
   customType: string;
@@ -235,6 +235,8 @@ class IPiccoloCore extends WorkerEntrypoint {
 
 An `RpcTarget` stub returned by `IPiccoloCore.newSession()` and `IPiccoloCore.getSession()`. Represents one conversation session and exposes all per-session operations as instance methods — no `sessionId` parameter threading.
 
+`ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type. In `packages/agent`, the minimal subset needed by the agent loop is `IAgentSession` (see `agent.md`).
+
 ```typescript
 class ISession extends RpcTarget {
 
@@ -246,6 +248,9 @@ class ISession extends RpcTarget {
   // Full session record including timestamps and metadata.
   info(): Promise<SessionRecord>;
 
+  // The user who owns this session.
+  readonly userId: string;
+
   // ─── Metadata ─────────────────────────────────────────────────────────────
 
   getName(): Promise<string | undefined>;
@@ -256,10 +261,17 @@ class ISession extends RpcTarget {
   // Start a new agent turn. Returns a stream of AgentEvents for this turn.
   prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
 
+  // Inject a user-role message into the conversation (visible to the LLM).
+  // If a turn is active, delivered as a steer (mid-turn injection).
+  // Use this from extension handlers to inject programmatic messages.
+  sendUserMessage(content: string): Promise<void>;
+
   // Inject text mid-turn (after the next tool batch, before the next LLM call).
   steer(text: string): Promise<void>;
 
   // Queue text to be sent when the current turn finishes naturally.
+  // Use this from onAgentEnd or background tasks to chain follow-on turns
+  // without interrupting an active turn.
   followUp(text: string): Promise<void>;
 
   // Abort the current streaming turn immediately.
@@ -269,6 +281,26 @@ class ISession extends RpcTarget {
 
   getModel(): Promise<ModelInfo>;
   setModel(modelId: string): Promise<void>;
+  listModels(): Promise<ModelInfo[]>;
+
+  // ─── Tools ───────────────────────────────────────────────────────────────
+
+  // Returns descriptors of all currently active tools.
+  getActiveTools(): Promise<ToolDescriptor[]>;
+  setActiveTools(toolNames: string[]): Promise<void>;
+
+  // ─── Custom session entries ───────────────────────────────────────────────
+
+  // Appends an extension-defined message visible to the LLM.
+  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void>;
+
+  // Appends an opaque entry to the session log (NOT sent to LLM).
+  appendCustomEntry(customType: string, data?: unknown): Promise<void>;
+
+  // Read back custom entries previously appended by this (or any) extension.
+  // customType filters by entry type; omit to retrieve all custom entries.
+  // Returns entries in chronological order along the current branch.
+  getEntries(customType?: string): Promise<CustomEntry[]>;
 
   // ─── Context usage ───────────────────────────────────────────────────────
 
@@ -276,6 +308,10 @@ class ISession extends RpcTarget {
 
   // Trigger context compaction immediately.
   compact(options?: CompactOptions): Promise<void>;
+
+  // ─── System prompt ────────────────────────────────────────────────────────
+
+  getSystemPrompt(): Promise<string>;
 
   // ─── Session tree / branching ────────────────────────────────────────────
 
@@ -517,60 +553,60 @@ class IExtensionWorker extends WorkerEntrypoint {
     name: string,
     toolCallId: string,
     params: Record<string, unknown>,
-    ctx: IExtensionContext,
+    ctx: ISession,
   ): Promise<ToolResult>;
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────
 
-  onSessionStart(event: SessionStartEvent, ctx: IExtensionContext): Promise<void>;
-  onSessionShutdown(event: SessionShutdownEvent, ctx: IExtensionContext): Promise<void>;
+  onSessionStart(event: SessionStartEvent, ctx: ISession): Promise<void>;
+  onSessionShutdown(event: SessionShutdownEvent, ctx: ISession): Promise<void>;
 
   // ─── Agent loop events ───────────────────────────────────────────────────
 
-  onBeforeAgentStart(event: BeforeAgentStartEvent, ctx: IExtensionContext): Promise<BeforeAgentStartResult | void>;
-  onAgentStart(event: AgentStartEvent, ctx: IExtensionContext): Promise<void>;
-  onAgentEnd(event: AgentEndEvent, ctx: IExtensionContext): Promise<void>;
+  onBeforeAgentStart(event: BeforeAgentStartEvent, ctx: ISession): Promise<BeforeAgentStartResult | void>;
+  onAgentStart(event: AgentStartEvent, ctx: ISession): Promise<void>;
+  onAgentEnd(event: AgentEndEvent, ctx: ISession): Promise<void>;
 
-  onTurnStart(event: TurnStartEvent, ctx: IExtensionContext): Promise<void>;
-  onTurnEnd(event: TurnEndEvent, ctx: IExtensionContext): Promise<void>;
+  onTurnStart(event: TurnStartEvent, ctx: ISession): Promise<void>;
+  onTurnEnd(event: TurnEndEvent, ctx: ISession): Promise<void>;
 
-  onToolStart(event: ToolStartEvent, ctx: IExtensionContext): Promise<void>;
-  onToolEnd(event: ToolEndEvent, ctx: IExtensionContext): Promise<void>;
+  onToolStart(event: ToolStartEvent, ctx: ISession): Promise<void>;
+  onToolEnd(event: ToolEndEvent, ctx: ISession): Promise<void>;
 
   // ─── Interception ────────────────────────────────────────────────────────
 
   // Called before each LLM call. May filter or inject messages.
-  onContext(event: ContextEvent, ctx: IExtensionContext): Promise<ContextResult | void>;
+  onContext(event: ContextEvent, ctx: ISession): Promise<ContextResult | void>;
 
   // Called before a tool's execute(). May block execution.
-  onToolCall(event: ToolCallEvent, ctx: IExtensionContext): Promise<ToolCallResult | void>;
+  onToolCall(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult | void>;
 
   // Called after a tool's execute(). May override the result.
-  onToolResult(event: ToolResultEvent, ctx: IExtensionContext): Promise<ToolResultOverride | void>;
+  onToolResult(event: ToolResultEvent, ctx: ISession): Promise<ToolResultOverride | void>;
 
   // Called on every user input. May handle, transform, or pass through.
-  onInput(event: InputEvent, ctx: IExtensionContext): Promise<InputResult | void>;
+  onInput(event: InputEvent, ctx: ISession): Promise<InputResult | void>;
 
   // ─── Compaction ──────────────────────────────────────────────────────────
 
   // Called before compaction runs. May cancel or provide a pre-built summary.
-  onBeforeCompact(event: BeforeCompactEvent, ctx: IExtensionContext): Promise<BeforeCompactResult | void>;
+  onBeforeCompact(event: BeforeCompactEvent, ctx: ISession): Promise<BeforeCompactResult | void>;
 
-  onCompact(event: CompactEvent, ctx: IExtensionContext): Promise<void>;
+  onCompact(event: CompactEvent, ctx: ISession): Promise<void>;
 
   // ─── System prompt contributions ─────────────────────────────────────────
 
   // Called once during system prompt assembly (at session start and after /reload).
   // Returns snippets that the core appends to the assembled system prompt.
   // Used by skills, prompt templates, tool guideline extensions, etc.
-  getSystemPromptAdditions(ctx: IExtensionContext): Promise<SystemPromptAddition[] | void>;
+  getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[] | void>;
 
   // ─── Command registration ────────────────────────────────────────────────
 
   // Called at session start. Returns commands this extension exposes.
   // Gateways use these for slash-command autocomplete and help text.
   // Commands are invoked via onInput when the user types /{name}.
-  getCommands(ctx: IExtensionContext): Promise<CommandDescriptor[] | void>;
+  getCommands(ctx: ISession): Promise<CommandDescriptor[] | void>;
 }
 ```
 
@@ -686,79 +722,12 @@ Full authoring guide in [tools.md](tools.md). Provided tool specs: [r2_tool.md](
 
 ---
 
-## 9. Extension Context API — `IExtensionContext`
-
-An `RpcTarget` stub passed from the core to every extension handler call. Mirrors the `ISession` surface with the same OO shape, scoped to the session the extension is currently handling.
-
-```typescript
-import { RpcTarget } from "cloudflare:workers";
-
-class IExtensionContext extends RpcTarget {
-
-  // ─── Session identity ─────────────────────────────────────────────────────
-
-  readonly sessionId: string;
-  readonly userId: string;
-
-  // ─── Metadata ─────────────────────────────────────────────────────────────
-
-  getName(): Promise<string | undefined>;
-  setName(name: string): Promise<void>;
-
-  // ─── Model ───────────────────────────────────────────────────────────────
-
-  getModel(): Promise<ModelInfo>;
-  setModel(modelId: string): Promise<void>;
-  listModels(): Promise<ModelInfo[]>;
-
-  // ─── Tools ───────────────────────────────────────────────────────────────
-
-  // Returns descriptors of all currently active tools.
-  getActiveTools(): Promise<ToolDescriptor[]>;
-  setActiveTools(toolNames: string[]): Promise<void>;
-
-  // ─── Messaging ───────────────────────────────────────────────────────────
-
-  // Injects a user-role message into the conversation (visible to the LLM).
-  // If a turn is active, delivered as a steer (mid-turn injection).
-  sendUserMessage(content: string): Promise<void>;
-
-  // Queues a user message to be delivered when the current turn finishes.
-  // Use this from onAgentEnd or background tasks to chain follow-on turns
-  // without interrupting an active turn.
-  sendFollowUp(content: string): Promise<void>;
-
-  // Appends an extension-defined message visible to the LLM.
-  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void>;
-
-  // Appends an opaque entry to the session log (NOT sent to LLM).
-  appendCustomEntry(customType: string, data?: unknown): Promise<void>;
-
-  // Read back custom entries previously appended by this (or any) extension.
-  // customType filters by entry type; omit to retrieve all custom entries.
-  // Returns entries in chronological order along the current branch.
-  getEntries(customType?: string): Promise<CustomEntry[]>;
-
-  // ─── Session control ─────────────────────────────────────────────────────
-
-  abort(): Promise<void>;
-  getContextUsage(): Promise<ContextUsage>;
-  compact(options?: CompactOptions): Promise<void>;
-
-  // ─── System prompt ────────────────────────────────────────────────────────
-
-  getSystemPrompt(): Promise<string>;
-}
-```
-
----
-
 ## API Surface Summary
 
 | Interface | Kind | Called by | Implemented by |
 |---|---|---|---|
 | `IPiccoloCore` | `WorkerEntrypoint` | Gateways | `piccolo-core` Worker |
-| `ISession` | `RpcTarget` | Gateways (via `IPiccoloCore`) | `piccolo-core` Worker |
+| `ISession` | `RpcTarget` | Gateways, extensions, tools | `piccolo-core` Worker |
 | `IAgentSessionDO` | `DurableObject` | `IPiccoloCore` | `piccolo-core` Worker |
 | `ITextUI` | `RpcTarget` | Gateways | Each tool Worker (optional) |
 | `IWebUI` | `RpcTarget` | Web UI Gateway | Each tool Worker (optional) |
@@ -771,5 +740,4 @@ class IExtensionContext extends RpcTarget {
 | `IWebUiSessionDO` | `DurableObject` | Web UI Gateway Worker | Web UI Gateway Worker |
 | `ITelegramChatDO` | `DurableObject` | Telegram Gateway Worker | Telegram Gateway Worker |
 | `IExtensionWorker` | `WorkerEntrypoint` | `ExtensionRunner` (core) | Each extension Worker |
-| `IExtensionContext` | `RpcTarget` | Each extension Worker | `piccolo-core` |
 | `ITool` | Worker class | `IExtensionWorker` (via core) | Each tool Worker |

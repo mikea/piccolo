@@ -89,7 +89,7 @@ Biome's default JSON parser rejects comments in `.json` files. `tsconfig*.json` 
 
 #### `packages/core/src/types.ts` — forward-reference strategy
 
-`IExtensionContext` is referenced by `ITool.execute()` but is defined in item 8. To avoid a circular dependency at stub time, it is declared as `type IExtensionContext = unknown` with a `TODO(item-8)` comment. All other 14 Shared Types from `api.md` are fully shaped (field names, optionality, and inline comments match the spec exactly).
+The session/context type was originally declared as `type IExtensionContext = unknown` with a `TODO(item-8)` comment to avoid a circular dependency. Item 8 resolved this: `IExtensionContext` was eliminated entirely; `ISession extends IAgentSession` is the single unified interface for gateways, extensions, and tools. All other Shared Types from `api.md` were fully shaped from the start.
 
 #### Placeholder `src/index.ts` files
 
@@ -316,7 +316,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 | File | Contents |
 |---|---|
 | `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; all event/result types; `IExtensionRunner` interface; `IExtensionWorkerLike` interface; `parseCommand()` |
-| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` only; re-exports `IExtensionContextLike` from extension-runner |
+| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` only (removed in step 7; `IExtensionContextLike` removed in step 8) |
 | `packages/core/src/do/compaction.ts` | Updated to use `IExtensionRunner` interface (not `ExtensionRunnerStub`) |
 | `packages/core/src/do/agent-session.ts` | Updated to instantiate and call `ExtensionRunner`; `DOState.extensionRunner` typed as `ExtensionRunner` |
 | `packages/core/test/do/extension-runner.test.ts` | 40 unit tests covering all merge rules, error isolation, command parsing |
@@ -362,7 +362,7 @@ Assembles the system prompt from the base constant and extension additions.
 | File | Contents |
 |---|---|
 | `packages/core/src/do/system-prompt-assembler.ts` | `SystemPromptAssembler` class |
-| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` removed; re-exports `IExtensionContextLike` only |
+| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` removed; `IExtensionContextLike` re-export also removed in step 8 |
 | `packages/core/src/do/agent-session.ts` | Import and type updated to use `SystemPromptAssembler` |
 | `packages/core/test/do/system-prompt-assembler.test.ts` | 26 unit tests covering all assembly cases |
 
@@ -380,23 +380,85 @@ Assembles the system prompt from the base constant and extension additions.
 
 ---
 
-## 8. `piccolo-core` — `IExtensionContext` Implementation
+## 8. `piccolo-core` — `ISession` as unified context ✅
 
-The `RpcTarget` stub passed to every extension handler call.
+Implements the full `ISession` interface as the context object passed to every
+extension handler call and every tool `execute()` call. Eliminates the former
+`IExtensionContext` / `IExtensionContextLike` concept — there is one interface
+(`ISession`) serving both gateways and extensions/tools.
 
 **Deliverables:**
-- `ExtensionContextImpl extends RpcTarget` with all methods from [api.md §9](api.md)
-- `sendUserMessage()` → `doStub.steer()`
-- `sendFollowUp()` → push to `DOState.followUpQueue`
-- `appendCustomMessage()` / `appendCustomEntry()` → `appendEntry()`
-- `getEntries(customType?)` — walk current branch, filter custom entries
-- `getModel()`, `setModel()`, `listModels()`
-- `getActiveTools()` → `ToolDescriptor[]`, `setActiveTools()`
-- `abort()`, `getContextUsage()`, `compact()`
-- `getName()`, `setName()`, `getSystemPrompt()`
-- Unit tests: each method delegates correctly; `getEntries` filtering; `setModel` writes entry
+- `IAgentSession` — minimal empty interface in `packages/agent`; typed as `ctx` in `IAgentTool.execute()`
+- `Agent.setContext(ctx: IAgentSession)` + `toAiSdkTools(tools, ctx)` — threads session into tool execute calls
+- `ISession extends IAgentSession` in `packages/core/src/types.ts` — full unified surface; all extension-specific methods merged in (`sendUserMessage`, `appendCustomMessage`, `appendCustomEntry`, `getEntries`, `getSystemPrompt`, `listModels`, `getActiveTools`, `setActiveTools`)
+- `packages/core/src/do/do-state.ts` — extracted `DOState` interface; adds `branchEntries: AnyEntry[]` and `session: ISession | null`
+- `packages/core/src/do/context.ts` — `SessionImpl extends RpcTarget implements ISession`; holds live `DOState` reference; delegates all methods; no D1 flush (flush at `agent_end`)
+- `ExtensionToolAdapter` in `extension-runner.ts` — wraps extension tool descriptors into full `IAgentTool` instances that dispatch via `executeTool()` with live `ISession` as `ctx`
+- `getToolsByNames(names)` on `ExtensionRunner` — used by `ISession.setActiveTools()`
+- `AgentSessionDO` wired: creates `SessionImpl` before `extensionRunner.initialize()`, stores in `doState.session`, calls `agent.setContext(session)` at start of each `prompt()`
+- `doState.branchEntries` populated from D1 on cold start; `appendCustomEntry`/`appendCustomMessage` append to both `pendingEntries` and `branchEntries`; `getEntries()` reads from `branchEntries` (no D1 roundtrip)
+- `test/mocks/extension-stub.ts` — `createMockSession()` helper; all `ctx` params updated to `ISession`
+- 38 unit tests for `SessionImpl` in `test/do/context.test.ts`
 
-**Spec refs:** [core.md — `IExtensionContext`](core.md), [api.md §9](api.md)
+**Key design decisions:**
+- **No `*Impl` references in public signatures** — all call sites use `ISession`; only `context.ts` knows `SessionImpl`
+- **`ISession` = gateway context = extension context = tool context** — one interface, passed by JSRPC across Worker boundaries
+- **`DOState` extracted** to `do-state.ts` to break the `agent-session.ts` ↔ `context.ts` circular import
+- **`followUp()` queues to `doState.followUpQueue`** — drained by `AgentSessionDO` at `agent_end` (not by `SessionImpl` directly)
+
+**Spec refs:** [core.md — `ISession`](core.md), [api.md §2](api.md), [agent.md §IAgentSession](agent.md)
+
+### 8.1 Implementation Notes
+
+**Status:** Complete. 267 tests pass in `packages/core`, 50 in `packages/agent`. Coverage: statements 85.69%, functions 86.47%, branches 72.5% — all above thresholds (80/80/70). `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors.
+
+#### File layout
+
+| File | Contents |
+|---|---|
+| `packages/agent/src/types.ts` | `IAgentSession` interface (empty), updated `IAgentTool.execute(ctx: IAgentSession)` |
+| `packages/agent/src/tools.ts` | `toAiSdkTools(tools, ctx: IAgentSession)` threads ctx through to tool execute |
+| `packages/agent/src/agent.ts` | `_ctx: IAgentSession`, `setContext()`, passes to `toAiSdkTools` |
+| `packages/core/src/types.ts` | `ISession extends IAgentSession` — full unified interface (replaces `IExtensionContext = unknown`) |
+| `packages/core/src/do/do-state.ts` | New: `DOState` interface with `branchEntries` and `session: ISession \| null` |
+| `packages/core/src/do/session-impl.ts` | New: `SessionImpl extends RpcTarget implements ISession` |
+| `packages/core/src/do/extension-runner.ts` | `ExtensionToolAdapter`, `getToolsByNames()`, all ctx params → `ISession` |
+| `packages/core/src/do/agent-session.ts` | Wires `SessionImpl`, `branchEntries`, `agent.setContext()` |
+| `packages/core/src/do/compaction.ts` | `ctx: ISession` |
+| `packages/core/test/do/context.test.ts` | New: 38 unit tests for `SessionImpl` |
+| `packages/core/test/mocks/extension-stub.ts` | `createMockSession()` added; all `ctx: ISession` |
+
+#### `ISession` is one interface serving three roles
+
+| Caller | Receives | Purpose |
+|---|---|---|
+| Gateways (step 9) | `ISession` via `IPiccoloCore.newSession()` | Start prompts, manage session metadata |
+| Extension handlers | `ISession` as `ctx` param | React to events, append entries, steer messages |
+| Tool `execute()` | `ISession` as `ctx` param (via `agent.setContext`) | Access session state, append custom entries |
+
+#### `IAgentSession` rationale
+
+`packages/agent` cannot depend on `packages/core`. The agent loop needs to pass
+`ctx` opaquely to tools without knowing what a session can do. `IAgentSession` is
+an intentionally empty interface — a stable type anchor. At runtime the value is
+always a full `ISession`. Tools cast to `ISession` inside `execute()`.
+
+#### `branchEntries` and cold start
+
+On cold start, `AgentSessionDO.#initialize()` calls `walkToRoot(allEntries, leafId)`
+and stores the result in `doState.branchEntries`. New entries from
+`appendCustomEntry`/`appendCustomMessage`/`setName`/`setModel` are pushed to both
+`pendingEntries` (for D1 flush) and `branchEntries` (for `getEntries()` queries).
+This avoids a D1 roundtrip on every `getEntries()` call.
+
+#### `ExtensionToolAdapter` and JSRPC tool dispatch
+
+When `ExtensionRunner.initialize()` collects tools via `stub.getTools()`, each
+`ToolDescriptorLike` is wrapped in an `ExtensionToolAdapter implements IAgentTool`.
+The adapter's `execute()` calls `stub.executeTool(name, toolCallId, params, ctx)`
+where `ctx` is the live `ISession` — a real `RpcTarget` that crosses the Worker
+dispatch boundary. This is the correct JSRPC pattern: the extension Worker
+receives a callable stub back to the session, not a plain data object.
 
 ---
 
@@ -582,7 +644,7 @@ Full system smoke tests after all pieces are in place.
 | 5 | `AgentSessionDO` | `packages/core` | [core.md — AgentSessionDO](core.md) |
 | 6 | `ExtensionRunner` | `packages/core` | [core.md — ExtensionRunner](core.md) |
 | 7 | `SystemPromptAssembler` | `packages/core` | [core.md — SystemPromptAssembler](core.md) |
-| 8 | `IExtensionContext` impl | `packages/core` | [core.md — IExtensionContext](core.md) |
+| 8 | `ISession` as unified context | `packages/core`, `packages/agent` | [api.md §2](api.md), [agent.md §IAgentSession](agent.md) |
 | 9 | `IPiccoloCore` + `ISession` | `packages/core` | [api.md §1–2](api.md) |
 | 10 | Web UI Gateway HTTP API | `gateways/web` | [web_gateway.md](web_gateway.md) |
 | 11 | Telegram Gateway | `gateways/telegram` | [telegram_gateway.md](telegram_gateway.md) |

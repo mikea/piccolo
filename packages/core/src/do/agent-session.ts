@@ -27,7 +27,7 @@ import type {
 } from "../db/entry-types.ts";
 import { generateEntryId, parseEntry } from "../db/entry-types.ts";
 import { getEntries, getSession } from "../db/schema.ts";
-import { buildSessionContext, DEFAULT_MODEL_ID } from "../session/context.ts";
+import { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "../session/context.ts";
 import {
   commitSession,
   deleteSession,
@@ -43,78 +43,14 @@ import type {
 } from "../types.ts";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
-import type { IExtensionContextLike } from "./extension-runner.ts";
+import type { DOState } from "./do-state.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
 import { checkRetry } from "./retry.ts";
+import { SessionImpl } from "./session-impl.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { resolveModel } from "./types-internal.ts";
-
-// ─── DOState ──────────────────────────────────────────────────────────────────
-
-/**
- * In-memory state of a live session.
- * Rebuilt from D1 on cold start via initialize().
- *
- * Spec ref: specs/core.md §AgentSessionDO §Internal state
- */
-interface DOState {
-  sessionId: string;
-  userId: string;
-  modelId: string;
-  leafId: string | null;
-  name: string | undefined;
-  createdAt: number; // Unix ms; 0 = not yet committed to D1
-  updatedAt: number;
-
-  /** In-memory message list; rebuilt from D1 on cold start. */
-  messages: ModelMessage[];
-
-  /** Pending entries not yet flushed to D1. */
-  pendingEntries: AnyEntry[];
-
-  /** Active agent instance. */
-  agent: Agent;
-
-  /** AbortController for the current streaming turn, or null if idle. */
-  abortController: AbortController | null;
-
-  /** Follow-up queue (filled by IExtensionContext.sendFollowUp in step 8). */
-  followUpQueue: string[];
-
-  /** Extension runner — real ExtensionRunner from step 6. */
-  extensionRunner: ExtensionRunner;
-
-  /** System prompt assembler. */
-  assembler: SystemPromptAssembler;
-
-  /** The assembled system prompt for the current session. */
-  assembledSystemPrompt: string;
-
-  /**
-   * Maps ModelMessage object references → entry IDs.
-   * Used by compaction to locate firstKeptEntryId without walking D1.
-   */
-  messageToEntryId: Map<ModelMessage, string>;
-
-  /**
-   * Token counts from the last completed agent turn.
-   * Used by getContextUsage() and the compaction threshold check.
-   */
-  lastInputTokens: number;
-  lastContextWindowTokens: number;
-
-  /** Count of messages in agent.state.messages at the start of the current prompt(). */
-  messagesAtTurnStart: number;
-
-  /**
-   * Set to true by _setModelForTest() so that initSession() does not overwrite
-   * the injected model with a real gateway model.
-   * Not used in production — tests only.
-   */
-  modelOverridden: boolean;
-}
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
@@ -214,26 +150,18 @@ export class AgentSessionDO extends DurableObject<Env> {
       }
     }
 
-    // 6. Initialise ExtensionRunner from CONFIG KV + EXTENSIONS dispatch namespace
-    const extensionRunner = new ExtensionRunner();
-    const ctx: IExtensionContextLike = { sessionId, userId };
-    await extensionRunner.initialize(ctx, this.env.CONFIG, this.env.EXTENSIONS, modelId);
-
-    // 7. Assemble system prompt
-    const assembler = new SystemPromptAssembler();
-    const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
-    const assembledSystemPrompt = assembler.assemble(
-      basePrompt,
-      extensionRunner.getSystemPromptAdditions(),
-      extensionRunner.getToolDescriptors(),
-    );
-
-    // 8. Build the Agent
+    // 6. Build the Agent (needed before ExtensionRunner so tools can be registered)
     const model = createModel(this.env, modelId);
-    const agent = new Agent({ model, systemPrompt: assembledSystemPrompt });
+    const agent = new Agent({ model, systemPrompt: "" /* filled in step 8 */ });
     agent.replaceMessages(messages);
 
-    return {
+    // 7. Assemble the ExtensionRunner — we need a bootstrap ISession for initialize().
+    //    Build a partial DOState first, then construct SessionImpl and call initialize().
+    const extensionRunner = new ExtensionRunner();
+    const assembler = new SystemPromptAssembler();
+
+    // Partial state for bootstrap — session and assembledSystemPrompt filled below.
+    const state: DOState = {
       sessionId,
       userId,
       modelId,
@@ -243,18 +171,53 @@ export class AgentSessionDO extends DurableObject<Env> {
       updatedAt,
       messages,
       pendingEntries: [],
+      branchEntries: [],
       agent,
       abortController: null,
       followUpQueue: [],
       extensionRunner,
       assembler,
-      assembledSystemPrompt,
+      assembledSystemPrompt: "", // filled after assembly
       messageToEntryId,
       lastInputTokens: 0,
-      lastContextWindowTokens: 200_000, // sensible default until first turn
+      lastContextWindowTokens: 200_000,
       messagesAtTurnStart: 0,
+      session: null,
       modelOverridden: false,
     };
+
+    // Create the SessionImpl now — it holds a live reference to state so all
+    // mutations during initialize() are visible immediately.
+    const session = new SessionImpl(state, this.env);
+    state.session = session;
+
+    // Initialize ExtensionRunner with the real ISession
+    await extensionRunner.initialize(session, this.env.CONFIG, this.env.EXTENSIONS, modelId);
+
+    // 8. Assemble system prompt (after extensions registered their additions)
+    const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
+    const assembledSystemPrompt = assembler.assemble(
+      basePrompt,
+      extensionRunner.getSystemPromptAdditions(),
+      extensionRunner.getToolDescriptors(),
+    );
+    state.assembledSystemPrompt = assembledSystemPrompt;
+    agent.setSystemPrompt(assembledSystemPrompt);
+
+    // Register all IAgentTool instances with the agent
+    agent.setTools(
+      extensionRunner.getToolsByNames(extensionRunner.getToolDescriptors().map((d) => d.name)),
+    );
+
+    // 9. Populate branchEntries from the loaded D1 entries for getEntries() support
+    if (sessionId !== "") {
+      const db = this.env.SESSIONS_DB;
+      const rawRows = await getEntries(db, sessionId);
+      const allEntries = rawRows.map(parseEntry);
+      state.branchEntries = walkToRoot(allEntries, leafId);
+    }
+
+    return state;
   }
 
   #requireState(): DOState {
@@ -262,12 +225,20 @@ export class AgentSessionDO extends DurableObject<Env> {
     return this.#state;
   }
 
-  // ─── IExtensionContext stub ───────────────────────────────────────────────
+  // ─── Session (ISession) ───────────────────────────────────────────────────
 
-  /** Minimal extension context — step 8 replaces this with ExtensionContextImpl. */
-  #makeExtensionContext(): IExtensionContextLike {
+  /**
+   * Return the live ISession for the current turn.
+   * If no session has been created yet for this turn, create one now (lazy).
+   * The session holds a live reference to state, so mutations are shared.
+   * Spec ref: specs/core.md §ISession — Core-Side Implementation
+   */
+  #getOrCreateSession(): import("../types.ts").ISession {
     const s = this.#requireState();
-    return { sessionId: s.sessionId, userId: s.userId };
+    if (s.session === null) {
+      s.session = new SessionImpl(s, this.env);
+    }
+    return s.session;
   }
 
   // ─── Conversation ─────────────────────────────────────────────────────────
@@ -279,7 +250,11 @@ export class AgentSessionDO extends DurableObject<Env> {
    */
   async prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>> {
     const state = this.#requireState();
-    const ctx = this.#makeExtensionContext();
+    const ctx = this.#getOrCreateSession();
+
+    // Inject the live ISession into the agent so tools receive it via execute().
+    // Spec ref: specs/core.md §ISession — Context injection into tool execute()
+    state.agent.setContext(ctx);
 
     // ── Step 1: emitInput ─────────────────────────────────────────────────
     const inputResult = await state.extensionRunner.emitInput(
@@ -511,7 +486,7 @@ export class AgentSessionDO extends DurableObject<Env> {
 
   async compact(options?: CompactOptions): Promise<void> {
     const state = this.#requireState();
-    const ctx = this.#makeExtensionContext();
+    const ctx = this.#getOrCreateSession();
     await this.#compact(state, ctx, options ?? {});
     // Flush compaction entry if session is committed
     if (state.createdAt !== 0 && state.leafId !== null) {
@@ -605,7 +580,7 @@ export class AgentSessionDO extends DurableObject<Env> {
   /** Run context compaction. Mutates state directly. */
   async #compact(
     state: DOState,
-    ctx: IExtensionContextLike,
+    ctx: import("../types.ts").ISession,
     options: CompactOptions,
   ): Promise<void> {
     const compactionState: CompactionState = {
@@ -625,7 +600,7 @@ export class AgentSessionDO extends DurableObject<Env> {
   /** Persist new messages after an agent turn completes. */
   async #handleAgentEnd(
     state: DOState,
-    ctx: IExtensionContextLike,
+    ctx: import("../types.ts").ISession,
     signal: AbortSignal,
   ): Promise<void> {
     const currentMessages = state.agent.state.messages;

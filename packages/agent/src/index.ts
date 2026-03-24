@@ -27,6 +27,7 @@ export type {
   AgentToolDescriptor,
   AgentToolResult,
   FinishReason,
+  IAgentSession,
   IAgentTool,
   ImagePart,
   LanguageModel,

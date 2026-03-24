@@ -19,11 +19,8 @@ import type { Agent, ModelMessage } from "@piccolo/agent";
 import { agentCompact, splitForCompaction } from "@piccolo/agent";
 import type { AnyEntry, CompactionEntry } from "../db/entry-types.ts";
 import { generateEntryId } from "../db/entry-types.ts";
-import type {
-  BeforeCompactEvent,
-  IExtensionContextLike,
-  IExtensionRunner,
-} from "./extension-runner.ts";
+import type { ISession } from "../types.ts";
+import type { BeforeCompactEvent, IExtensionRunner } from "./extension-runner.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -57,7 +54,7 @@ export interface CompactOptions {
  */
 export async function compact(
   state: CompactionState,
-  ctx: IExtensionContextLike,
+  ctx: ISession,
   options: CompactOptions = {},
 ): Promise<void> {
   const keepRecentTokens = options.keepRecentTokens ?? 20_000;

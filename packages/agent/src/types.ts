@@ -19,6 +19,23 @@ import type { ZodObject } from "zod";
 
 export type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage };
 
+// ─── Session (minimal agent-layer interface) ──────────────────────────────────
+
+/**
+ * Minimal session interface at the agent layer.
+ *
+ * This is the type of the `ctx` parameter in `IAgentTool.execute()`.
+ * `piccolo-core`'s `ISession` extends this interface — tools receive the full
+ * `ISession` at runtime; the agent passes it through opaquely as `IAgentSession`.
+ *
+ * Intentionally empty here: the agent loop has no knowledge of what a session
+ * can do — it only needs a stable type to thread through to tools.
+ *
+ * Spec ref: specs/agent.md §IAgentSession
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: intentionally empty — see JSDoc above
+export interface IAgentSession {}
+
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -71,10 +88,19 @@ export interface AgentToolResult {
 export interface IAgentTool {
   readonly descriptor: AgentToolDescriptor;
 
+  /**
+   * Execute the tool.
+   *
+   * `ctx` is the session context for this turn. Typed as `IAgentSession` here;
+   * at runtime piccolo-core supplies the full `ISession` which extends `IAgentSession`.
+   * Cast to `ISession` inside tool implementations.
+   *
+   * Spec ref: specs/api.md §ITool, specs/agent.md §IAgentSession
+   */
   execute(
     toolCallId: string,
     params: unknown,
-    ctx: unknown, // IExtensionContext — typed as unknown to avoid circular dep; filled by core
+    ctx: IAgentSession,
     signal?: AbortSignal,
   ): Promise<AgentToolResult>;
 }

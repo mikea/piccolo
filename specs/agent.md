@@ -140,6 +140,21 @@ Multi-step tool calling is handled natively via `stopWhen: stepCountIs(N)` — n
 
 ---
 
+## `IAgentSession` Interface
+
+The minimal session interface needed by `packages/agent`. Typed as the `ctx` parameter in `IAgentTool.execute()`. `piccolo-core`'s `ISession` extends this interface — tools and extensions receive the full `ISession`, but the agent layer only knows `IAgentSession`.
+
+```typescript
+// packages/agent/src/types.ts
+
+// Minimal session surface the agent layer needs.
+// piccolo-core's ISession extends this — tools receive the full ISession at runtime.
+interface IAgentSession {
+  // Intentionally empty at the agent layer — the agent passes ctx through opaquely.
+  // piccolo-core adds the full ISession surface on top.
+}
+```
+
 ## `IAgentTool` Interface
 
 The minimal tool interface used by `packages/agent`. Contains only what the agent loop needs: a descriptor for LLM registration and an `execute` method.
@@ -159,7 +174,7 @@ interface IAgentTool {
   execute(
     toolCallId: string,
     params: unknown,
-    ctx: unknown,         // IExtensionContext — opaque at this layer
+    ctx: IAgentSession,   // ISession at runtime — typed as IAgentSession here to avoid circular dep
     signal?: AbortSignal,
   ): Promise<AgentToolResult>;
 }
@@ -177,7 +192,10 @@ interface AgentToolResult {
 
 ```typescript
 // packages/agent/src/tools.ts
-function toAiSdkTools(tools: IAgentTool[]): ToolSet {
+// ctx is typed as IAgentSession to keep packages/agent free of the full ISession.
+// piccolo-core calls agent.setContext(session) before each prompt() to supply
+// the live ISession; the agent threads it through to every tool execute() call.
+function toAiSdkTools(tools: IAgentTool[], ctx: IAgentSession): ToolSet {
   return Object.fromEntries(
     tools.map(t => [
       t.descriptor.name,
@@ -185,14 +203,14 @@ function toAiSdkTools(tools: IAgentTool[]): ToolSet {
         description: t.descriptor.description,
         inputSchema: t.descriptor.inputSchema,
         execute: async (input, { toolCallId, abortSignal }) =>
-          t.execute(toolCallId, input, undefined, abortSignal),
+          t.execute(toolCallId, input, ctx, abortSignal),
       }),
     ])
   );
 }
 ```
 
-Note: `ctx` is passed as `undefined` here. `piccolo-core` wraps tools in a closure that injects the real `IExtensionContext` before passing them to the `Agent`.
+`ctx` is typed as `IAgentSession` to keep `packages/agent` free of the full `ISession` interface. `piccolo-core` calls `agent.setContext(session)` before each `prompt()` call, supplying the live `ISession` stub (which extends `IAgentSession`); the agent stores it and threads it into every tool `execute()` call via `toAiSdkTools(this._state.tools, this._ctx)`.
 
 ---
 
@@ -283,6 +301,11 @@ class Agent {
   appendMessages(messages: ModelMessage[]): void;
   replaceMessages(messages: ModelMessage[]): void;
 
+  // Set the session context threaded into tool execute() calls.
+  // piccolo-core calls this with the live ISession before each prompt().
+  // Typed as IAgentSession here; at runtime the value is always a full ISession.
+  setContext(ctx: IAgentSession): void;
+
   // Subscribe to agent events; returns unsubscribe fn
   subscribe(listener: (event: AgentEvent) => void): () => void;
 }
@@ -298,7 +321,7 @@ async prompt(input: string | ModelMessage[], images?: ImagePart[]) {
 
 private async _runStream() {
   // 1. Create AbortController, set isStreaming = true, emit agent_start
-  // 2. Build AI SDK tool set from this.state.tools via toAiSdkTools()
+  // 2. Build AI SDK tool set from this.state.tools via toAiSdkTools(tools, this._ctx)
   // 3. Call streamText:
 
   const result = streamText({

@@ -10,11 +10,12 @@
  *
  * Layering:
  *   packages/agent   — minimal agent-loop types (AgentToolDescriptor, IAgentTool,
- *                       AgentToolResult, AgentEvent, LanguageModel, ModelMessage, …)
+ *                       AgentToolResult, AgentEvent, IAgentSession, LanguageModel, …)
  *   packages/core    — extends those with the full piccolo surface:
  *                       ToolDescriptor extends AgentToolDescriptor (adds label, snippets)
  *                       ITool extends IAgentTool (adds getGatewayUI)
  *                       ToolResult extends AgentToolResult (adds details)
+ *                       ISession extends IAgentSession (full per-session API)
  *                       AgentEvent re-exported (canonical definition in agent)
  */
 
@@ -26,6 +27,7 @@ export type {
   AgentToolDescriptor,
   AgentToolResult,
   FinishReason,
+  IAgentSession,
   IAgentTool,
   ImagePart,
   LanguageModel,
@@ -34,7 +36,13 @@ export type {
 } from "@piccolo/agent";
 
 // ── External dependencies ────────────────────────────────────────────────────
-import type { AgentToolDescriptor, AgentToolResult, IAgentTool } from "@piccolo/agent";
+import type {
+  AgentEvent,
+  AgentToolDescriptor,
+  AgentToolResult,
+  IAgentSession,
+  IAgentTool,
+} from "@piccolo/agent";
 import type { ZodObject } from "zod";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
@@ -144,7 +152,7 @@ export interface ITool extends IAgentTool {
   execute(
     toolCallId: string,
     params: unknown,
-    ctx: IExtensionContext,
+    ctx: ISession,
     signal?: AbortSignal,
   ): Promise<ToolResult>;
 
@@ -179,8 +187,7 @@ export interface CompactOptions {
   keepRecentTokens?: number; // default: 20_000
 }
 
-// Entry returned by IExtensionContext.getEntries()
-// TODO(item-8): implement — placeholder only
+// Entry returned by ISession.getEntries()
 export interface CustomEntry {
   id: string;
   customType: string;
@@ -188,12 +195,112 @@ export interface CustomEntry {
   timestamp: string; // ISO 8601
 }
 
-// ─── Extension Context (forward reference) ───────────────────────────────────
+// ─── ISession — the unified session/context interface ────────────────────────
+//
+// Used as:
+//   - The RpcTarget stub returned by IPiccoloCore.newSession() / getSession() to gateways
+//   - The context object (ctx) passed to every IExtensionWorker handler call
+//   - The ctx parameter of ITool.execute()
+//
+// In packages/agent, the minimal subset IAgentSession is used so that the agent
+// loop has no knowledge of the full session surface.
+//
+// Implemented in packages/core by SessionImpl extends RpcTarget.
+// All code uses ISession — no code outside session-impl.ts references SessionImpl.
+//
+// Spec ref: specs/api.md §2
+export interface ISession extends IAgentSession {
+  // ─── Identity ───────────────────────────────────────────────────────────────
 
-// IExtensionContext is defined fully in item 8. This forward declaration allows
-// ITool.execute() to reference it without circular imports.
-// TODO(item-8): replace with full implementation
-export type IExtensionContext = unknown;
+  /** Stable session identifier (UUID v4). */
+  id(): Promise<string>;
+
+  /** Full session record including timestamps and metadata. */
+  info(): Promise<SessionRecord>;
+
+  /** The user who owns this session. */
+  readonly userId: string;
+
+  // ─── Metadata ───────────────────────────────────────────────────────────────
+
+  getName(): Promise<string | undefined>;
+  setName(name: string): Promise<void>;
+
+  // ─── Conversation ────────────────────────────────────────────────────────────
+
+  /** Start a new agent turn. Returns a stream of AgentEvents for this turn. */
+  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+
+  /**
+   * Inject a user-role message into the conversation (visible to the LLM).
+   * If a turn is active, delivered as a steer (mid-turn injection).
+   */
+  sendUserMessage(content: string): Promise<void>;
+
+  /** Inject text mid-turn (after next tool batch, before next LLM call). */
+  steer(text: string): Promise<void>;
+
+  /**
+   * Queue text to be sent when the current turn finishes naturally.
+   * Use this from onAgentEnd or background tasks to chain follow-on turns.
+   */
+  followUp(text: string): Promise<void>;
+
+  /** Abort the current streaming turn immediately. */
+  abort(): Promise<void>;
+
+  // ─── Model management ────────────────────────────────────────────────────────
+
+  getModel(): Promise<ModelInfo>;
+  setModel(modelId: string): Promise<void>;
+  listModels(): Promise<ModelInfo[]>;
+
+  // ─── Tools ───────────────────────────────────────────────────────────────────
+
+  /** Returns descriptors of all currently active tools. */
+  getActiveTools(): Promise<ToolDescriptor[]>;
+  setActiveTools(toolNames: string[]): Promise<void>;
+
+  // ─── Custom session entries ───────────────────────────────────────────────────
+
+  /** Appends an extension-defined message visible to the LLM. */
+  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void>;
+
+  /** Appends an opaque entry to the session log (NOT sent to LLM). */
+  appendCustomEntry(customType: string, data?: unknown): Promise<void>;
+
+  /**
+   * Read back custom entries on the current branch.
+   * @param customType - If provided, filters to entries matching this type.
+   */
+  getEntries(customType?: string): Promise<CustomEntry[]>;
+
+  // ─── Context usage ────────────────────────────────────────────────────────────
+
+  getContextUsage(): Promise<ContextUsage>;
+
+  /** Trigger context compaction immediately. */
+  compact(options?: CompactOptions): Promise<void>;
+
+  // ─── System prompt ────────────────────────────────────────────────────────────
+
+  getSystemPrompt(): Promise<string>;
+
+  // ─── Session tree / branching ─────────────────────────────────────────────────
+
+  /** Set the active leaf to a prior entry. Next prompt branches from there. */
+  branch(entryId: string): Promise<void>;
+
+  /**
+   * Fork this session from a given entry (or current leaf).
+   * Returns a new ISession stub for the forked session.
+   */
+  fork(fromEntryId?: string): Promise<ISession>;
+
+  // ─── Lifecycle ────────────────────────────────────────────────────────────────
+
+  delete(): Promise<void>;
+}
 
 // Prevent unused import lint error — ZodObject is used in the JSDoc comment
 // for ToolDescriptor.inputSchema which is inherited. Explicitly reference it

@@ -15,7 +15,7 @@
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
 import { toAiSdkTools } from "./tools.ts";
-import type { AgentEvent, AgentOptions, AgentState, IAgentTool } from "./types.ts";
+import type { AgentEvent, AgentOptions, AgentState, IAgentSession, IAgentTool } from "./types.ts";
 
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_STEERING_MODE = "one-at-a-time" as const;
@@ -31,6 +31,13 @@ export class Agent {
   private _followUpQueue: ModelMessage[] = [];
   private _abortController: AbortController | null = null;
   private _listeners: Set<(event: AgentEvent) => void> = new Set();
+  /**
+   * Session context threaded into every tool execute() call.
+   * piccolo-core sets this to the live ISession before each prompt().
+   * Typed as IAgentSession here; at runtime always a full ISession.
+   * Spec ref: specs/agent.md §Agent §Public Methods §setContext
+   */
+  private _ctx: IAgentSession = {};
 
   constructor(options: AgentOptions) {
     this._maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -72,6 +79,16 @@ export class Agent {
 
   setTools(tools: IAgentTool[]): void {
     this._state = { ...this._state, tools };
+  }
+
+  /**
+   * Set the session context threaded into tool execute() calls.
+   * piccolo-core calls this with the live ISession before each prompt().
+   * Typed as IAgentSession; at runtime always a full ISession.
+   * Spec ref: specs/agent.md §Agent §Public Methods §setContext
+   */
+  setContext(ctx: IAgentSession): void {
+    this._ctx = ctx;
   }
 
   setSystemPrompt(prompt: string): void {
@@ -187,7 +204,7 @@ export class Agent {
     this._state = { ...stateWithoutError, isStreaming: true };
     this._emit({ type: "agent_start" });
 
-    const toolSet = toAiSdkTools(this._state.tools);
+    const toolSet = toAiSdkTools(this._state.tools, this._ctx);
     let aborted = false;
     let finalUsage: LanguageModelUsage = {
       inputTokens: 0,

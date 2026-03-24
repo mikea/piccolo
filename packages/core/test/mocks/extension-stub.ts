@@ -21,7 +21,6 @@ import type {
   CompactEvent,
   ContextEvent,
   ContextResult,
-  IExtensionContextLike,
   IExtensionWorkerLike,
   InputEvent,
   InputResult,
@@ -33,6 +32,7 @@ import type {
   ToolResultOverride,
 } from "../../src/do/extension-runner.ts";
 import type { CommandDescriptor, SystemPromptAddition } from "../../src/do/types-internal.ts";
+import type { ISession } from "../../src/types.ts";
 
 // Re-export types for convenience in test files
 export type { CommandDescriptor, SystemPromptAddition } from "../../src/do/types-internal.ts";
@@ -109,58 +109,58 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
       return options.tools ?? [];
     },
 
-    async getCommands(_ctx: IExtensionContextLike) {
+    async getCommands(_ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       return options.commands ?? [];
     },
 
-    async getSystemPromptAdditions(_ctx: IExtensionContextLike) {
+    async getSystemPromptAdditions(_ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       return options.systemPromptAdditions ?? [];
     },
 
-    async onSessionStart(event: SessionStartEvent, _ctx: IExtensionContextLike) {
+    async onSessionStart(event: SessionStartEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onSessionStart.push(event);
     },
 
-    async onInput(event: InputEvent, _ctx: IExtensionContextLike) {
+    async onInput(event: InputEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onInput.push(event);
       return options.onInput?.(event);
     },
 
-    async onBeforeAgentStart(event: BeforeAgentStartEvent, _ctx: IExtensionContextLike) {
+    async onBeforeAgentStart(event: BeforeAgentStartEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onBeforeAgentStart.push(event);
       return options.onBeforeAgentStart?.(event);
     },
 
-    async onContext(event: ContextEvent, _ctx: IExtensionContextLike) {
+    async onContext(event: ContextEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onContext.push(event);
       return options.onContext?.(event);
     },
 
-    async onToolCall(event: ToolCallEvent, _ctx: IExtensionContextLike) {
+    async onToolCall(event: ToolCallEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onToolCall.push(event);
       return options.onToolCall?.(event);
     },
 
-    async onToolResult(event: ToolResultEvent, _ctx: IExtensionContextLike) {
+    async onToolResult(event: ToolResultEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onToolResult.push(event);
       return options.onToolResult?.(event);
     },
 
-    async onBeforeCompact(event: BeforeCompactEvent, _ctx: IExtensionContextLike) {
+    async onBeforeCompact(event: BeforeCompactEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onBeforeCompact.push(event);
       return options.onBeforeCompact?.(event);
     },
 
-    async onCompact(event: CompactEvent, _ctx: IExtensionContextLike) {
+    async onCompact(event: CompactEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
       calls.onCompact.push(event);
       options.onCompact?.(event);
@@ -214,4 +214,54 @@ export function createMockDispatchNamespace(
       return stub as unknown as Fetcher;
     },
   } as unknown as DispatchNamespace;
+}
+
+// ─── Mock ISession ────────────────────────────────────────────────────────────
+
+/**
+ * Create a minimal ISession mock for use in unit tests.
+ * Implements all ISession methods with no-op implementations.
+ * Tests can override specific methods as needed.
+ */
+export function createMockSession(
+  overrides: Partial<ISession> & { sessionId?: string; userId?: string } = {},
+): ISession {
+  const sessionId = overrides.sessionId ?? "test-session-id";
+  const userId = overrides.userId ?? "test-user-id";
+
+  return {
+    userId,
+    id: async () => sessionId,
+    info: async () => ({ id: sessionId, userId, createdAt: 0, updatedAt: 0 }),
+    getName: async () => undefined,
+    setName: async () => {},
+    prompt: async () => {
+      throw new Error("not implemented in mock");
+    },
+    sendUserMessage: async () => {},
+    steer: async () => {},
+    followUp: async () => {},
+    abort: async () => {},
+    getModel: async () => ({ id: "test/model", label: "Test Model", provider: "test" }),
+    setModel: async () => {},
+    listModels: async () => [],
+    getActiveTools: async () => [],
+    setActiveTools: async () => {},
+    appendCustomMessage: async () => {},
+    appendCustomEntry: async () => {},
+    getEntries: async () => [],
+    getContextUsage: async () => ({
+      inputTokens: 0,
+      contextWindowTokens: 200_000,
+      usedFraction: 0,
+    }),
+    compact: async () => {},
+    getSystemPrompt: async () => "",
+    branch: async () => {},
+    fork: async () => {
+      throw new Error("not implemented in mock");
+    },
+    delete: async () => {},
+    ...overrides,
+  } as ISession;
 }

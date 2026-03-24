@@ -147,7 +147,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 
 | Document | Contents |
 |---|---|
-| [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `IAgentSessionDO`, `IWebGatewayApi`, `IWebGatewaySession`, `IAgentEventListener`, `ITurnHandle`, `IWebUiSessionDO`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `IExtensionContext`, `ITool`, `ToolDescriptor`, shared types |
+| [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `IAgentSessionDO`, `IWebGatewayApi`, `IWebGatewaySession`, `IAgentEventListener`, `ITurnHandle`, `IWebUiSessionDO`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
 | [core.md](core.md) | **piccolo-core implementation**: `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, retry, fork, listing |
 | [agent.md](agent.md) | `piccolo-agent`: AI SDK + CF AI Gateway, `Agent` class, steering/follow-up, compaction |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
