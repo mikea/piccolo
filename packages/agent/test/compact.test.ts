@@ -1,8 +1,8 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import {
-  SUMMARIZATION_SYSTEM_PROMPT,
   agentCompact,
+  SUMMARIZATION_SYSTEM_PROMPT,
   serializeConversation,
   splitForCompaction,
 } from "../src/compact.ts";

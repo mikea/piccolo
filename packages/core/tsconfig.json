@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "test/**/*"]
+  "compilerOptions": {
+    // Runtime types (Web APIs + CF bindings) come from wrangler types-generated file.
+    // Run `pnpm --filter @piccolo/core types` to regenerate after changing
+    // wrangler.template.jsonc or the compatibility date.
+    "types": ["./src/worker-configuration.d.ts"]
+  },
+  "include": ["src/**/*"]
 }

@@ -17,7 +17,7 @@
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import type { ZodObject } from "zod";
 
-export type { ModelMessage, LanguageModelUsage, FinishReason, ImagePart, LanguageModel };
+export type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage };
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 

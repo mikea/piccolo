@@ -225,7 +225,7 @@ async execute(toolCallId, params, ctx, signal) {
 
 ## Tool Bindings
 
-Each tool Worker declares its own Cloudflare bindings (R2, D1, KV, etc.) in its own `wrangler.jsonc`. The core does not share its bindings with tools. Tools are fully isolated Workers with independent resource allocation.
+Each tool Worker declares its own Cloudflare bindings (R2, D1, KV, etc.) in its own `wrangler.template.jsonc`. The core does not share its bindings with tools. Tools are fully isolated Workers with independent resource allocation.
 
 ---
 

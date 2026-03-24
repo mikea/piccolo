@@ -5,3 +5,6 @@ worker-configuration.d.ts
 coverage/
 .DS_Store
 *.local
+# wrangler.template.jsonc is the committed template; wrangler.jsonc is the
+# local deployment config (populated from the template with real IDs/secrets).
+wrangler.jsonc

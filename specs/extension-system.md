@@ -460,7 +460,7 @@ Gateways call extra methods to power autocomplete, dashboards, or admin UIs with
 
 ## Extension Bindings
 
-Each extension declares its own Cloudflare bindings in its own `wrangler.jsonc`. The core does not share its bindings. Extensions that need storage (KV, D1, R2) must provision their own.
+Each extension declares its own Cloudflare bindings in its own `wrangler.template.jsonc`. The core does not share its bindings. Extensions that need storage (KV, D1, R2) must provision their own.
 
 The `IExtensionContext` stub gives extensions a controlled API into the core session — they cannot access core internals directly.
 

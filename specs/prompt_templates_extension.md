@@ -18,7 +18,7 @@ Templates support positional arguments (`$1`, `$2`, `$@`) identically to the pi 
 **Implements:** `IExtensionWorker` (see [api.md §8](api.md))  
 **Bindings required:** KV for cache (`env.TEMPLATES_CACHE`)
 
-### `wrangler.jsonc`
+### `wrangler.template.jsonc`
 
 ```jsonc
 {

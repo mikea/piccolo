@@ -23,7 +23,7 @@ All public interfaces are defined in [api.md](api.md). This document specifies t
 
 ## Bindings
 
-Declared in `packages/core/wrangler.jsonc`:
+Declared in `packages/core/wrangler.template.jsonc`:
 
 ```jsonc
 {

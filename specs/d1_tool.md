@@ -12,7 +12,7 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 **Implements:** `ITool` (see [api.md](api.md))  
 **Binding required:** D1 database bound as `DB`
 
-### `wrangler.jsonc`
+### `wrangler.template.jsonc`
 
 ```jsonc
 {

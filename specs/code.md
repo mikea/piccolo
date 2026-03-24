@@ -149,7 +149,7 @@ export default defineWorkersConfig({
   test: {
     poolOptions: {
       workers: {
-        wrangler: { configPath: "./wrangler.jsonc" },
+        wrangler: { configPath: "./wrangler.template.jsonc" },
       },
     },
   },
@@ -341,8 +341,9 @@ export function createMockContext(overrides: Partial<IExtensionContext> = {}): I
 **Biome** is the formatter and linter. No ESLint, no Prettier.
 
 ```jsonc
-// biome.json
+// biome.json (Biome 2.x)
 {
+  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
   "formatter": {
     "indentStyle": "space",
     "indentWidth": 2,
@@ -359,7 +360,8 @@ export function createMockContext(overrides: Partial<IExtensionContext> = {}): I
       }
     }
   },
-  "organizeImports": { "enabled": true }
+  // In Biome 2, import sorting moved from organizeImports to assist.actions.source.
+  "assist": { "actions": { "source": { "organizeImports": "on" } } }
 }
 ```
 
@@ -392,7 +394,7 @@ piccolo/
 │       ├── test/
 │       ├── package.json
 │       ├── tsconfig.json
-│       ├── wrangler.jsonc
+│       ├── wrangler.template.jsonc
 │       └── vitest.config.ts
 ├── gateways/
 │   ├── web/                piccolo-web-gateway Worker

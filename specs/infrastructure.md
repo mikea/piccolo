@@ -169,6 +169,7 @@ steps:
   - run: pnpm biome check .
   - run: pnpm -r exec tsc --noEmit
   - run: pnpm -r test --coverage
+  - run: pnpm -r build
 ```
 
 ### `deploy.yml` — Production Deployment
@@ -216,8 +217,8 @@ pnpm -r exec tsc --noEmit
 pnpm -r test
 
 # Start core + web gateway together (Miniflare local dev)
-pnpm wrangler dev -c packages/core/wrangler.jsonc \
-                  -c gateways/web/wrangler.jsonc
+pnpm wrangler dev -c packages/core/wrangler.template.jsonc \
+                  -c gateways/web/wrangler.template.jsonc
 
 # Lint and format
 pnpm biome check --write .

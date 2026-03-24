@@ -7,8 +7,8 @@
  * passing tools to the Agent.
  */
 
-import { tool } from "ai";
 import type { ToolSet } from "ai";
+import { tool } from "ai";
 import type { IAgentTool } from "./types.ts";
 
 /**

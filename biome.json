@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.8/schema.json",
   "formatter": {
     "indentStyle": "space",
     "indentWidth": 2,
@@ -17,15 +17,20 @@
       }
     }
   },
-  "organizeImports": {
-    "enabled": true
-  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
   "files": {
-    "ignore": ["node_modules", "dist", ".wrangler", "coverage", "worker-configuration.d.ts"]
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/.wrangler",
+      "!**/coverage",
+      "!**/worker-configuration.d.ts"
+    ]
   },
   "overrides": [
     {
-      "include": ["tsconfig*.json", "**/tsconfig*.json"],
+      "includes": ["**/tsconfig*.json", "**/tsconfig*.json"],
       "json": {
         "parser": {
           "allowComments": true,

@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    name: Lint, type-check, test
+    name: Lint, type-check, test, build
     runs-on: ubuntu-latest
 
     steps:
@@ -36,3 +36,6 @@ jobs:
         run: pnpm -r test --coverage
         # Note: tests will pass vacuously until implementation code is added (items 2–17).
         # The coverage thresholds are enforced per-package in each vitest.config.ts.
+
+      - name: Build (dry-run bundle check)
+        run: pnpm -r build

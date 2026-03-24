@@ -480,7 +480,7 @@ Session isolation is enforced in `WebGatewaySessionImpl.info()`: the `userId` of
 
 ---
 
-## wrangler.jsonc
+## wrangler.template.jsonc
 
 ```jsonc
 {

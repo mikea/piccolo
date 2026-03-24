@@ -9,8 +9,8 @@
  * with a single compact summary entry.
  */
 
-import { generateText } from "ai";
 import type { LanguageModel, ModelMessage } from "ai";
+import { generateText } from "ai";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

@@ -32,15 +32,14 @@ Create the monorepo scaffold with all tooling configured before writing any prod
 | Tool | Version |
 |---|---|
 | wrangler | ^4.0.0 |
-| typescript | ^5.7.3 |
+| typescript | ^6.0.2 |
 | vitest | ^4.1.0 (minimum required by `@cloudflare/vitest-pool-workers`) |
-| @cloudflare/vitest-pool-workers | ^0.8.0 |
-| @cloudflare/workers-types | ^4.20241230.0 (installed but not used in tsconfig — see conflict below) |
-| @biomejs/biome | ^1.9.4 |
+| @cloudflare/vitest-pool-workers | ^0.13.4 |
+| @biomejs/biome | ^2.4.8 |
 
 #### Wrangler config format
 
-All `wrangler.jsonc` files use the JSON format (not TOML), which is the Cloudflare recommendation for new projects as of Wrangler 3.91+. The `$schema` key points to `./node_modules/wrangler/config-schema.json` for IDE validation.
+All `wrangler.template.jsonc` files use the JSON format (not TOML), which is the Cloudflare recommendation for new projects as of Wrangler 3.91+. The `$schema` key points to `./node_modules/wrangler/config-schema.json` for IDE validation.
 
 #### Durable Object migrations
 
@@ -56,41 +55,37 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.template.jsonc" } })],
   test: { coverage: { provider: "v8", thresholds: { lines: 80, functions: 80, branches: 70 } } },
 });
 ```
 
 The older `defineWorkersConfig` API from the package's own exports is superseded by this plugin approach. `packages/core/test/` includes a `tsconfig.json` and `env.d.ts` as required by the latest CF Vitest docs.
 
-#### TypeScript type conflict and resolution
+#### TypeScript runtime types — migrated to `wrangler types`
 
-**Conflict:** `@cloudflare/workers-types` uses `export = CloudflareWorkersModule` (CommonJS-style export assignment). This is structurally incompatible with `"module": "ES2022"` + `"verbatimModuleSyntax": true` from `code.md`, producing:
+Per the [Cloudflare migration guide](https://developers.cloudflare.com/workers/languages/typescript/#generate-types), `@cloudflare/workers-types` has been **removed** from the project. All runtime types (Web APIs + CF binding shapes) now come from `wrangler types`-generated `worker-configuration.d.ts` files.
 
-```
-error TS2309: An export assignment cannot be used in a module with other exported elements.
-```
-
-**Resolution:** `@cloudflare/workers-types` is **not** referenced in any `tsconfig.json`. Instead:
-
-- `tsconfig.base.json` uses `"lib": ["ES2022", "WebWorker"]`. The `WebWorker` lib provides all standard Web APIs used by the Workers runtime (`AbortSignal`, `ReadableStream`, `fetch`, `Request`, `Response`, `URL`, `crypto`, etc.) without requiring the CF package.
-- Per-Worker packages will add CF-specific types (Durable Objects, KV, R2, D1 binding shapes) via **`wrangler types`**, which generates a `worker-configuration.d.ts` file whose declarations are compatible with ES module syntax. This file is gitignored and regenerated as part of each package's `types` script.
-- `@cloudflare/workers-types` remains installed as a dev dependency at the root because it is still the recommended way to type shared/library packages (per CF docs), and is needed by `packages/agent` if it ever needs to reference a Workers type. It is not referenced via `tsconfig.json` `"types"` arrays anywhere in the current scaffold.
+- `@cloudflare/workers-types` is **not** installed.
+- `tsconfig.base.json` uses `"lib": ["ES2022"]` only — no `WebWorker`. Worker packages get Web APIs + CF types from `worker-configuration.d.ts`.
+- `packages/agent` (pure library, no wrangler) overrides to `"lib": ["ES2022", "WebWorker"]` in its own tsconfig to retain Web API types.
+- Each Worker package has a `types` script: `wrangler types src/worker-configuration.d.ts --config wrangler.template.jsonc`. The generated file is committed (not gitignored) so CI does not need to regenerate it on every run.
+- Worker package `tsconfig.json` files reference the generated file via `"types": ["./src/worker-configuration.d.ts"]`.
 
 #### Biome JSONC handling
 
-Biome's default JSON parser rejects comments in `.json` files. `tsconfig*.json` files use JSONC (comments + trailing commas). Fixed via a Biome `overrides` entry:
+Biome's default JSON parser rejects comments in `.json` files. `tsconfig*.json` files use JSONC (comments + trailing commas). Fixed via a Biome `overrides` entry (now `overrides[].includes` in Biome 2):
 
 ```json
 "overrides": [
   {
-    "include": ["tsconfig*.json", "**/tsconfig*.json"],
+    "includes": ["tsconfig*.json", "**/tsconfig*.json"],
     "json": { "parser": { "allowComments": true, "allowTrailingCommas": true } }
   }
 ]
 ```
 
-`wrangler.jsonc` files are not parsed by Biome (the `.jsonc` extension is not in Biome's default file list).
+`wrangler.template.jsonc` files are not parsed by Biome (the `.jsonc` extension is not in Biome's default file list).
 
 #### `packages/core/src/types.ts` — forward-reference strategy
 
@@ -298,7 +293,7 @@ The public JSRPC surface that gateways connect to.
 - `listModels()` → static catalog from KV or hardcoded fallback
 - `Session extends RpcTarget` implementing `ISession` from [api.md §2](api.md) — thin delegation to `AgentSessionDO`
 - `Session.fork()` → creates new `Session` stub for the forked session
-- `wrangler.jsonc` for `piccolo-core` with all bindings
+- `wrangler.template.jsonc` for `piccolo-core` with all bindings
 - Integration tests: `newSession` → `session.prompt()` → stream events → `session.info()`; `listSessions`; `getSession` on non-existent → meaningful error
 
 **Spec refs:** [api.md §1–2](api.md), [core.md — `IPiccoloCore`](core.md), [core.md — `ISession` stub](core.md)
@@ -318,7 +313,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 - `IWebUiSessionDO` — `addConnection(request)`, `pushEvent(event)`, `getRecentEvents()`
 - Static file serving: `GET /` → SPA shell, `GET /components/{id}.js` → component modules from R2
 - Auth: CF Access JWT validation at WebSocket upgrade, `userId` bound into `WebGatewayImpl`
-- `wrangler.jsonc` for web gateway with `CORE` service binding, `WEB_UI_SESSION` DO, `ASSETS` R2
+- `wrangler.template.jsonc` for web gateway with `CORE` service binding, `WEB_UI_SESSION` DO, `ASSETS` R2
 - Integration tests: full `prompt()` cycle with mock core + mock `IAgentEventListener`; `IGatewayCallback` invocation; auth rejection; `IWebUiSessionDO` event fan-out; promise pipelining (newSession → prompt in one round trip)
 - `test/mocks/piccolo-core.ts` — mock `IPiccoloCore` + `ISession`
 
@@ -339,7 +334,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 - `ITelegramUI` lookup: call `tool.getGatewayUI("telegram")` before rendering tool calls/results
 - All gateway slash commands: `/new`, `/model`, `/models`, `/abort`, `/status`, `/compact`, `/help`
 - Auth: bot token hash validation; KV allowlist
-- `wrangler.jsonc` for telegram gateway
+- `wrangler.template.jsonc` for telegram gateway
 - Integration tests: webhook verification; chat→session mapping; `AgentEvent` rendering; slash command dispatch; `ITelegramChatDO` serialisation
 
 **Spec refs:** [telegram_gateway.md](telegram_gateway.md), [api.md §5, §7](api.md)
@@ -355,7 +350,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 - `getTools()` returning the R2 `ToolDescriptor` with full `inputSchema`
 - `executeTool()` dispatching all 7 actions: `read`, `write`, `delete`, `list`, `stat`, `copy`, `move`
 - All result `details` types: `R2ReadDetails`, `R2WriteDetails`, `R2DeleteDetails`, `R2ListDetails`, `R2StatDetails`, `R2CopyDetails`
-- `wrangler.jsonc` with `BUCKET` R2 binding
+- `wrangler.template.jsonc` with `BUCKET` R2 binding
 - Unit tests: all 7 actions against `createMockR2()`; binary encoding/decoding; move atomicity (put succeeds, delete only after); error paths (not found, etc.)
 
 **Spec refs:** [r2_tool.md](r2_tool.md), [tools.md](tools.md)
@@ -371,7 +366,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 - All result `details` types: `D1SchemaDetails`, `D1SelectDetails`, `D1InsertDetails`, `D1UpdateDetails`, `D1DeleteDetails`, `D1SchemaChangeDetails`, `D1SqlDetails`
 - `confirm: true` guard on `schema_change`
 - `dryRun` path on `delete`
-- `wrangler.jsonc` with `DB` D1 binding
+- `wrangler.template.jsonc` with `DB` D1 binding
 - Unit tests: all 7 actions against `createMockD1()`; parameterised queries; batch insert; dry-run; schema_change guard; LIMIT injection
 
 **Spec refs:** [d1_tool.md](d1_tool.md), [tools.md](tools.md)
@@ -389,7 +384,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 - KV caching with TTL
 - JSRPC admin endpoints: `addSource()`, `removeSource()`, `listSources()`, `reloadSkills()`, `listSkills()`, `getSkillContent()`
 - Frontmatter validation per Agent Skills spec
-- `wrangler.jsonc` with `SKILLS_CACHE` KV
+- `wrangler.template.jsonc` with `SKILLS_CACHE` KV
 - Unit tests: source loading, frontmatter parsing, validation rules, command registration, input transform, KV cache hit/miss
 
 **Spec refs:** [skills_extension.md](skills_extension.md)
@@ -408,7 +403,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 - Quoted argument parsing (shell-style)
 - KV caching with TTL
 - JSRPC admin endpoints: `addSource()`, `removeSource()`, `listSources()`, `reloadTemplates()`, `listTemplates()`, `getTemplateContent()`, `expandTemplate()`
-- `wrangler.jsonc` with `TEMPLATES_CACHE` KV
+- `wrangler.template.jsonc` with `TEMPLATES_CACHE` KV
 - Unit tests: argument substitution (all forms), quoted parsing, unresolved placeholders, cache, command registration
 
 **Spec refs:** [prompt_templates_extension.md](prompt_templates_extension.md)

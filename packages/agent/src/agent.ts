@@ -12,8 +12,8 @@
  * (via createModel() from gateway.ts or a mock in tests).
  */
 
-import { stepCountIs, streamText } from "ai";
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
+import { stepCountIs, streamText } from "ai";
 import { toAiSdkTools } from "./tools.ts";
 import type { AgentEvent, AgentOptions, AgentState, IAgentTool } from "./types.ts";
 

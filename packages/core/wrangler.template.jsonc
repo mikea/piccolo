@@ -27,7 +27,7 @@
   "d1_databases": [
     {
       // Stores session records and all entry history.
-      "binding": "DB",
+      "binding": "SESSIONS_DB",
       "database_name": "piccolo-sessions",
       "database_id": "<PICCOLO_D1_ID>"
     }

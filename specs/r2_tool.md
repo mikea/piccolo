@@ -12,7 +12,7 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 **Implements:** `ITool` (see [api.md](api.md))  
 **Binding required:** R2 bucket bound as `BUCKET`
 
-### `wrangler.jsonc`
+### `wrangler.template.jsonc`
 
 ```jsonc
 {

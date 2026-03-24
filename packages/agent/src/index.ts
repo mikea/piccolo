@@ -12,25 +12,24 @@
  */
 
 export { Agent } from "./agent.ts";
+export type { CompactionSplit } from "./compact.ts";
 export {
   agentCompact,
-  splitForCompaction,
-  serializeConversation,
   SUMMARIZATION_SYSTEM_PROMPT,
+  serializeConversation,
+  splitForCompaction,
 } from "./compact.ts";
 export { toAiSdkTools } from "./tools.ts";
-
 export type {
   AgentEvent,
   AgentOptions,
   AgentState,
   AgentToolDescriptor,
   AgentToolResult,
+  FinishReason,
   IAgentTool,
-  ModelMessage,
+  ImagePart,
   LanguageModel,
   LanguageModelUsage,
-  FinishReason,
-  ImagePart,
+  ModelMessage,
 } from "./types.ts";
-export type { CompactionSplit } from "./compact.ts";

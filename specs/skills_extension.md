@@ -16,7 +16,7 @@ A skill is a Markdown document (`SKILL.md`) that provides the agent with special
 **Implements:** `IExtensionWorker` (see [api.md §8](api.md))  
 **Bindings required:** KV for cache (`env.SKILLS_CACHE`), optionally R2 for assets
 
-### `wrangler.jsonc`
+### `wrangler.template.jsonc`
 
 ```jsonc
 {

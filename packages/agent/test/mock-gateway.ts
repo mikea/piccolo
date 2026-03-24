@@ -10,8 +10,8 @@
  */
 
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import { simulateReadableStream } from "ai";
 import type { LanguageModel } from "ai";
+import { simulateReadableStream } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 
 export interface MockToolCall {

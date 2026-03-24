@@ -6,10 +6,11 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    // WebWorker lib provides AbortSignal, ReadableStream, and other Web APIs used by Workers.
-    // @cloudflare/workers-types uses `export =` which conflicts with "module":"ES2022" +
-    // verbatimModuleSyntax. Workers packages get CF-specific types via `wrangler types`.
-    "lib": ["ES2022", "WebWorker"],
+    // ES2022 only — Workers packages get all runtime types (Web APIs + CF bindings)
+    // from `wrangler types`-generated worker-configuration.d.ts. Pure library
+    // packages (packages/agent) override this with ["ES2022", "WebWorker"] in their
+    // own tsconfig.json so they still get Web API types without a wrangler dependency.
+    "lib": ["ES2022"],
 
     // Strictness — all enabled
     "strict": true,
