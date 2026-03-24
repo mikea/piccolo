@@ -1,0 +1,16 @@
+{
+  "name": "@piccolo/agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "piccolo-agent: pure TypeScript AI agent loop library",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build": "echo 'No build step for agent (Wrangler/Vite handle bundling)'"
+  },
+  "devDependencies": {
+    "vitest": "*"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "piccolo-telegram-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── Service bindings ───────────────────────────────────────────────────
+  "services": [
+    {
+      // JSRPC connection to piccolo-core (IPiccoloCore WorkerEntrypoint).
+      "binding": "CORE",
+      "service": "piccolo-core"
+    }
+  ],
+
+  // ── KV ─────────────────────────────────────────────────────────────────
+  "kv_namespaces": [
+    {
+      // Chat→session mapping and user allowlist.
+      "binding": "KV",
+      "id": "<TELEGRAM_KV_ID>"
+    }
+  ],
+
+  // ── Durable Objects ────────────────────────────────────────────────────
+  "durable_objects": {
+    "bindings": [
+      {
+        // Serialises concurrent Telegram updates per chat.
+        "name": "TELEGRAM_CHAT",
+        "class_name": "TelegramChatDO"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TelegramChatDO"]
+    }
+  ]
+
+  // ── Secrets (set via wrangler secret put, never committed) ─────────────
+  // TELEGRAM_BOT_TOKEN  — Telegram Bot API token
+}

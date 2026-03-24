@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // packages/agent is a pure library with no Workers-specific globals.
+    // Override the types array to avoid Workers types colliding with Node test env.
+    "types": []
+  },
+  "include": ["src/**/*", "test/**/*"]
+}

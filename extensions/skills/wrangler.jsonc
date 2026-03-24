@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ext-skills",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── KV ─────────────────────────────────────────────────────────────────
+  "kv_namespaces": [
+    {
+      // Cache for fetched skill documents (TTL-based).
+      "binding": "SKILLS_CACHE",
+      "id": "<SKILLS_CACHE_KV_ID>"
+    }
+  ]
+}

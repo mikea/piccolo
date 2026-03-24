@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (Biome)
+        run: pnpm biome check .
+
+      - name: Type-check
+        run: pnpm -r exec tsc --noEmit
+
+      - name: Tests
+        run: pnpm -r test --coverage
+        # Note: tests will pass vacuously until implementation code is added (items 2–17).
+        # The coverage thresholds are enforced per-package in each vitest.config.ts.

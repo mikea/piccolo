@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ext-r2-tool",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── R2 ─────────────────────────────────────────────────────────────────
+  "r2_buckets": [
+    {
+      // The R2 bucket this tool exposes to the agent.
+      "binding": "BUCKET",
+      "bucket_name": "piccolo-assets"
+    }
+  ]
+}

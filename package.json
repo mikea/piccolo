@@ -1,0 +1,20 @@
+{
+  "name": "piccolo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimalistic AI agent running on Cloudflare infrastructure",
+  "scripts": {
+    "check": "pnpm biome check . && pnpm -r exec tsc --noEmit",
+    "lint": "pnpm biome check --write .",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@cloudflare/vitest-pool-workers": "^0.8.0",
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
+  }
+}

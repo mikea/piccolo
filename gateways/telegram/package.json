@@ -1,0 +1,20 @@
+{
+  "name": "@piccolo/telegram-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "piccolo-telegram-gateway: Telegram bot gateway Worker",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "*",
+    "vitest": "*",
+    "wrangler": "*"
+  }
+}

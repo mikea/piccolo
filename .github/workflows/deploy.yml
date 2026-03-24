@@ -1,0 +1,47 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Deploy order matters: core must be up before gateways connect to it via service binding.
+
+      - name: Deploy piccolo-core
+        run: pnpm wrangler deploy
+        working-directory: packages/core
+
+      - name: Deploy piccolo-web-gateway
+        run: pnpm wrangler deploy
+        working-directory: gateways/web
+
+      - name: Deploy piccolo-telegram-gateway
+        run: pnpm wrangler deploy
+        working-directory: gateways/telegram
+
+      # Extensions are deployed independently — no specific order required.
+      # Provider API keys are managed in CF AI Gateway directly; not part of this pipeline.

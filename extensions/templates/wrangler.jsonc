@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ext-templates",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── KV ─────────────────────────────────────────────────────────────────
+  "kv_namespaces": [
+    {
+      // Cache for fetched prompt template documents (TTL-based).
+      "binding": "TEMPLATES_CACHE",
+      "id": "<TEMPLATES_CACHE_KV_ID>"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ All implementation must follow [code.md](code.md) at all times. All interfaces m
 
 ---
 
-## 1. Project Setup
+## 1. Project Setup ✅
 
 Create the monorepo scaffold with all tooling configured before writing any production code.
 
@@ -22,6 +22,83 @@ Create the monorepo scaffold with all tooling configured before writing any prod
 - Shared type stubs: `packages/core/src/types.ts` exporting all types from [api.md](api.md) Shared Types section as `TODO` placeholders — to be filled in as each piece is implemented
 
 **Spec refs:** [code.md](code.md), [infrastructure.md](infrastructure.md)
+
+### 1.1 Implementation Notes
+
+**Status:** Complete. All deliverables present. `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors.
+
+#### Tooling versions pinned
+
+| Tool | Version |
+|---|---|
+| wrangler | ^4.0.0 |
+| typescript | ^5.7.3 |
+| vitest | ^4.1.0 (minimum required by `@cloudflare/vitest-pool-workers`) |
+| @cloudflare/vitest-pool-workers | ^0.8.0 |
+| @cloudflare/workers-types | ^4.20241230.0 (installed but not used in tsconfig — see conflict below) |
+| @biomejs/biome | ^1.9.4 |
+
+#### Wrangler config format
+
+All `wrangler.jsonc` files use the JSON format (not TOML), which is the Cloudflare recommendation for new projects as of Wrangler 3.91+. The `$schema` key points to `./node_modules/wrangler/config-schema.json` for IDE validation.
+
+#### Durable Object migrations
+
+All new Durable Objects (`AgentSessionDO`, `WebUiSessionDO`, `TelegramChatDO`) are declared with `new_sqlite_classes` (not the legacy `new_classes`). SQLite-backed DOs are the current Cloudflare default and provide built-in SQL storage.
+
+#### Vitest Workers integration — updated API
+
+The `@cloudflare/vitest-pool-workers` package now requires **Vitest 4.1+** and uses the `cloudflareTest()` plugin API:
+
+```typescript
+// vitest.config.ts (Workers packages)
+import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+  test: { coverage: { provider: "v8", thresholds: { lines: 80, functions: 80, branches: 70 } } },
+});
+```
+
+The older `defineWorkersConfig` API from the package's own exports is superseded by this plugin approach. `packages/core/test/` includes a `tsconfig.json` and `env.d.ts` as required by the latest CF Vitest docs.
+
+#### TypeScript type conflict and resolution
+
+**Conflict:** `@cloudflare/workers-types` uses `export = CloudflareWorkersModule` (CommonJS-style export assignment). This is structurally incompatible with `"module": "ES2022"` + `"verbatimModuleSyntax": true` from `code.md`, producing:
+
+```
+error TS2309: An export assignment cannot be used in a module with other exported elements.
+```
+
+**Resolution:** `@cloudflare/workers-types` is **not** referenced in any `tsconfig.json`. Instead:
+
+- `tsconfig.base.json` uses `"lib": ["ES2022", "WebWorker"]`. The `WebWorker` lib provides all standard Web APIs used by the Workers runtime (`AbortSignal`, `ReadableStream`, `fetch`, `Request`, `Response`, `URL`, `crypto`, etc.) without requiring the CF package.
+- Per-Worker packages will add CF-specific types (Durable Objects, KV, R2, D1 binding shapes) via **`wrangler types`**, which generates a `worker-configuration.d.ts` file whose declarations are compatible with ES module syntax. This file is gitignored and regenerated as part of each package's `types` script.
+- `@cloudflare/workers-types` remains installed as a dev dependency at the root because it is still the recommended way to type shared/library packages (per CF docs), and is needed by `packages/agent` if it ever needs to reference a Workers type. It is not referenced via `tsconfig.json` `"types"` arrays anywhere in the current scaffold.
+
+#### Biome JSONC handling
+
+Biome's default JSON parser rejects comments in `.json` files. `tsconfig*.json` files use JSONC (comments + trailing commas). Fixed via a Biome `overrides` entry:
+
+```json
+"overrides": [
+  {
+    "include": ["tsconfig*.json", "**/tsconfig*.json"],
+    "json": { "parser": { "allowComments": true, "allowTrailingCommas": true } }
+  }
+]
+```
+
+`wrangler.jsonc` files are not parsed by Biome (the `.jsonc` extension is not in Biome's default file list).
+
+#### `packages/core/src/types.ts` — forward-reference strategy
+
+`IExtensionContext` is referenced by `ITool.execute()` but is defined in item 8. To avoid a circular dependency at stub time, it is declared as `type IExtensionContext = unknown` with a `TODO(item-8)` comment. All other 14 Shared Types from `api.md` are fully shaped (field names, optionality, and inline comments match the spec exactly).
+
+#### Placeholder `src/index.ts` files
+
+Each package that has no source code yet contains a two-line `src/index.ts` with an `export {}` statement. This is required because `tsc` fails with `TS18003` ("No inputs were found") when the `include` glob matches an empty directory. These files will be replaced by real entry points as each milestone is implemented.
 
 ---
 

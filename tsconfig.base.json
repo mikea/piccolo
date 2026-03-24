@@ -1,0 +1,41 @@
+{
+  // Base TypeScript configuration for all piccolo packages.
+  // Every package tsconfig.json extends this file.
+  // See specs/code.md for the rationale behind each setting.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    // WebWorker lib provides AbortSignal, ReadableStream, and other Web APIs used by Workers.
+    // @cloudflare/workers-types uses `export =` which conflicts with "module":"ES2022" +
+    // verbatimModuleSyntax. Workers packages get CF-specific types via `wrangler types`.
+    "lib": ["ES2022", "WebWorker"],
+
+    // Strictness — all enabled
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
+
+    // Additional strictness
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+
+    // Module
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+
+    // Output — Vite/Wrangler handle emission; tsc is type-check only
+    "noEmit": true
+  }
+}

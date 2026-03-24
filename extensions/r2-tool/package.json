@@ -1,0 +1,20 @@
+{
+  "name": "@piccolo/ext-r2-tool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ext-r2-tool: R2 storage tool extension Worker",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "*",
+    "vitest": "*",
+    "wrangler": "*"
+  }
+}

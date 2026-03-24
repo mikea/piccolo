@@ -1,0 +1,64 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "piccolo-core",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── Durable Objects ────────────────────────────────────────────────────
+  "durable_objects": {
+    "bindings": [
+      {
+        // Per-session agent runtime. One DO instance per session.
+        "name": "AGENT_SESSION",
+        "class_name": "AgentSessionDO"
+      }
+    ]
+  },
+
+  // Durable Object migrations — new SQLite-backed DOs use new_sqlite_classes.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AgentSessionDO"]
+    }
+  ],
+
+  // ── D1 ─────────────────────────────────────────────────────────────────
+  "d1_databases": [
+    {
+      // Stores session records and all entry history.
+      "binding": "DB",
+      "database_name": "piccolo-sessions",
+      "database_id": "<PICCOLO_D1_ID>"
+    }
+  ],
+
+  // ── KV ─────────────────────────────────────────────────────────────────
+  "kv_namespaces": [
+    {
+      // Extension registry, model catalog, and per-session config.
+      "binding": "CONFIG",
+      "id": "<PICCOLO_KV_ID>"
+    }
+  ],
+
+  // ── R2 ─────────────────────────────────────────────────────────────────
+  "r2_buckets": [
+    {
+      // File and asset storage for R2 tool and web gateway SPA assets.
+      "binding": "ASSETS",
+      "bucket_name": "piccolo-assets"
+    }
+  ],
+
+  // ── Workers for Platforms (extension dispatch namespace) ───────────────
+  "dispatch_namespaces": [
+    {
+      "binding": "EXTENSIONS",
+      "namespace": "piccolo-extensions"
+    }
+  ]
+
+  // ── Secrets (set via wrangler secret put, never committed) ─────────────
+  // CF_AI_GATEWAY_TOKEN  — Cloudflare AI Gateway authentication token
+}

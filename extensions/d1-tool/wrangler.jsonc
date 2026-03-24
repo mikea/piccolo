@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ext-d1-tool",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── D1 ─────────────────────────────────────────────────────────────────
+  "d1_databases": [
+    {
+      // The D1 database this tool exposes to the agent.
+      "binding": "DB",
+      "database_name": "piccolo-sessions",
+      "database_id": "<D1_TOOL_DB_ID>"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "piccolo-web-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-24",
+
+  // ── Service bindings ───────────────────────────────────────────────────
+  "services": [
+    {
+      // JSRPC connection to piccolo-core (IPiccoloCore WorkerEntrypoint).
+      "binding": "CORE",
+      "service": "piccolo-core"
+    }
+  ],
+
+  // ── Durable Objects ────────────────────────────────────────────────────
+  "durable_objects": {
+    "bindings": [
+      {
+        // SSE fan-out DO — one instance per browser session.
+        "name": "WEB_UI_SESSION",
+        "class_name": "WebUiSessionDO"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["WebUiSessionDO"]
+    }
+  ],
+
+  // ── R2 ─────────────────────────────────────────────────────────────────
+  "r2_buckets": [
+    {
+      // Serves the browser SPA and Web Component modules.
+      "binding": "ASSETS",
+      "bucket_name": "piccolo-assets"
+    }
+  ]
+
+  // ── Secrets (set via wrangler secret put, never committed) ─────────────
+  // AUTH_SECRET  — Cloudflare Access shared secret for JWT validation
+}
