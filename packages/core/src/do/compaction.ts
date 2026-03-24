@@ -10,8 +10,7 @@
  * and updates the agent's message history.
  *
  * Extensions may cancel compaction or supply a pre-built summary via
- * `ExtensionRunner.emitBeforeCompact()`. The stub at step 5 always returns
- * `{}` (no cancel, no summary), so the LLM summarisation path runs every time.
+ * `ExtensionRunner.emitBeforeCompact()`.
  *
  * Spec ref: specs/core.md §Context Compaction
  */
@@ -20,7 +19,11 @@ import type { Agent, ModelMessage } from "@piccolo/agent";
 import { agentCompact, splitForCompaction } from "@piccolo/agent";
 import type { AnyEntry, CompactionEntry } from "../db/entry-types.ts";
 import { generateEntryId } from "../db/entry-types.ts";
-import type { BeforeCompactEvent, ExtensionRunnerStub, IExtensionContextLike } from "./stubs.ts";
+import type {
+  BeforeCompactEvent,
+  IExtensionContextLike,
+  IExtensionRunner,
+} from "./extension-runner.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -28,7 +31,7 @@ export interface CompactionState {
   sessionId: string;
   leafId: string | null;
   agent: Agent;
-  extensionRunner: ExtensionRunnerStub;
+  extensionRunner: IExtensionRunner;
   /** Map from ModelMessage object reference → entry ID (used to find firstKeptEntryId). */
   messageToEntryId: Map<ModelMessage, string>;
   /** Accumulated entries not yet flushed to D1. Compaction entry is appended here. */
@@ -95,7 +98,7 @@ export async function compact(
   const firstKeptEntryId =
     firstKeptMessage !== undefined ? (state.messageToEntryId.get(firstKeptMessage) ?? "") : "";
 
-  // 3. Build and queue the CompactionEntry
+  // 4. Build and queue the CompactionEntry
   const compactionEntry: CompactionEntry = {
     id: generateEntryId(),
     sessionId: state.sessionId,
@@ -111,14 +114,14 @@ export async function compact(
   state.pendingEntries.push(compactionEntry);
   state.leafId = compactionEntry.id;
 
-  // 4. Rebuild the agent's message list with the summary as the first message
+  // 5. Rebuild the agent's message list with the summary as the first message
   const summaryMessage: ModelMessage = {
     role: "user",
     content: `[Conversation Summary]\n\n${summary}`,
   };
   agent.replaceMessages([summaryMessage, ...keptMessages]);
 
-  // 5. Notify extensions (fire-and-forget)
+  // 6. Notify extensions (fire-and-forget)
   await state.extensionRunner.emit(
     "onCompact",
     { summary, keptMessageCount: keptMessages.length },

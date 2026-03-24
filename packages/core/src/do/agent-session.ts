@@ -6,8 +6,8 @@
  *   - Persistence (D1 via session/persistence.ts)
  *   - Context compaction (compaction.ts)
  *   - Auto-retry (retry.ts)
- *   - Extension dispatch (ExtensionRunnerStub at step 5, real at step 6)
- *   - System prompt assembly (SystemPromptAssemblerStub at step 5, real at step 7)
+ *   - Extension dispatch (real ExtensionRunner from step 6)
+ *   - System prompt assembly (SystemPromptAssemblerStub at step 6, real at step 7)
  *
  * The DO is addressed by sessionId via `env.AGENT_SESSION.idFromName(sessionId)`.
  *
@@ -43,10 +43,11 @@ import type {
 } from "../types.ts";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
+import type { IExtensionContextLike } from "./extension-runner.ts";
+import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
 import { checkRetry } from "./retry.ts";
-import type { IExtensionContextLike } from "./stubs.ts";
-import { ExtensionRunnerStub, SystemPromptAssemblerStub } from "./stubs.ts";
+import { SystemPromptAssemblerStub } from "./stubs.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { resolveModel } from "./types-internal.ts";
 
@@ -82,10 +83,10 @@ interface DOState {
   /** Follow-up queue (filled by IExtensionContext.sendFollowUp in step 8). */
   followUpQueue: string[];
 
-  /** Extension runner (stub at step 5, replaced with real ExtensionRunner in step 6). */
-  extensionRunner: ExtensionRunnerStub;
+  /** Extension runner — real ExtensionRunner from step 6. */
+  extensionRunner: ExtensionRunner;
 
-  /** System prompt assembler (stub at step 5, replaced in step 7). */
+  /** System prompt assembler (stub at step 6, replaced in step 7). */
   assembler: SystemPromptAssemblerStub;
 
   /** The assembled system prompt for the current session. */
@@ -213,17 +214,21 @@ export class AgentSessionDO extends DurableObject<Env> {
       }
     }
 
-    // 6. Assemble system prompt (stub at step 5)
-    const extensionRunner = new ExtensionRunnerStub();
+    // 6. Initialise ExtensionRunner from CONFIG KV + EXTENSIONS dispatch namespace
+    const extensionRunner = new ExtensionRunner();
+    const ctx: IExtensionContextLike = { sessionId, userId };
+    await extensionRunner.initialize(ctx, this.env.CONFIG, this.env.EXTENSIONS, modelId);
+
+    // 7. Assemble system prompt (assembler stub at step 6)
     const assembler = new SystemPromptAssemblerStub();
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
     const assembledSystemPrompt = assembler.assemble(
       basePrompt,
       extensionRunner.getSystemPromptAdditions(),
-      [], // no active tools at step 5
+      extensionRunner.getToolDescriptors(),
     );
 
-    // 7. Build the Agent
+    // 8. Build the Agent
     const model = createModel(this.env, modelId);
     const agent = new Agent({ model, systemPrompt: assembledSystemPrompt });
     agent.replaceMessages(messages);

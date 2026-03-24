@@ -290,7 +290,7 @@ The Durable Object that owns a live session. Wires `piccolo-agent` to persistenc
 
 ---
 
-## 6. `piccolo-core` — `ExtensionRunner`
+## 6. `piccolo-core` — `ExtensionRunner` ✅
 
 The component that discovers, initialises, and dispatches to extension Workers.
 
@@ -300,11 +300,41 @@ The component that discovers, initialises, and dispatches to extension Workers.
 - Fire-and-forget emit for all other events (`onAgentStart`, `onAgentEnd`, `onTurnStart`, etc.)
 - `getSystemPromptAdditions()` — collect from all extensions, sort by priority
 - `getCommands()` — collect all `CommandDescriptor[]` from extensions
+- `getToolDescriptors()` — collect all `ToolDescriptorLike[]` from extensions
 - `parseCommand(text, commands)` — `/name args` parsing
 - Unit tests: all merge rules with mock extension stubs; command parsing; empty extension list; single extension error isolation (one extension throws, others proceed)
 - `test/mocks/extension-stub.ts` — configurable mock `IExtensionWorker`
 
 **Spec refs:** [core.md — `ExtensionRunner`](core.md), [api.md §8](api.md)
+
+### 6.1 Implementation Notes
+
+**Status:** Complete. 207 tests pass (49 new: 40 ExtensionRunner + 9 carried from mock). Coverage: statements 86.31%, functions 84.28%, branches 75.63% — all above thresholds (80/80/70). `pnpm biome check .` and `pnpm -r exec tsc --noEmit` both pass with zero errors (1 pre-existing `noNonNullAssertion` warning in agent-session.test.ts, not introduced by step 6).
+
+#### File layout
+
+| File | Contents |
+|---|---|
+| `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; all event/result types; `IExtensionRunner` interface; `IExtensionWorkerLike` interface; `parseCommand()` |
+| `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` only; re-exports `IExtensionContextLike` from extension-runner |
+| `packages/core/src/do/compaction.ts` | Updated to use `IExtensionRunner` interface (not `ExtensionRunnerStub`) |
+| `packages/core/src/do/agent-session.ts` | Updated to instantiate and call `ExtensionRunner`; `DOState.extensionRunner` typed as `ExtensionRunner` |
+| `packages/core/test/do/extension-runner.test.ts` | 40 unit tests covering all merge rules, error isolation, command parsing |
+| `packages/core/test/mocks/extension-stub.ts` | `createMockExtension()`, `createMockKv()`, `createMockDispatchNamespace()` |
+
+#### Key design decisions
+
+**`IExtensionRunner` interface**: Both `ExtensionRunner` (real) and any future stub implement this interface. `CompactionState.extensionRunner` is typed as `IExtensionRunner` so the compaction function remains decoupled from the concrete class.
+
+**`emitContext` included**: Although the current `prompt()` pipeline does not yet call `emitContext` (no `prepareStep` hook yet), the method is present on `ExtensionRunner` and fully tested. Wiring it into the agent loop's `prepareStep` is deferred to step 8 or step 9 when the full pipeline is assembled.
+
+**`getToolDescriptors()`**: Collects `ToolDescriptorLike[]` from all extensions during `initialize()`. `AgentSessionDO` passes these to `assembler.assemble()` for system prompt construction. Tool execution routing via `executeTool` is not yet wired (step 9).
+
+**Error isolation in `initialize()`**: `getTools()`, `getCommands()`, and `getSystemPromptAdditions()` are all individually `.catch()`-wrapped. A throwing extension's registration data is skipped; the extension stub is NOT added to `#stubs`, so fire-and-forget emit calls also skip it.
+
+**`onSessionStart` timing**: Called during `initialize()` after all registration data is collected. Fire-and-forget — errors from `onSessionStart` are swallowed so they do not block DO startup.
+
+**`DispatchNamespace` in Miniflare**: The Miniflare test environment does not support `DispatchNamespace` locally (warning emitted at test startup). `AgentSessionDO.#initialize()` calls `extensionRunner.initialize()` with the real `env.EXTENSIONS` binding, which Miniflare stubs as a no-op that returns no stubs. This means existing agent-session integration tests are unaffected: the extension list is empty, and all emit calls return their neutral defaults — identical to the prior `ExtensionRunnerStub` behaviour.
 
 ---
 
