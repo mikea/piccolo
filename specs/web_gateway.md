@@ -153,14 +153,15 @@ interface IAgentEventListener extends RpcTarget {
 import { RpcTarget } from "capnweb";
 
 class EventListener extends RpcTarget implements IAgentEventListener {
+  constructor(private readonly onEvent: (event: AgentEvent) => void) { super(); }
   async onEvent(event: AgentEvent) {
-    // Dispatch to UI state: append text, show tool call, update usage, etc.
-    store.dispatch(agentEventReceived(event));
+    // Dispatch to SolidJS store: append text, show tool call, update usage, etc.
+    this.onEvent(event);
   }
 }
 
 // In the SPA:
-const listener = new EventListener();
+const listener = new EventListener(handleAgentEvent);
 const callback = new GatewayCallbackImpl(); // implements IGatewayCallback
 const turn = session.prompt("Hello", listener, callback);
 
@@ -205,20 +206,19 @@ interface IGatewayCallback extends RpcTarget {
 ### Browser-side implementation
 
 ```typescript
+// app/src/callback.ts
+// M1: stub that returns null/false — no interactive prompts yet (M2 adds modals).
 class GatewayCallbackImpl extends RpcTarget implements IGatewayCallback {
-  async requestSelect(title, options, multiple) {
-    // Pause input, display modal, return user selection
-    return uiStore.showSelectDialog({ title, options, multiple });
+  async requestSelect(_title: string, _options: string[], _multiple?: boolean) {
+    return null;
   }
-  async requestConfirm(title, message) {
-    return uiStore.showConfirmDialog({ title, message });
+  async requestConfirm(_title: string, _message: string) {
+    return false;
   }
-  async requestInput(title, placeholder) {
-    return uiStore.showInputDialog({ title, placeholder });
+  async requestInput(_title: string, _placeholder?: string) {
+    return null;
   }
-  async notify(message, level) {
-    uiStore.showNotification({ message, level });
-  }
+  async notify(_message: string, _level: string) {}
 }
 ```
 
@@ -230,7 +230,7 @@ class GatewayCallbackImpl extends RpcTarget implements IGatewayCallback {
 
 ### Component loading
 
-Custom tool UI components are served as ES modules at `GET /components/{componentId}.js`. The browser fetches and dynamically imports these modules; they are not bundled into the SPA. Components are standard React components that receive `props` from `WebComponentDescriptor.props`.
+Custom tool UI components are served as ES modules at `GET /components/{componentId}.js`. The browser fetches and dynamically imports these modules; they are not bundled into the SPA. Components are standard SolidJS components that receive `props` from `WebComponentDescriptor.props`.
 
 ```typescript
 // Fallback chain (resolved server-side, result sent to browser via AgentEvent)
@@ -417,21 +417,34 @@ class WebUiSessionDO extends DurableObject {
 
 ## Browser SPA
 
-Framework: React (required — consistent with `IWebUI` custom component model).
+Framework: **SolidJS + @solidjs/router** (consistent with `IWebUI` custom component model — dynamic components served at `/components/{id}.js` are SolidJS components).
+
+Build tool: **Vite** with `vite-plugin-solid`.
+
+SPA lives in `gateways/web/app/`. Vite output goes to `gateways/web/dist/`, which Wrangler serves via native static asset hosting (`"assets": { "directory": "./dist", "html_handling": "single-page-application" }`).
 
 ### Cap'n Web client setup
 
 ```typescript
-// app/rpc.ts
+// app/src/rpc.ts
 import { newWebSocketRpcSession } from "capnweb";
-import type { IWebGatewayApi } from "../../gateway/src/types";
+import type { IWebGatewayApi } from "../../src/types.ts";
 
-let _api: RpcStub<IWebGatewayApi> | null = null;
+let _api: ReturnType<typeof newWebSocketRpcSession<IWebGatewayApi>> | null = null;
 
-export function getApi(): RpcStub<IWebGatewayApi> {
+export function getApi() {
   if (!_api) {
+    const isDev = import.meta.env.DEV;
+    // Dev auth: capnweb does not support custom WS headers, so pass as query params.
+    // Production: CF Access JWT is sent automatically via cookie.
+    const params = new URLSearchParams();
+    if (isDev && import.meta.env.VITE_DEV_AUTH_SECRET) {
+      params.set("devAuth", import.meta.env.VITE_DEV_AUTH_SECRET);
+      params.set("devUserId", import.meta.env.VITE_DEV_USER_ID ?? "dev-user");
+    }
+    const query = params.toString();
     _api = newWebSocketRpcSession<IWebGatewayApi>(
-      `wss://${location.host}/rpc`
+      `${isDev ? "ws" : "wss"}://${location.host}/rpc${query ? `?${query}` : ""}`,
     );
   }
   return _api;
@@ -442,8 +455,8 @@ export function getApi(): RpcStub<IWebGatewayApi> {
 
 **Message display:**
 - User messages, assistant messages (streaming text + collapsible reasoning blocks), tool calls (pending + collapsed), error messages
-- `text_delta` events appended token-by-token — no full re-render
-- `tool_start` → show name + input; if `component` field present, mount React component from `/components/{id}.js`
+- `text_delta` events appended token-by-token — no full re-render (SolidJS fine-grained reactivity: only the text node updates)
+- `tool_start` → show name + input; if `component` field present, mount SolidJS component from `/components/{id}.js`
 - `tool_end` → collapse to summary; if `component` field present, replace with result component
 
 **Input:**

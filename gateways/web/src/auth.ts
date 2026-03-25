@@ -45,10 +45,19 @@ export async function authenticateUser(request: Request, env: Env): Promise<stri
   // Allows local testing without a real CF Access setup.
   // AUTH_SECRET must NEVER be set in production.
   if (env.AUTH_SECRET) {
+    // Check X-Dev-Auth header (used by integration tests via devAuthHeaders())
     const devAuth = request.headers.get("x-dev-auth");
     if (devAuth === env.AUTH_SECRET) {
       const userId = request.headers.get("x-dev-user-id");
       return userId ?? null;
+    }
+    // Check URL query parameters (used by the browser SPA in dev mode —
+    // capnweb's newWebSocketRpcSession does not support custom WS headers,
+    // so dev credentials are passed as ?devAuth=...&devUserId=... query params).
+    const url = new URL(request.url);
+    const qDevAuth = url.searchParams.get("devAuth");
+    if (qDevAuth === env.AUTH_SECRET) {
+      return url.searchParams.get("devUserId") ?? null;
     }
   }
 

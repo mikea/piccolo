@@ -2,3 +2,4 @@ packages:
   - "packages/*"
   - "extensions/*"
   - "gateways/*"
+  - "gateways/web/app"

@@ -27,6 +27,19 @@ import type {
 } from "@piccolo/core";
 import type { RpcTarget } from "capnweb";
 
+// Re-export shared core types so the browser SPA can import them from one place
+// without depending on @piccolo/core directly.
+export type {
+  AgentEvent,
+  Attachment,
+  CompactOptions,
+  ContextUsage,
+  ModelInfo,
+  NewSessionOptions,
+  SessionInfo,
+  SessionRecord,
+};
+
 // ─── IWebGatewayApi — Root browser-facing interface ───────────────────────────
 
 /**

@@ -571,26 +571,84 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 
 The first deployable milestone. A user can open the app, create or resume a session, and have a streaming text conversation. No tools, no extensions, no modals. The goal is to have something real in production as fast as possible.
 
+**Framework: SolidJS + @solidjs/router** (see [web_gateway.md — Browser SPA](web_gateway.md)).
+Build tool: Vite + `vite-plugin-solid`.
+Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_handling: single-page-application`).
+
 **Deliverables:**
-- Vite + React project setup in `gateways/web/app/`
-- Cap'n Web client: `getApi()` in `app/rpc.ts` connecting to `wss://{host}/rpc`
-- Session list sidebar: `api.listSessions()` — shows session names, select to switch
-- "New chat" button: `api.newSession()` — adds to list and switches active session
-- Delete session: `session.delete()` with confirmation
-- Rename session: inline double-click to edit, calls `session.setName()`
-- Message list: user messages and assistant messages (plain text streaming)
-- `text_delta` events appended token-by-token without full re-render
-- `agent_end` event: unlock input, hide abort button
-- `error` event: display error message inline
-- Input: multi-line textarea, Enter to send, Shift+Enter for newline (configurable)
-- Abort button: visible while a turn is in progress, calls `turn.abort()`
-- Model picker: `api.listModels()` → `session.setModel()`, persists across navigation
-- Current model shown in UI header
-- Auth: Cloudflare Access JWT passed automatically via cookie on WebSocket upgrade; dev-auth (`X-Dev-Auth`) for local testing
-- Build output bundled into the Worker (no R2 required for M1)
-- `pnpm build` produces `gateways/web/dist/` that Wrangler serves as static assets
+- Vite + SolidJS + @solidjs/router project setup in `gateways/web/app/`
+  - `app/package.json` (`@piccolo/web-app`; deps: `solid-js`, `@solidjs/router`, `capnweb`; devDeps: `vite`, `vite-plugin-solid`)
+  - `app/vite.config.ts` (outDir `../dist`)
+  - `app/tsconfig.json` (`jsxImportSource: "solid-js"`)
+  - `app/index.html` (`<div id="root">`)
+- Cap'n Web client: `app/src/rpc.ts` — `getApi()` singleton connecting to `wss://{host}/rpc`; dev mode passes `X-Dev-Auth` header via `VITE_DEV_AUTH_SECRET`
+- Application state: `app/src/store.ts` — SolidJS `createStore` for sessions, messages, streaming state
+- RpcTarget browser stubs:
+  - `app/src/listener.ts` — `EventListener extends RpcTarget implements IAgentEventListener`
+  - `app/src/callback.ts` — `GatewayCallbackImpl` stub (M1: returns null/false; modals in M2)
+- Routing (`@solidjs/router`):
+  - `app/src/main.tsx` — `render(() => <App />, root)`
+  - `app/src/App.tsx` — routes: `/` → redirect, `/sessions` layout, `/sessions/:id` chat
+- UI components (`app/src/components/`):
+  - `SessionSidebar.tsx` — session list, new chat button, delete, inline rename on double-click
+  - `ChatView.tsx` — assembles header + message list + input; loads session on `:id` param change
+  - `MessageList.tsx` — `For` over messages; auto-scroll to bottom
+  - `MessageItem.tsx` — user / assistant / error message bubbles
+  - `ChatInput.tsx` — multi-line textarea, Enter to send, Shift+Enter for newline; abort button while streaming
+  - `ModelPicker.tsx` — dropdown: `api.listModels()` → `session.setModel()`
+  - `Header.tsx` — session name + model picker
+  - `EmptyState.tsx` — no session selected, "New Chat" CTA
+- AgentEvent handling in store:
+  - `agent_start` → add empty assistant message, set `isStreaming: true`
+  - `text_delta` → append delta to last assistant message (fine-grained, no re-render)
+  - `agent_end` → set `isStreaming: false`, clear `activeTurn`
+  - `error` → add error message, set `isStreaming: false`
+  - `tool_start`/`tool_end` → plain text lines in M1 (rich UI in M2)
+- Auth: CF Access JWT via cookie on WS upgrade; `VITE_DEV_AUTH_SECRET` env var for local dev
+- `gateways/web/package.json` scripts: `build:app` (vite build), `build` (build:app + wrangler dry-run), `deploy` (build:app + wrangler deploy)
+- `wrangler.template.jsonc` updated: `"assets": { "directory": "./dist", "html_handling": "single-page-application" }`
 
 **Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md)
+
+### 11.1 Implementation Notes
+
+**Status:** Complete. Vite build passes cleanly (`✓ built in ~200ms`). 51 existing gateway worker tests still pass with no regressions. Build output: `gateways/web/dist/` (~96 KB JS, 0.56 KB HTML).
+
+#### File layout
+
+| File | Purpose |
+|---|---|
+| `gateways/web/app/package.json` | `@piccolo/web-app`; deps: `solid-js`, `@solidjs/router`, `capnweb` |
+| `gateways/web/app/vite.config.ts` | Vite + `vite-plugin-solid`; `root: __dirname`, `outDir: ../dist` |
+| `gateways/web/app/tsconfig.json` | Extends root; `jsxImportSource: "solid-js"`, `lib: ["ES2022","DOM"]` |
+| `gateways/web/app/index.html` | SPA shell: `<div id="root">`, `<script type="module" src="/src/main.tsx">` |
+| `gateways/web/app/src/main.tsx` | Entry: loads sessions + models, calls `render(() => <App />, root)` |
+| `gateways/web/app/src/App.tsx` | Router setup: `/` → redirect, `/sessions` → layout, `/sessions/:id` → chat |
+| `gateways/web/app/src/rpc.ts` | `getApi()` singleton; dev auth via URL query params (`?devAuth=&devUserId=`) |
+| `gateways/web/app/src/store.ts` | SolidJS `createStore`; all app state + actions; RPC stubs in `createSignal` |
+| `gateways/web/app/src/listener.ts` | `EventListener extends RpcTarget implements IAgentEventListener` |
+| `gateways/web/app/src/callback.ts` | `GatewayCallbackImpl` stub (M1: all methods return null/false) |
+| `gateways/web/app/src/components/SessionLayout.tsx` | Two-panel grid layout: sidebar + outlet |
+| `gateways/web/app/src/components/SessionSidebar.tsx` | Session list, new chat button, delete, inline rename on dblclick |
+| `gateways/web/app/src/components/ChatView.tsx` | Activates session on `:id` param change; assembles Header+MessageList+ChatInput |
+| `gateways/web/app/src/components/MessageList.tsx` | `For` over messages; auto-scroll to bottom |
+| `gateways/web/app/src/components/MessageItem.tsx` | `Switch/Match` for user/assistant/error/tool bubbles; streaming cursor |
+| `gateways/web/app/src/components/ChatInput.tsx` | Textarea; Enter to send, Shift+Enter newline; Abort button while streaming |
+| `gateways/web/app/src/components/ModelPicker.tsx` | `<select>` dropdown; `api.listModels()` → `session.setModel()` |
+| `gateways/web/app/src/components/Header.tsx` | Session name + ModelPicker |
+| `gateways/web/app/src/components/EmptyState.tsx` | "No session selected" with "Start a new chat" CTA |
+
+#### Key design decisions
+
+**Dev auth via URL query params**: `capnweb`'s `newWebSocketRpcSession` does not support custom WebSocket headers. Dev credentials (`AUTH_SECRET`, userId) are passed as `?devAuth=&devUserId=` query params. `gateways/web/src/auth.ts` was updated to also check `URLSearchParams` from the WebSocket upgrade URL.
+
+**RpcTarget stubs outside reactive store**: `IWebGatewaySession` and `ITurnHandle` stubs are stored in `createSignal` (not the `createStore`), because SolidJS should not track RpcTarget object internals.
+
+**Fine-grained streaming**: `text_delta` events use `setStore("messages", idx, "content", c => c + delta)` — SolidJS's fine-grained reactivity updates only the text node, not the full message list.
+
+**`SessionInfo` / `ModelInfo` re-exports**: `gateways/web/src/types.ts` was extended to re-export these shared core types so `app/` can import them without depending on `@piccolo/core` directly.
+
+**pnpm workspace**: `gateways/web/app` added to `pnpm-workspace.yaml` as `"gateways/web/app"` so the app's SolidJS deps are installed by `pnpm install`.
 
 ---
 

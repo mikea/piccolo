@@ -1,0 +1,23 @@
+{
+  // TypeScript config for the piccolo web SPA.
+  // Extends root tsconfig.base.json; overrides jsx settings for SolidJS.
+  // The app runs in a browser (not Workers), so lib includes DOM.
+  //
+  // Spec ref: specs/web_gateway.md §Browser SPA
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "types": [],
+    "paths": {
+      // Import gateway types directly from the Worker source.
+      // Vite resolves this at build time; no Worker runtime code is bundled.
+      "gateway-types": ["../src/types.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

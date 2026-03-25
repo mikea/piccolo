@@ -1,181 +1,54 @@
 # piccolo
 
-A minimalistic AI agent, fully specced and implemented by AI — driven and verified by humans.
+An AI agent running on Cloudflare.
 
-Inspired by [pi](https://github.com/badlogic/pi-mono), a capable local AI agent by Mario Zechner. Piccolo takes the same core ideas and rebuilds them from the ground up for the cloud, with a radically smaller core and a fundamentally different infrastructure model.
+Inspired by [pi](https://github.com/badlogic/pi-mono), a capable local AI agent by Mario Zechner.
 
----
-
-## What piccolo is
-
-Piccolo is an AI agent that runs entirely on **Cloudflare's infrastructure** — no server to provision, no binary to install, no local state. You deploy it once; it is accessible from any device through a web browser or Telegram.
-
-The implementation is intentionally AI-driven: every spec document, architectural decision, and code change is authored by an AI agent and reviewed and verified by a human. The spec is the contract. The code must match it.
+AI-implemented, human-steered.
 
 ---
 
-## Key differences from pi
+## Design Principals
 
-### 1. Minimal core — everything that can be an extension, must be
+### Minimal core
 
-Pi ships batteries included: 6 built-in tools, a TUI, session persistence, compaction, and a model catalog all in the core. Piccolo's core does exactly four things: define the extension API, load and dispatch to extensions, run the agent loop, and integrate with Cloudflare infrastructure. Everything else is an extension.
+The core does four things:
 
-- No built-in tools (file I/O, shell, search are all extensions)
-- No built-in UI (all user interaction goes through gateways)
-- No hardcoded model catalog
-- No compaction logic in the core
+- run the agent loop with tools support
+- persist state
+- define the extension API
+- dispatch to extensions
 
-### 2. Runs in the cloud, not on your machine
+No built-in tools. No built-in UI.
 
-Pi is a local CLI binary — `~/.pi/` config, local JSONL sessions, process-local state. Piccolo is a Cloudflare Workers service:
+### Cloudflare as the architecture
 
-- No local filesystem. All state lives in Durable Objects, D1, KV, or R2.
-- No binary compilation. Deployment is `wrangler deploy`.
-- No per-provider API key files. Keys are managed in CF AI Gateway.
-- Stateless request handling wherever possible — any Worker instance can resume any session from durable storage.
+Cloud-native.
+Fully embrace Cloudflare Workers platform.
 
-### 3. Cloudflare infrastructure as the architecture
+### JSRPC everywhere
 
-Every subsystem maps to a Cloudflare primitive — not as an implementation detail, but as the design:
+All communications use jsrpc/capnweb
 
-| Concern | Piccolo approach |
-|---|---|
-| Agent session state | Durable Objects |
-| Session history | D1 |
-| Config & extension registry | Workers KV |
-| File/asset storage | R2 |
-| LLM routing & observability | CF AI Gateway (unified API, all providers) |
-| Extension distribution | Workers for Platforms dispatch namespace |
-| All inter-component calls | Workers RPC (JSRPC) |
-| User interfaces | Gateway Workers (Web UI, Telegram) |
+### Extensions are Workers
 
-### 4. JSRPC everywhere
-
-All communication between piccolo components — core to gateway, core to extension, extension back to core — uses Cloudflare Workers RPC. There is no custom HTTP protocol, no WebSocket framing, no JSON-over-fetch between internal components. Everything is a typed `WorkerEntrypoint` or `RpcTarget` method call.
-
-### 5. Extensions are deployed Workers, not local files
-
-Pi extensions are `.ts` files dropped in a directory. Piccolo extensions are independent Cloudflare Workers deployed into a dispatch namespace. Installing an extension after piccolo is already running requires no core redeploy — just upload the Worker and register its name in KV.
+Each extension is a Cloudflare Worker deployed into a dispatch namespace. Adding or updating an extension requires no core redeploy.
 
 ---
 
-## Deploy piccolo
+## Deploy
 
-> Full deployment requires all implementation steps to be complete. Each
-> subsection below notes which step must be finished before that component
-> can be meaningfully deployed.
-
-### Prerequisites
-
-- Cloudflare account with the **Workers paid plan** (required for Durable
-  Objects and Workers for Platforms)
-- Wrangler CLI installed and authenticated:
-  ```bash
-  pnpm wrangler login
-  ```
-- Node.js 22+ and pnpm installed
-
-### 1. Create Cloudflare resources (one-time)
-
-These resources are shared across all piccolo components. Create them once per
-Cloudflare account.
-
-```bash
-# D1 database — stores session records and conversation history
-pnpm wrangler d1 create piccolo-sessions
-
-# KV namespace — extension registry, model catalog, per-user config
-pnpm wrangler kv namespace create piccolo-config
-
-# R2 bucket — file storage for the R2 tool and web SPA assets
-pnpm wrangler r2 bucket create piccolo-assets
-
-# Workers for Platforms dispatch namespace — hosts extension Workers
-pnpm wrangler dispatch-namespace create piccolo-extensions
-```
-
-Copy the IDs printed by each command — you need them in the next step.
-
-### 2. Configure wrangler
-
-Each component ships a `wrangler.template.jsonc` that contains placeholder
-values. Copy it to `wrangler.jsonc` and fill in the real IDs. `wrangler.jsonc`
-is gitignored and must never be committed.
-
-```bash
-cp packages/core/wrangler.template.jsonc packages/core/wrangler.jsonc
-```
-
-Open `packages/core/wrangler.jsonc` and replace the two placeholders:
-
-```jsonc
-// Before:
-{ "binding": "SESSIONS_DB", "database_name": "piccolo-sessions", "database_id": "<PICCOLO_D1_ID>" }
-{ "binding": "CONFIG", "id": "<PICCOLO_KV_ID>" }
-
-// After (example — use your own IDs):
-{ "binding": "SESSIONS_DB", "database_name": "piccolo-sessions", "database_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" }
-{ "binding": "CONFIG", "id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5" }
-```
-
-R2 and the dispatch namespace are referenced by name — no IDs to fill in.
-
-### 3. Deploy piccolo-core
-
-> Requires: implementation steps 1–4 (project setup + agent package + D1
-> schema + session persistence layer).
->
-> Before step 9 the Worker boots and holds state but serves no JSRPC calls
-> (`IPiccoloCore` / `ISession` are wired in step 9).
-
-```bash
-# Apply the D1 schema migrations
-pnpm wrangler d1 migrations apply piccolo-sessions \
-  --config packages/core/wrangler.jsonc
-
-# Set the Cloudflare AI Gateway token secret
-pnpm wrangler secret put CF_AI_GATEWAY_TOKEN \
-  --config packages/core/wrangler.jsonc
-
-# Deploy the Worker
-pnpm wrangler deploy --config packages/core/wrangler.jsonc
-```
-
-Verify the Worker started cleanly:
-
-```bash
-pnpm wrangler tail --config packages/core/wrangler.jsonc
-```
-
-### 4. Deploy gateways
-
-> Requires: implementation step 10 (web gateway) and step 11 (Telegram
-> gateway). Deploy piccolo-core first — gateways depend on it via service
-> binding.
-
-*(Details added when gateway implementation is complete.)*
-
-### 5. Deploy extensions
-
-> Requires: implementation steps 12–15. Extensions are deployed into the
-> `piccolo-extensions` dispatch namespace independently of the core — no
-> core redeploy required.
-
-*(Details added when extension implementation is complete.)*
+See [DEPLOY.md](DEPLOY.md).
 
 ---
 
 ## Specification
 
-The full specification lives in [`specs/`](specs/). Start with the overview:
-
-- [specs/overview.md](specs/overview.md) — system overview, component roles, infrastructure summary
-- [specs/api.md](specs/api.md) — all public JSRPC APIs (single source of truth for interfaces)
-- [specs/agent.md](specs/agent.md) — agent loop, AI Gateway integration, tool execution
-- [specs/gateway.md](specs/gateway.md) — Web UI and Telegram gateways
-- [specs/extension-system.md](specs/extension-system.md) — extension contract and lifecycle
-- [specs/core.md](specs/core.md) — piccolo-core implementation (session storage, compaction, extension dispatch)
-- [specs/data-flows.md](specs/data-flows.md) — end-to-end data flows
-- [specs/infrastructure.md](specs/infrastructure.md) — deployment, bindings, CI/CD
-- [specs/code.md](specs/code.md) — TypeScript standards, testing, mocking
-- [specs/implementation_plan.md](specs/implementation_plan.md) — ordered implementation plan
+- [specs/overview.md](specs/overview.md) — system overview and component roles
+- [specs/api.md](specs/api.md) — all public JSRPC interfaces
+- [specs/core.md](specs/core.md) — piccolo-core internals
+- [specs/agent.md](specs/agent.md) — agent loop and AI Gateway integration
+- [specs/web_gateway.md](specs/web_gateway.md) — web UI gateway
+- [specs/extension-system.md](specs/extension-system.md) — extension contract
+- [specs/infrastructure.md](specs/infrastructure.md) — deployment and bindings
+- [specs/implementation_plan.md](specs/implementation_plan.md) — implementation plan
