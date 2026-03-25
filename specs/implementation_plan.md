@@ -567,7 +567,111 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 
 ---
 
-## 11. Telegram Gateway
+## 11. Web UI SPA — M1: Session Selector and Chat
+
+The first deployable milestone. A user can open the app, create or resume a session, and have a streaming text conversation. No tools, no extensions, no modals. The goal is to have something real in production as fast as possible.
+
+**Deliverables:**
+- Vite + React project setup in `gateways/web/app/`
+- Cap'n Web client: `getApi()` in `app/rpc.ts` connecting to `wss://{host}/rpc`
+- Session list sidebar: `api.listSessions()` — shows session names, select to switch
+- "New chat" button: `api.newSession()` — adds to list and switches active session
+- Delete session: `session.delete()` with confirmation
+- Rename session: inline double-click to edit, calls `session.setName()`
+- Message list: user messages and assistant messages (plain text streaming)
+- `text_delta` events appended token-by-token without full re-render
+- `agent_end` event: unlock input, hide abort button
+- `error` event: display error message inline
+- Input: multi-line textarea, Enter to send, Shift+Enter for newline (configurable)
+- Abort button: visible while a turn is in progress, calls `turn.abort()`
+- Model picker: `api.listModels()` → `session.setModel()`, persists across navigation
+- Current model shown in UI header
+- Auth: Cloudflare Access JWT passed automatically via cookie on WebSocket upgrade; dev-auth (`X-Dev-Auth`) for local testing
+- Build output bundled into the Worker (no R2 required for M1)
+- `pnpm build` produces `gateways/web/dist/` that Wrangler serves as static assets
+
+**Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md)
+
+---
+
+## 11a. Web UI SPA — M2: Tools Support
+
+Adds tool call rendering and interactive gateway callbacks. Requires `ext-fetch-tool` or another tool to be deployed to see real output.
+
+**Deliverables:**
+- `tool_start` event: render tool name + collapsible JSON input block; show "running…" spinner
+- `tool_end` event: collapse to summary line; show result or error text from `ITextUI`
+- `tool_update` event: update the in-progress tool call with intermediate text
+- `WebComponentDescriptor` support: if `tool_start`/`tool_end` event carries `component` field, dynamically `import()` from `/components/{componentId}.js` and mount as React component with supplied `props`
+- Component fallback: if dynamic import fails, render default text block
+- `IGatewayCallback` browser implementation:
+  - `requestSelect` → modal with checkbox/radio list, returns selected options
+  - `requestConfirm` → modal with Yes/No buttons
+  - `requestInput` → modal with text field and submit
+  - `notify` → toast notification (top-right, auto-dismiss)
+- Modals block the input area while open; abort is still available
+- `context_usage` event: context usage bar in the session header (used tokens / total, colour-coded)
+- `/compact` slash command: calls `session.compact()`
+
+**Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md), [tools.md](tools.md)
+
+---
+
+## 11b. Web UI SPA — M3: Session Management and History
+
+Adds branching, forking, and deep session navigation. Makes the session tree a first-class UI concept.
+
+**Deliverables:**
+- `session.getContextUsage()` polled after each turn for the context bar (supplements `context_usage` events)
+- Fork session: `/fork` slash command or button → `session.fork()` → navigate to new session
+- Branch navigation: show branch point indicator in message list; button to jump to a branch entry via `session.branch(entryId)`
+- Session info panel: created date, message count, current model, context usage
+- Keyboard shortcuts: `Cmd+K` / `Ctrl+K` command palette for session switching and slash commands
+- Slash command autocomplete dropdown in input area: `/new`, `/model <id>`, `/fork`, `/compact`, `/abort`
+- `/models` slash command: display available models inline as a selectable list
+- `/new` slash command: alias for "New chat" button
+- `/model <id>` slash command: alias for model picker
+
+**Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md)
+
+---
+
+## 11c. Web UI SPA — M4: Extensions Support
+
+Adds extension-contributed commands and custom slash commands. Requires at least one extension (skills or templates) to be deployed to see real output.
+
+**Deliverables:**
+- Extension command discovery: `session.getCommands()` fetched on session start; commands merged into slash command autocomplete
+- Extension command dispatch: `/skill:name` and `/template:name` typed in input are sent as-is via `session.prompt()` (the core's `ExtensionRunner` handles them server-side); no special client routing needed
+- Extension command autocomplete: show extension commands in the `/` dropdown with their description
+- `steer` and `followUp` UI: developer-mode panel (hidden by default) exposing `session.steer()` and `session.followUp()` text inputs for debugging extension behaviour
+- Attachment upload: file picker → `session.uploadAttachment()` → attach `attachmentId` to next `prompt()` call; show thumbnail or filename in the composer
+
+**Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md), [extension-system.md](extension-system.md)
+
+---
+
+## 12. `ext-fetch-tool` — Fetch Tool
+
+Gives the LLM the ability to make HTTP requests to the public internet. Validates the tool extension pipeline with zero-binding Workers before introducing storage-bound tools.
+
+**Deliverables:**
+- `FetchTool extends WorkerEntrypoint` implementing `ITool`
+- `getTools()` returning the fetch `ToolDescriptor` with full `inputSchema` (action, url, headers, body, bodyType, maxBytes)
+- `executeTool()` dispatching all 6 HTTP methods: `get`, `post`, `put`, `patch`, `delete`, `head`
+- SSRF guard: reject private IP ranges and metadata endpoints before making the request
+- Scheme allowlist: only `https://` and `http://` permitted
+- Response truncation at `maxBytes` with notice appended to result text
+- Binary response detection: non-text content types base64-encoded and noted
+- `FetchDetails` result type: url, method, status, statusText, contentType, bodyBytes, truncated
+- No `wrangler` bindings required — uses runtime `fetch()` only
+- Unit tests: all 6 HTTP methods; truncation; binary encoding; SSRF guard (private IPs); scheme guard; non-2xx as result not error; network error propagation
+
+**Spec refs:** [fetch_tool.md](fetch_tool.md), [tools.md](tools.md)
+
+---
+
+## 13. Telegram Gateway
 
 The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 
@@ -587,9 +691,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 
 ---
 
-## 12. `ext-r2-tool` — R2 Storage Tool
-
-First provided tool. Validates the full `ITool` → extension Worker → dispatch namespace pipeline end-to-end.
+## 14. `ext-r2-tool` — R2 Storage Tool
 
 **Deliverables:**
 - `R2ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
@@ -603,7 +705,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 
 ---
 
-## 13. `ext-d1-tool` — D1 Database Tool
+## 15. `ext-d1-tool` — D1 Database Tool
 
 **Deliverables:**
 - `D1ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
@@ -619,7 +721,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 
 ---
 
-## 14. `ext-skills` — Skills Extension
+## 16. `ext-skills` — Skills Extension
 
 **Deliverables:**
 - `SkillsExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
@@ -637,7 +739,7 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 
 ---
 
-## 15. `ext-templates` — Prompt Templates Extension
+## 17. `ext-templates` — Prompt Templates Extension
 
 **Deliverables:**
 - `TemplatesExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
@@ -656,36 +758,14 @@ First provided tool. Validates the full `ITool` → extension Worker → dispatc
 
 ---
 
-## 16. Web UI SPA
-
-The browser-side single-page application. Depends on the Web UI Gateway HTTP API (item 10) being stable.
-
-**Deliverables:**
-- Framework choice (React recommended — consistent with `IWebUI` component model)
-- Vite project setup inside `gateways/web/app/`
-- Message list rendering: user messages, assistant messages (streaming text, reasoning blocks), tool calls (pending + collapsed), error messages
-- Incremental streaming: `text_delta` events appended without full re-render
-- Input: multi-line, Enter to submit (configurable), attachment upload, abort button
-- Session management: create, list, resume, delete, rename, fork
-- Model picker: `GET /api/models`, `PUT /api/sessions/:id/model`
-- Context usage indicator
-- Slash command autocomplete: `/new`, `/model`, `/fork`, `/compact` + extension commands from `getCommands()`
-- `IGatewayCallback` modal UI: select dialog, confirm dialog, text input dialog
-- Custom tool component mounting: `IWebUI.getComponent()` → dynamic import by `componentId`
-- Auth: pass Cloudflare Access JWT in requests
-- Build output served from R2 or bundled into the Worker
-
-**Spec refs:** [web_gateway.md — Browser SPA](web_gateway.md)
-
----
-
-## 17. End-to-End Integration Tests
+## 18. End-to-End Integration Tests
 
 Full system smoke tests after all pieces are in place.
 
 **Deliverables:**
-- `tests/e2e/` — Vitest tests running against a locally deployed Miniflare stack (core + web gateway + r2-tool + d1-tool)
+- `tests/e2e/` — Vitest tests running against a locally deployed Miniflare stack (core + web gateway + fetch-tool + r2-tool + d1-tool)
 - Scenario: new session → prompt → streaming response → verify `AgentEvent` sequence
+- Scenario: prompt → tool call (fetch get) → tool result → follow-up response
 - Scenario: prompt → tool call (r2 read) → tool result → follow-up response
 - Scenario: long conversation → compaction trigger → context reconstructed correctly after compaction
 - Scenario: session fork → verify branched history is independent
@@ -712,10 +792,14 @@ Full system smoke tests after all pieces are in place.
 | 8 | `ISession` as unified context | `packages/core`, `packages/agent` | [api.md §2](api.md), [agent.md §IAgentSession](agent.md) |
 | 9 | `IPiccoloCore` + `ISession` | `packages/core` | [api.md §1–2](api.md) |
 | 10 | Web UI Gateway HTTP API | `gateways/web` | [web_gateway.md](web_gateway.md) |
-| 11 | Telegram Gateway | `gateways/telegram` | [telegram_gateway.md](telegram_gateway.md) |
-| 12 | `ext-r2-tool` | `extensions/r2-tool` | [r2_tool.md](r2_tool.md) |
-| 13 | `ext-d1-tool` | `extensions/d1-tool` | [d1_tool.md](d1_tool.md) |
-| 14 | `ext-skills` | `extensions/skills` | [skills_extension.md](skills_extension.md) |
-| 15 | `ext-templates` | `extensions/templates` | [prompt_templates_extension.md](prompt_templates_extension.md) |
-| 16 | Web UI SPA | `gateways/web/app` | [web_gateway.md — SPA](web_gateway.md) |
-| 17 | E2E integration tests | `tests/e2e` | all |
+| 11 | Web UI SPA — M1: session selector + chat | `gateways/web/app` | [web_gateway.md — SPA](web_gateway.md) |
+| 11a | Web UI SPA — M2: tools support | `gateways/web/app` | [web_gateway.md — SPA](web_gateway.md) |
+| 11b | Web UI SPA — M3: session management + history | `gateways/web/app` | [web_gateway.md — SPA](web_gateway.md) |
+| 11c | Web UI SPA — M4: extensions support | `gateways/web/app` | [web_gateway.md — SPA](web_gateway.md) |
+| 12 | `ext-fetch-tool` | `extensions/fetch-tool` | [fetch_tool.md](fetch_tool.md) |
+| 13 | Telegram Gateway | `gateways/telegram` | [telegram_gateway.md](telegram_gateway.md) |
+| 14 | `ext-r2-tool` | `extensions/r2-tool` | [r2_tool.md](r2_tool.md) |
+| 15 | `ext-d1-tool` | `extensions/d1-tool` | [d1_tool.md](d1_tool.md) |
+| 16 | `ext-skills` | `extensions/skills` | [skills_extension.md](skills_extension.md) |
+| 17 | `ext-templates` | `extensions/templates` | [prompt_templates_extension.md](prompt_templates_extension.md) |
+| 18 | E2E integration tests | `tests/e2e` | all |

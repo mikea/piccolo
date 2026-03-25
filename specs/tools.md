@@ -12,6 +12,7 @@ Piccolo has no built-in tools — the core ships with zero tools. The following 
 |---|---|---|
 | R2 | [r2_tool.md](r2_tool.md) | Read/write files in a Cloudflare R2 bucket |
 | D1 | [d1_tool.md](d1_tool.md) | Query and modify a Cloudflare D1 (SQLite) database |
+| Fetch | [fetch_tool.md](fetch_tool.md) | Make HTTP requests to the public internet via `fetch()` |
 
 ---
 
