@@ -76,6 +76,7 @@ function makeMockDOState(overrides: Partial<DOState> = {}): DOState {
     lastContextWindowTokens: 200_000,
     messagesAtTurnStart: 0,
     session: null,
+    callback: undefined,
     modelOverridden: false,
     // promptFn is bound to AgentSessionDO.prompt() in production; in unit tests
     // use a stub that rejects so prompt() is not accidentally exercised here.

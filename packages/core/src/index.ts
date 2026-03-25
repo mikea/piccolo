@@ -16,3 +16,30 @@ export { PiccoloCore as default } from "./piccolo-core.ts";
 // ── Public library API ────────────────────────────────────────────────────────
 // Session persistence layer
 export * from "./session/index.ts";
+// ── Public types ──────────────────────────────────────────────────────────────
+// All shared types from specs/api.md — consumed by gateways and extensions.
+export type {
+  AgentEvent,
+  AgentToolDescriptor,
+  AgentToolResult,
+  Attachment,
+  CompactOptions,
+  ContextUsage,
+  CustomEntry,
+  GatewayId,
+  IAgentSessionDO,
+  IAgentTool,
+  IGatewayCallback,
+  IPiccoloCore,
+  ISession,
+  ITextUI,
+  ITool,
+  IWebUI,
+  ModelInfo,
+  NewSessionOptions,
+  SessionInfo,
+  SessionRecord,
+  ToolDescriptor,
+  ToolResult,
+  WebComponentDescriptor,
+} from "./types.ts";

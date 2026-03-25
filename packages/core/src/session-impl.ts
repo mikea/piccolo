@@ -33,7 +33,9 @@ import type {
   ContextUsage,
   CustomEntry as CustomEntryType,
   IAgentTool,
+  IGatewayCallback,
   ISession,
+  ITurn,
   ModelInfo,
   SessionRecord,
   ToolDescriptor,
@@ -100,11 +102,15 @@ export class SessionImpl extends RpcTarget implements ISession {
 
   // ─── Conversation ────────────────────────────────────────────────────────────
 
-  async prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>> {
+  async prompt(
+    text: string,
+    attachments?: Attachment[],
+    callback?: IGatewayCallback,
+  ): Promise<ReadableStream<AgentEvent>> {
     // Delegates to AgentSessionDO.prompt() via the promptFn bound during
     // #initialize(). This avoids an extra JSRPC hop and works both when called
     // from gateway context (via JSRPC) and from tool/extension context.
-    return this.doState.promptFn(text, attachments);
+    return this.doState.promptFn(text, attachments, callback);
   }
 
   async sendUserMessage(content: string): Promise<void> {
@@ -121,6 +127,14 @@ export class SessionImpl extends RpcTarget implements ISession {
 
   async abort(): Promise<void> {
     this.doState.abortController?.abort();
+  }
+
+  async getCurrentTurn(): Promise<ITurn | undefined> {
+    // Only return a turn context if a turn is actively in progress.
+    if (this.doState.callback === undefined && this.doState.abortController === null) {
+      return undefined;
+    }
+    return new TurnImpl(this.doState);
   }
 
   // ─── Model management ────────────────────────────────────────────────────────
@@ -280,6 +294,28 @@ export class SessionImpl extends RpcTarget implements ISession {
     s.pendingEntries.push(entry);
     s.branchEntries.push(entry);
     s.leafId = entry.id;
+  }
+}
+
+// ─── TurnImpl ─────────────────────────────────────────────────────────────────
+
+/**
+ * Core-side implementation of ITurn.
+ *
+ * Created by SessionImpl.getCurrentTurn() while a turn is in progress.
+ * Provides access to the gateway callback for the active turn.
+ * The callback is a property of the turn (not the session) — it is bound
+ * to a specific prompt() call and is ephemeral.
+ *
+ * Spec ref: specs/api.md §2 ITurn
+ */
+export class TurnImpl extends RpcTarget implements ITurn {
+  constructor(private readonly doState: DOState) {
+    super();
+  }
+
+  async getCallback(): Promise<IGatewayCallback | undefined> {
+    return this.doState.callback;
   }
 }
 

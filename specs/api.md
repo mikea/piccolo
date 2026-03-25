@@ -159,20 +159,21 @@ interface ToolResult {
 // Well-known gateway identifiers.
 type GatewayId = "web" | "telegram" | (string & {});
 
-// ITextUI — minimal shared interface implemented by every gateway.
-// Tools that only need text output use this.
+// ITextUI — minimal shared interface implemented by tool Workers.
 // Returned by ITool.getGatewayUI("web") or getGatewayUI("telegram")
 // when the tool does not need gateway-specific rendering.
+// The gateway calls these methods to pull rendering text FROM the tool
+// (not to push text TO the tool). The tool provides its own display strings;
+// the gateway decides how and when to render them.
 interface ITextUI extends RpcTarget {
-  // Render a line of status text while the tool is executing.
-  showStatus(text: string): Promise<void>;
+  // Return a line of status text to display while the tool is executing.
+  getStatusText(): Promise<string>;
 
-  // Replace the tool's result display with formatted text.
-  // Called once when execute() completes.
-  showResult(text: string): Promise<void>;
+  // Return the formatted result text to display once execute() completes.
+  getResultText(output: unknown): Promise<string>;
 
-  // Show an error message in place of the result.
-  showError(text: string): Promise<void>;
+  // Return an error message to display when execute() throws.
+  getErrorText(error: unknown): Promise<string>;
 }
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
@@ -262,7 +263,11 @@ class ISession extends RpcTarget {
   // ─── Conversation ─────────────────────────────────────────────────────────
 
   // Start a new agent turn. Returns a stream of AgentEvents for this turn.
-  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+  // callback is the gateway's IGatewayCallback stub (see api.md §5).
+  // It is stored on the session for the duration of the turn so tools can
+  // call requestSelect / requestConfirm / requestInput mid-turn via ctx.getCallback().
+  // Pass undefined (or omit) when no interactive callback is available.
+  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ReadableStream<AgentEvent>>;
 
   // Inject a user-role message into the conversation (visible to the LLM).
   // If a turn is active, delivered as a steer (mid-turn injection).
@@ -279,6 +284,11 @@ class ISession extends RpcTarget {
 
   // Abort the current streaming turn immediately.
   abort(): Promise<void>;
+
+  // Return the active turn context (if a turn is in progress).
+  // The callback for interactive mid-turn prompts is accessed via ITurn.getCallback().
+  // Returns undefined between turns.
+  getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────
 
@@ -329,6 +339,16 @@ class ISession extends RpcTarget {
   // ─── Lifecycle ───────────────────────────────────────────────────────────
 
   delete(): Promise<void>;
+}
+
+// ITurn — active turn context accessible from tool/extension execute() calls.
+// The callback is a property of the turn (not the session) since it is bound
+// to a specific prompt() invocation and is ephemeral.
+class ITurn extends RpcTarget {
+  // Return the gateway's IGatewayCallback stub for this turn (if any).
+  // Tools call this to request interactive input mid-turn (select, confirm, input).
+  // Returns undefined if the gateway did not supply a callback for this turn.
+  getCallback(): Promise<IGatewayCallback | undefined>;
 }
 ```
 
@@ -388,7 +408,7 @@ class IAgentSessionDO extends DurableObject {
 
   // ─── Conversation ─────────────────────────────────────────────────────────
 
-  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ReadableStream<AgentEvent>>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   abort(): Promise<void>;
@@ -501,19 +521,29 @@ interface ITurnHandle extends RpcTarget {
 
 ### `IWebUiSessionDO`
 
-Durable Object for connection durability and event buffering across Worker evictions:
+Durable Object for connection durability and event buffering across Worker evictions.
+
+This is a **pure transport** — no capnweb RpcTarget stubs are stored here. The DO accepts
+native WebSocket connections via the Workers hibernation API (`ctx.acceptWebSocket`),
+broadcasts events as serialized JSON, and buffers events for reconnect replay.
+The capnweb session lives in the gateway Worker; the DO provides the persistent WebSocket
+connections that survive Worker eviction.
 
 ```typescript
 import { DurableObject } from "cloudflare:workers";
 
 class IWebUiSessionDO extends DurableObject {
-  // Register a new browser tab WebSocket connection.
+  // Accept a WebSocket upgrade request from a browser tab.
+  // Returns 101 Switching Protocols. The connection is hibernated so it
+  // survives Worker eviction. Recent buffered events are replayed to the
+  // new connection immediately after upgrade.
   addConnection(request: Request): Promise<Response>;
 
-  // Fan event out to all connected browser tabs via their IAgentEventListener stubs.
+  // Broadcast a serialized AgentEvent to all connected WebSocket clients.
+  // Buffers the event (last 50) for reconnecting clients.
   pushEvent(event: AgentEvent): Promise<void>;
 
-  // Return recent events for reconnecting clients.
+  // Return recent buffered events for reconnecting clients.
   getRecentEvents(): Promise<AgentEvent[]>;
 }
 ```

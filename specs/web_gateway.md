@@ -393,17 +393,21 @@ With Cap'n Web over WebSocket, each browser tab maintains its own persistent Web
 
 ```typescript
 class WebUiSessionDO extends DurableObject {
-  // Upgraded WebSocket connections from browser tabs viewing this session.
-  // Each connection is a Cap'n Web session with its own IAgentEventListener stub.
+  // Pure WebSocket transport — no capnweb stubs stored here.
+  // Uses Workers hibernation API (ctx.acceptWebSocket / ctx.getWebSockets) so
+  // connections survive Worker eviction. Events are serialized as JSON.
 
-  // Called by the gateway Worker to register a new browser tab connection.
+  // Called by the gateway Worker to accept a WebSocket upgrade from a browser tab.
+  // Hibernates the connection so it persists across Worker evictions.
+  // Replays recent buffered events to the new connection immediately.
   async addConnection(request: Request): Promise<Response>;
 
   // Called by the gateway Worker as it consumes AgentEvents from piccolo-core.
-  // Fans the event out to all connected browser tabs via their IAgentEventListener stubs.
+  // Broadcasts the serialized event to all hibernated WebSocket connections.
+  // Buffers the last 50 events for reconnect replay.
   async pushEvent(event: AgentEvent): Promise<void>;
 
-  // Buffer size for reconnecting clients (replayed on re-connection).
+  // Return recent buffered events for reconnecting clients.
   // Default: last 50 events.
   async getRecentEvents(): Promise<AgentEvent[]>;
 }

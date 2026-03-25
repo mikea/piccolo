@@ -35,6 +35,7 @@ export type {
   ModelMessage,
 } from "@piccolo/agent";
 
+import type { RpcTarget } from "cloudflare:workers";
 // ── External dependencies ────────────────────────────────────────────────────
 import type {
   AgentEvent,
@@ -164,15 +165,65 @@ export interface ITool extends IAgentTool {
 // Well-known gateway identifiers.
 // The branded union `"web" | "telegram" | (string & {})` provides IDE autocomplete
 // for the two built-in gateways while still accepting arbitrary extension gateway IDs.
-// TODO(item-10): gateway implementations declare their own ID constants
 export type GatewayId = "web" | "telegram" | (string & {});
 
-// ITextUI — minimal shared interface implemented by every gateway.
-// TODO(item-10): implement — placeholder only
-export interface ITextUI {
-  showStatus(text: string): Promise<void>;
-  showResult(text: string): Promise<void>;
-  showError(text: string): Promise<void>;
+// ITextUI — minimal shared interface implemented by tool Workers.
+// Returned by ITool.getGatewayUI("web") or getGatewayUI("telegram")
+// when the tool does not need gateway-specific rendering.
+// The gateway calls these to PULL rendering text from the tool;
+// the tool provides its own display strings.
+// Spec ref: specs/api.md §3
+export interface ITextUI extends RpcTarget {
+  // Return a status line to display while the tool is executing.
+  getStatusText(): Promise<string>;
+  // Return the formatted result text once execute() completes.
+  getResultText(output: unknown): Promise<string>;
+  // Return an error message when execute() throws.
+  getErrorText(error: unknown): Promise<string>;
+}
+
+// IWebUI — Web UI Gateway rendering interface.
+// Returned by ITool.getGatewayUI("web").
+// Spec ref: specs/api.md §3
+export interface IWebUI extends ITextUI {
+  // Return a component descriptor for custom React rendering.
+  // componentId must be a stable string registered by the tool's extension Worker.
+  getComponent(phase: "call" | "result"): Promise<WebComponentDescriptor | undefined>;
+}
+
+// Descriptor for a custom React component served at /components/{componentId}.js.
+// Spec ref: specs/api.md §3
+export interface WebComponentDescriptor {
+  componentId: string; // stable identifier, e.g. "r2-file-tree"
+  props: Record<string, unknown>; // serialisable props passed to the component
+}
+
+// ─── Gateway Callback ─────────────────────────────────────────────────────────
+
+// IGatewayCallback — Interactive prompts from core back to the gateway mid-turn.
+// Implemented by each gateway. An RpcTarget stub is passed into ISession.prompt()
+// so the core can call back for interactive input (select, confirm, input, notify).
+// Tools access the active callback via ITurn.getCallback() from ctx.getCurrentTurn().
+// Spec ref: specs/api.md §5
+export interface IGatewayCallback extends RpcTarget {
+  requestSelect(title: string, options: string[], multiple?: boolean): Promise<string[] | null>;
+  requestConfirm(title: string, message: string): Promise<boolean>;
+  requestInput(title: string, placeholder?: string): Promise<string | null>;
+  notify(message: string, level: "info" | "success" | "warning" | "error"): Promise<void>;
+}
+
+// ─── ITurn — Active turn context ──────────────────────────────────────────────
+
+// ITurn — represents the currently active agent turn.
+// Accessible from tool and extension context via ISession.getCurrentTurn().
+// Only available while a turn is in progress; undefined between turns.
+// The callback is a property of the turn (not the session) since it is
+// bound to a specific prompt() call and is ephemeral.
+// Spec ref: specs/api.md §2
+export interface ITurn extends RpcTarget {
+  // Return the gateway's IGatewayCallback stub for this turn (if any).
+  // Tools call this to request interactive input mid-turn.
+  getCallback(): Promise<IGatewayCallback | undefined>;
 }
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
@@ -228,8 +279,17 @@ export interface ISession extends IAgentSession {
 
   // ─── Conversation ────────────────────────────────────────────────────────────
 
-  /** Start a new agent turn. Returns a stream of AgentEvents for this turn. */
-  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+  /**
+   * Start a new agent turn. Returns a stream of AgentEvents for this turn.
+   * callback is the gateway's IGatewayCallback stub (see IGatewayCallback / api.md §5).
+   * It is stored on the session for the duration of the turn so tools can
+   * call requestSelect / requestConfirm / requestInput mid-turn via ctx.getCallback().
+   */
+  prompt(
+    text: string,
+    attachments?: Attachment[],
+    callback?: IGatewayCallback,
+  ): Promise<ReadableStream<AgentEvent>>;
 
   /**
    * Inject a user-role message into the conversation (visible to the LLM).
@@ -248,6 +308,13 @@ export interface ISession extends IAgentSession {
 
   /** Abort the current streaming turn immediately. */
   abort(): Promise<void>;
+
+  /**
+   * Return the active turn context (if a turn is in progress).
+   * The callback for interactive mid-turn prompts is accessed via
+   * ITurn.getCallback(). Returns undefined between turns.
+   */
+  getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────────
 
@@ -311,7 +378,11 @@ export interface ISession extends IAgentSession {
 // Spec ref: specs/api.md §4
 export interface IAgentSessionDO {
   // ─── Conversation ────────────────────────────────────────────────────────────
-  prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>>;
+  prompt(
+    text: string,
+    attachments?: Attachment[],
+    callback?: IGatewayCallback,
+  ): Promise<ReadableStream<AgentEvent>>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   abort(): Promise<void>;

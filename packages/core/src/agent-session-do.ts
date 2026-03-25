@@ -43,9 +43,9 @@ import type {
   CompactOptions,
   ContextUsage,
   IAgentSessionDO,
+  IGatewayCallback,
   ISession,
   ModelInfo,
-  NewSessionOptions,
   SessionRecord,
 } from "./types.ts";
 import { resolveModel } from "./types-internal.ts";
@@ -182,6 +182,7 @@ export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionD
       lastContextWindowTokens: 200_000,
       messagesAtTurnStart: 0,
       session: null,
+      callback: undefined,
       modelOverridden: false,
       // Bound to the DO instance so SessionImpl.prompt() can start a full agent
       // turn without an extra JSRPC hop. Set after the state object is created
@@ -280,8 +281,16 @@ export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionD
    * Returns a ReadableStream<AgentEvent> for the caller to consume.
    * Spec ref: specs/core.md §prompt() pipeline
    */
-  async prompt(text: string, attachments?: Attachment[]): Promise<ReadableStream<AgentEvent>> {
+  async prompt(
+    text: string,
+    attachments?: Attachment[],
+    callback?: IGatewayCallback,
+  ): Promise<ReadableStream<AgentEvent>> {
     const state = this.#requireState();
+    // Store the active callback so tools can retrieve it via ctx.getCurrentTurn().getCallback().
+    // Cleared at turn end in the agent.prompt().finally() block below.
+    state.callback = callback;
+
     const ctx = this.#getOrCreateSession();
 
     // Inject the live ISession into the agent so tools receive it via execute().
@@ -403,6 +412,7 @@ export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionD
       .finally(() => {
         unsub();
         state.abortController = null;
+        state.callback = undefined; // clear callback when turn ends
         writer.close().catch(() => {});
       });
 

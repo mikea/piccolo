@@ -1,4 +1,16 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Runtime types (Web APIs + CF bindings) come from wrangler types-generated file.
+    // Run `pnpm --filter @piccolo/web-gateway types` to regenerate after changing
+    // wrangler.template.jsonc or the compatibility date.
+    "types": ["./src/worker-configuration.d.ts"],
+    // Redirect @piccolo/core to its types-only export (no Env-dependent source pulled in).
+    // Redirect @piccolo/agent to its index (pure library, no Workers globals).
+    "paths": {
+      "@piccolo/core": ["../../packages/core/src/types-public.ts"],
+      "@piccolo/agent": ["../../packages/agent/src/index.ts"]
+    }
+  },
   "include": ["src/**/*", "test/**/*"]
 }

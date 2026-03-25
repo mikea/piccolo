@@ -85,6 +85,13 @@ importers:
         version: 4.77.0(@cloudflare/workers-types@4.20260317.1)
 
   gateways/web:
+    dependencies:
+      '@piccolo/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      capnweb:
+        specifier: ^0.6.1
+        version: 0.6.1
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.13.4
@@ -1058,6 +1065,9 @@ packages:
 
   caniuse-lite@1.0.30001781:
     resolution: {integrity: sha512-RdwNCyMsNBftLjW6w01z8bKEvT6e/5tpPVEgtn22TiLGlstHOVecsX2KHFkD5e/vRnIE4EGzpuIODb3mtswtkw==}
+
+  capnweb@0.6.1:
+    resolution: {integrity: sha512-fmhV26QPd1ewf5R74h55oVZnGwIcSaRMzbfLQUy8+zOBjuTmT3KXoT8wxHvnp1m9Ht9BoUUS5ZwNLoVLfQTyBg==}
 
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
@@ -2421,6 +2431,8 @@ snapshots:
     optional: true
 
   caniuse-lite@1.0.30001781: {}
+
+  capnweb@0.6.1: {}
 
   chai@6.2.2: {}
 

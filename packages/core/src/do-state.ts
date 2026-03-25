@@ -13,7 +13,7 @@ import type { Agent, AgentEvent, ModelMessage } from "@piccolo/agent";
 import type { AnyEntry } from "./db/entry-types.ts";
 import type { ExtensionRunner } from "./extension-runner.ts";
 import type { SystemPromptAssembler } from "./system-prompt-assembler.ts";
-import type { Attachment, ISession } from "./types.ts";
+import type { Attachment, IGatewayCallback, ISession } from "./types.ts";
 
 /**
  * In-memory state of a live session.
@@ -93,6 +93,15 @@ export interface DOState {
   session: ISession | null;
 
   /**
+   * The active IGatewayCallback stub for the current turn.
+   * Set by AgentSessionDO.prompt() when the gateway passes one; cleared at turn end.
+   * Tools access this via ITurn.getCallback(), obtained from ISession.getCurrentTurn().
+   *
+   * Spec ref: specs/api.md §2 ITurn.getCallback, specs/api.md §5 IGatewayCallback
+   */
+  callback: IGatewayCallback | undefined;
+
+  /**
    * Set to true by _setModelForTest() so that initSession() does not overwrite
    * the injected model with a real gateway model.
    * Not used in production — tests only.
@@ -107,5 +116,9 @@ export interface DOState {
    * Using a function reference avoids a circular import between do-state.ts
    * and agent-session-do.ts.
    */
-  promptFn: (text: string, attachments?: Attachment[]) => Promise<ReadableStream<AgentEvent>>;
+  promptFn: (
+    text: string,
+    attachments?: Attachment[],
+    callback?: IGatewayCallback,
+  ) => Promise<ReadableStream<AgentEvent>>;
 }

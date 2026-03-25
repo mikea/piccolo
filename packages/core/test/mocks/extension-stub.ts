@@ -242,6 +242,7 @@ export function createMockSession(
     steer: async () => {},
     followUp: async () => {},
     abort: async () => {},
+    getCurrentTurn: async () => undefined,
     getModel: async () => ({ id: "test/model", label: "Test Model", provider: "test" }),
     setModel: async () => {},
     listModels: async () => [],
