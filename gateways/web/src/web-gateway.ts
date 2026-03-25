@@ -25,7 +25,6 @@ import type {
   IGatewayCallback,
   IPiccoloCore,
   ISession,
-  ModelInfo,
   NewSessionOptions,
   SessionInfo,
   SessionRecord,
@@ -120,7 +119,7 @@ export class WebGatewayImpl extends RpcTarget implements IWebGatewayApi {
    *
    * Spec ref: specs/api.md §6 IWebGatewayApi.listModels
    */
-  async listModels(): Promise<ModelInfo[]> {
+  async listModels(): Promise<string[]> {
     return this.#core.listModels();
   }
 }
@@ -255,7 +254,7 @@ export class WebGatewaySessionImpl extends RpcTarget implements IWebGatewaySessi
 
   // ─── Model management ────────────────────────────────────────────────────────
 
-  async getModel(): Promise<ModelInfo> {
+  async getModel(): Promise<string> {
     return (await this.#session()).getModel();
   }
 

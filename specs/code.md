@@ -315,7 +315,7 @@ export function createMockContext(overrides: Partial<IExtensionContext> = {}): I
     userId: "test-user",
     getName: vi.fn().mockResolvedValue(undefined),
     setName: vi.fn().mockResolvedValue(undefined),
-    getModel: vi.fn().mockResolvedValue({ id: "openai/gpt-4o", label: "GPT-4o", provider: "openai" }),
+    getModel: vi.fn().mockResolvedValue("openai/gpt-4o"),
     setModel: vi.fn().mockResolvedValue(undefined),
     listModels: vi.fn().mockResolvedValue([]),
     getActiveTools: vi.fn().mockResolvedValue([]),
@@ -435,7 +435,7 @@ CI fails if any of these steps produce errors or warnings that were not present 
 | Construct | Convention | Example |
 |---|---|---|
 | Interface (JSRPC surface) | `I` prefix + PascalCase | `IPiccoloCore`, `ISession`, `ITool` |
-| Interface (data/result shape) | PascalCase, no prefix | `SessionRecord`, `ToolResult`, `ModelInfo` |
+| Interface (data/result shape) | PascalCase, no prefix | `SessionRecord`, `ToolResult` |
 | Type alias | PascalCase | `AgentEvent`, `GatewayId` |
 | Class | PascalCase | `AgentSessionDO`, `GreetTool` |
 | Function | camelCase | `createMockGateway`, `buildSessionContext` |

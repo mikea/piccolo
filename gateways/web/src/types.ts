@@ -19,7 +19,6 @@ import type {
   Attachment,
   CompactOptions,
   ContextUsage,
-  ModelInfo,
   NewSessionOptions,
   SessionInfo,
   SessionRecord,
@@ -34,7 +33,6 @@ export type {
   Attachment,
   CompactOptions,
   ContextUsage,
-  ModelInfo,
   NewSessionOptions,
   SessionInfo,
   SessionRecord,
@@ -57,7 +55,7 @@ export interface IWebGatewayApi extends RpcTarget {
   /** List all sessions belonging to the authenticated user. */
   listSessions(): Promise<SessionInfo[]>;
   // ─── Model registry ──────────────────────────────────────────────────────────
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 }
 
 // ─── IWebGatewaySession — Per-session browser-facing interface ────────────────
@@ -94,7 +92,7 @@ export interface IWebGatewaySession extends RpcTarget {
   abort(): Promise<void>;
 
   // ─── Model management ────────────────────────────────────────────────────────
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
 
   // ─── Context ─────────────────────────────────────────────────────────────────

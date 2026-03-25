@@ -48,7 +48,8 @@ Declared in `packages/core/wrangler.template.jsonc`:
   "vars": {
     "CF_ACCOUNT_ID": "<account_id>",
     "CF_AI_GATEWAY_NAME": "piccolo",
-    "AGENT_NAME": "Piccolo"    // display name injected into the base system prompt
+    "AGENT_NAME": "Piccolo",  // display name injected into the base system prompt
+    "MODELS": "provider/model-id,provider/model-id2"  // comma-separated model IDs; authoritative list
   }
   // Secrets (set via: pnpm wrangler secret put <NAME>):
   //   CF_AI_GATEWAY_TOKEN  — CF API token with AI Gateway Write permission
@@ -248,8 +249,9 @@ class PiccoloCore extends WorkerEntrypoint<Env> {
     // 2. Return a DO getSession() stub for each — gateways call session.info() for metadata
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    // Loaded from CONFIG KV key "models:catalog" or hardcoded MODEL_CATALOG fallback
+  async listModels(): Promise<string[]> {
+    // Parse env.MODELS (JSON array of model ID strings) and return it directly.
+    // MODELS is the sole authoritative source — no KV lookup, no fallback.
   }
 }
 ```
@@ -835,13 +837,13 @@ class SessionImpl extends RpcTarget implements ISession {
   }
 
   // Model
-  async getModel()           { return resolveModel(doState.modelId); }
+  async getModel()           { return doState.modelId; }
   async setModel(modelId)    {
     doState.modelId = modelId;
     doState.agent.setModel(createModel(env, modelId));
     // Pushes ModelChangeEntry to pendingEntries + branchEntries, updates leafId.
   }
-  async listModels()         { return MODEL_CATALOG; }
+  async listModels()         { return JSON.parse(env.MODELS) as string[]; }
 
   // Tools
   async getActiveTools()     { return doState.agent.state.tools.map(t => t.descriptor) as ToolDescriptor[]; }

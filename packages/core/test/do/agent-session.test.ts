@@ -242,13 +242,13 @@ describe("AgentSessionDO — session accessors", () => {
     expect(infoEntry).toBeDefined();
   });
 
-  it("getModel() returns a ModelInfo with the configured modelId", async () => {
+  it("getModel() returns the configured modelId string", async () => {
     const sid = uniqueId();
     await runPrompt(sid, "hi", "there");
     const stub = getStub(sid);
     const model = await runInDurableObject(stub, (instance: AgentSessionDO) => instance.getModel());
-    expect(model.id).toBeTruthy();
-    expect(typeof model.label).toBe("string");
+    expect(typeof model).toBe("string");
+    expect(model.length).toBeGreaterThan(0);
   });
 
   it("setModel() persists a model_change entry", async () => {

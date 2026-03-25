@@ -118,8 +118,7 @@ Open `packages/core/wrangler.jsonc` and replace all `<PLACEHOLDER>` values:
 ### 4a. Apply D1 migrations
 
 ```bash
-pnpm wrangler d1 migrations apply piccolo-sessions \
-  --config packages/core/wrangler.jsonc
+pnpm wrangler d1 migrations apply piccolo-sessions --config packages/core/wrangler.jsonc --remote
 ```
 
 This creates the `sessions` and `entries` tables. Safe to re-run — migrations
@@ -190,13 +189,8 @@ The web gateway must be built (SolidJS SPA via Vite) before deploying. The
 build script does both steps:
 
 ```bash
-cd gateways/web
-pnpm deploy
+pnpm wrangler deploy --config gateways/web/wrangler.jsonc
 ```
-
-This runs:
-1. `pnpm build:app` — Vite bundles the SPA into `gateways/web/dist/`
-2. `wrangler deploy` — deploys the Worker + static assets from `dist/`
 
 After deployment, Wrangler prints the Worker URL (e.g.
 `https://piccolo-web-gateway.your-subdomain.workers.dev`). Open it in a

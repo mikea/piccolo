@@ -40,29 +40,16 @@ export interface CommandDescriptor {
   showInAutocomplete?: boolean;
 }
 
-// ─── Model catalog ────────────────────────────────────────────────────────────
+// ─── Model list ───────────────────────────────────────────────────────────────
 
 /**
- * Static model catalog used by AgentSessionDO.getModel() and listModels().
- * Step 9 will load this from CONFIG KV; for steps 5–8 a hardcoded list is used.
+ * Parse the MODELS env var (comma-separated model IDs) into a string array.
  *
- * Spec ref: specs/api.md §Shared Types §ModelInfo
+ * MODELS is the sole authoritative source of available model IDs.
+ * No hardcoded fallback, no KV lookup.
+ *
+ * Spec ref: specs/api.md §IPiccoloCore.listModels
  */
-export const MODEL_CATALOG: Array<{ id: string; label: string; provider: string }> = [
-  { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5", provider: "anthropic" },
-  { id: "anthropic/claude-opus-4-5", label: "Claude Opus 4.5", provider: "anthropic" },
-  { id: "openai/gpt-4o", label: "GPT-4o", provider: "openai" },
-  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini", provider: "openai" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
-  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
-  { id: "groq/llama-3.3-70b-versatile", label: "Llama 3.3 70B (Groq)", provider: "groq" },
-];
-
-/** Look up a ModelInfo from the catalog by modelId. Falls back to a synthetic entry. */
-export function resolveModel(modelId: string): { id: string; label: string; provider: string } {
-  const found = MODEL_CATALOG.find((m) => m.id === modelId);
-  if (found) return found;
-  // Unknown model — synthesise a ModelInfo from the ID
-  const provider = modelId.split("/")[0] ?? modelId;
-  return { id: modelId, label: modelId, provider };
+export function parseModels(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }

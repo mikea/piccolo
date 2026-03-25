@@ -36,11 +36,10 @@ import type {
   IGatewayCallback,
   ISession,
   ITurn,
-  ModelInfo,
   SessionRecord,
   ToolDescriptor,
 } from "./types.ts";
-import { MODEL_CATALOG, resolveModel } from "./types-internal.ts";
+import { parseModels } from "./types-internal.ts";
 
 /**
  * Core-side implementation of ISession.
@@ -139,8 +138,8 @@ export class SessionImpl extends RpcTarget implements ISession {
 
   // ─── Model management ────────────────────────────────────────────────────────
 
-  async getModel(): Promise<ModelInfo> {
-    return resolveModel(this.doState.modelId);
+  async getModel(): Promise<string> {
+    return this.doState.modelId;
   }
 
   async setModel(modelId: string): Promise<void> {
@@ -157,8 +156,8 @@ export class SessionImpl extends RpcTarget implements ISession {
     });
   }
 
-  async listModels(): Promise<ModelInfo[]> {
-    return MODEL_CATALOG;
+  async listModels(): Promise<string[]> {
+    return parseModels(this.env.MODELS);
   }
 
   // ─── Tools ───────────────────────────────────────────────────────────────────

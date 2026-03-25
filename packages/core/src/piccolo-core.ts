@@ -21,8 +21,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { AgentSessionDO } from "./agent-session-do.ts";
 import { listSessions as dbListSessions } from "./session/persistence.ts";
-import type { IPiccoloCore, ISession, ModelInfo, NewSessionOptions } from "./types.ts";
-import { MODEL_CATALOG } from "./types-internal.ts";
+import type { IPiccoloCore, ISession, NewSessionOptions } from "./types.ts";
+import { parseModels } from "./types-internal.ts";
 
 /**
  * The public JSRPC WorkerEntrypoint for piccolo-core.
@@ -93,22 +93,13 @@ export class PiccoloCore extends WorkerEntrypoint<Env> implements IPiccoloCore {
   /**
    * List available models.
    *
-   * Checks CONFIG KV key "models:catalog" first; falls back to the hardcoded
-   * MODEL_CATALOG constant.
+   * Parses the MODELS env var (JSON-encoded string[]) — it is the sole
+   * authoritative source. No KV lookup, no fallback catalog.
    *
    * Spec ref: specs/api.md §1 IPiccoloCore.listModels
    */
-  async listModels(): Promise<ModelInfo[]> {
-    try {
-      const raw = await this.env.CONFIG.get("models:catalog");
-      if (raw !== null) {
-        const parsed = JSON.parse(raw) as ModelInfo[];
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch {
-      // Fall through to hardcoded catalog on any parse error
-    }
-    return MODEL_CATALOG;
+  async listModels(): Promise<string[]> {
+    return parseModels(this.env.MODELS);
   }
 
   // ─── Internal helpers ──────────────────────────────────────────────────────

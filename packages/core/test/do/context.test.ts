@@ -18,7 +18,6 @@ import type { ExtensionRunner } from "../../src/extension-runner.ts";
 import { SessionImpl } from "../../src/session-impl.ts";
 import type { SystemPromptAssembler } from "../../src/system-prompt-assembler.ts";
 import type { ISession } from "../../src/types.ts";
-import { MODEL_CATALOG } from "../../src/types-internal.ts";
 import { createMockModel } from "./mock-model.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -87,11 +86,12 @@ function makeMockDOState(overrides: Partial<DOState> = {}): DOState {
 
 /** Create a SessionImpl with a mock env. */
 function makeSession(doState: DOState): ISession {
-  // env is only used by setModel() and compact(); mock it minimally
+  // env is only used by setModel(), listModels(), and compact(); mock it minimally
   const mockEnv = {
     CF_ACCOUNT_ID: "test-account",
     CF_AI_GATEWAY_NAME: "test-gateway",
     CF_AI_GATEWAY_TOKEN: "test-token",
+    MODELS: "anthropic/claude-sonnet-4-5,openai/gpt-4o",
   } as unknown as Env;
   return new SessionImpl(doState, mockEnv);
 }
@@ -175,21 +175,19 @@ describe("SessionImpl — metadata", () => {
 });
 
 describe("SessionImpl — model", () => {
-  it("getModel() returns the resolved model for current modelId", async () => {
+  it("getModel() returns the current modelId string", async () => {
     const state = makeMockDOState({ modelId: "openai/gpt-4o" });
     const session = makeSession(state);
     const model = await session.getModel();
-    expect(model.id).toBe("openai/gpt-4o");
-    expect(typeof model.label).toBe("string");
-    expect(model.provider).toBe("openai");
+    expect(model).toBe("openai/gpt-4o");
   });
 
-  it("listModels() returns non-empty catalog", async () => {
+  it("listModels() returns the MODELS env var parsed as string[]", async () => {
     const state = makeMockDOState();
     const session = makeSession(state);
     const models = await session.listModels();
     expect(models.length).toBeGreaterThan(0);
-    expect(models).toEqual(MODEL_CATALOG);
+    expect(models.every((m) => typeof m === "string")).toBe(true);
   });
 
   it("setModel() updates doState.modelId and pushes ModelChangeEntry", async () => {

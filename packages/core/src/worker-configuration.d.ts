@@ -14,6 +14,7 @@ declare namespace Cloudflare {
 		CF_ACCOUNT_ID: "<CF_ACCOUNT_ID>";
 		CF_AI_GATEWAY_NAME: "piccolo";
 		AGENT_NAME: "Piccolo";
+		MODELS: string;
 		AGENT_SESSION: DurableObjectNamespace<import("./index").AgentSessionDO>;
 	}
 }

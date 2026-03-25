@@ -45,10 +45,8 @@ import type {
   IAgentSessionDO,
   IGatewayCallback,
   ISession,
-  ModelInfo,
   SessionRecord,
 } from "./types.ts";
-import { resolveModel } from "./types-internal.ts";
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
@@ -473,8 +471,8 @@ export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionD
     }
   }
 
-  async getModel(): Promise<ModelInfo> {
-    return resolveModel(this.#requireState().modelId);
+  async getModel(): Promise<string> {
+    return this.#requireState().modelId;
   }
 
   async setModel(modelId: string): Promise<void> {

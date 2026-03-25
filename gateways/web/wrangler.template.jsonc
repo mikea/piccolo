@@ -34,13 +34,13 @@
   // ── Static assets (SPA) ───────────────────────────────────────────────
   // Wrangler native static asset hosting for the SolidJS SPA.
   // The dist/ directory is produced by `pnpm build:app` (vite build).
-  // html_handling: single-page-application makes all non-asset requests
+  // not_found_handling: single-page-application makes all non-asset requests
   // return index.html, enabling client-side routing to work on direct URL access.
   // Wrangler intercepts GET / automatically; the Worker's /rpc and /components/*
   // routes are still handled by the Worker fetch handler.
   "assets": {
     "directory": "./dist",
-    "html_handling": "single-page-application"
+    "not_found_handling": "single-page-application"
   },
 
   // ── R2 ─────────────────────────────────────────────────────────────────

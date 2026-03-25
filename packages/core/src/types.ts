@@ -76,14 +76,6 @@ export interface NewSessionOptions {
   cwd?: string;
 }
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-export interface ModelInfo {
-  id: string; // "{provider}/{model-id}", e.g. "anthropic/claude-sonnet-4-5"
-  label: string; // human-readable display name
-  provider: string;
-}
-
 // ─── Attachments ──────────────────────────────────────────────────────────────
 
 export interface Attachment {
@@ -318,9 +310,9 @@ export interface ISession extends IAgentSession {
 
   // ─── Model management ────────────────────────────────────────────────────────
 
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 
   // ─── Tools ───────────────────────────────────────────────────────────────────
 
@@ -391,7 +383,7 @@ export interface IAgentSessionDO {
   getInfo(): Promise<SessionRecord>;
   getName(): Promise<string | undefined>;
   setName(name: string): Promise<void>;
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
   getContextUsage(): Promise<ContextUsage>;
 
@@ -413,7 +405,7 @@ export interface IPiccoloCore {
   newSession(userId: string, options?: NewSessionOptions): Promise<ISession>;
   getSession(sessionId: string): Promise<ISession>;
   listSessions(userId: string): Promise<ISession[]>;
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 }
 
 // Prevent unused import lint error — ZodObject is used in the JSDoc comment

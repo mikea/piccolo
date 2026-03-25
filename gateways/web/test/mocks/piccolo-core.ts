@@ -12,7 +12,6 @@ import type {
   ContextUsage,
   IPiccoloCore,
   ISession,
-  ModelInfo,
   SessionRecord,
 } from "@piccolo/core";
 import { vi } from "vitest";
@@ -20,7 +19,7 @@ import type { WebAgentEvent } from "../../src/types.ts";
 
 const DEFAULT_SESSION_ID = "test-session-id";
 const DEFAULT_USER_ID = "test-user-id";
-const DEFAULT_MODEL: ModelInfo = { id: "test/model", label: "Test Model", provider: "test" };
+const DEFAULT_MODEL = "test/model";
 
 /** Create an empty ReadableStream that closes immediately. */
 function emptyStream(): ReadableStream<AgentEvent> {

@@ -40,14 +40,6 @@ interface NewSessionOptions {
   cwd?: string;
 }
 
-// ─── Model ────────────────────────────────────────────────────────────────────
-
-interface ModelInfo {
-  id: string;       // "{provider}/{model-id}", e.g. "anthropic/claude-sonnet-4-5"
-  label: string;    // human-readable display name
-  provider: string;
-}
-
 // ─── Attachments ──────────────────────────────────────────────────────────────
 
 interface Attachment {
@@ -228,8 +220,8 @@ class IPiccoloCore extends WorkerEntrypoint {
 
   // ─── Global model registry ───────────────────────────────────────────────
 
-  // List all models available through the CF AI Gateway.
-  listModels(): Promise<ModelInfo[]>;
+  // List all model IDs available (sourced from the MODELS env var).
+  listModels(): Promise<string[]>;
 }
 ```
 
@@ -292,9 +284,9 @@ class ISession extends RpcTarget {
 
   // ─── Model management ────────────────────────────────────────────────────
 
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 
   // ─── Tools ───────────────────────────────────────────────────────────────
 
@@ -418,7 +410,7 @@ class IAgentSessionDO extends DurableObject {
   getInfo(): Promise<SessionRecord>;
   getName(): Promise<string | undefined>;
   setName(name: string): Promise<void>;
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
   getContextUsage(): Promise<ContextUsage>;
 
@@ -475,7 +467,7 @@ interface IWebGatewayApi extends RpcTarget {
   newSession(options?: NewSessionOptions): IWebGatewaySession;
   getSession(sessionId: string): IWebGatewaySession;
   listSessions(): Promise<SessionInfo[]>;
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 }
 
 // Per-session interface. Wraps ISession with browser-facing additions.
@@ -497,7 +489,7 @@ interface IWebGatewaySession extends RpcTarget {
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   abort(): Promise<void>;
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
   getContextUsage(): Promise<ContextUsage>;
   compact(options?: CompactOptions): Promise<void>;

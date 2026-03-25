@@ -42,7 +42,7 @@ The root interface the browser receives when it connects. Defined here; implemen
 ```typescript
 import { RpcTarget } from "capnweb";
 import type {
-  SessionRecord, SessionInfo, ModelInfo, NewSessionOptions,
+  SessionRecord, SessionInfo, NewSessionOptions,
   AgentEvent, Attachment
 } from "piccolo-core";
 
@@ -63,7 +63,7 @@ interface IWebGatewayApi extends RpcTarget {
 
   // ─── Model registry ───────────────────────────────────────────────────────
 
-  listModels(): Promise<ModelInfo[]>;
+  listModels(): Promise<string[]>;
 }
 ```
 
@@ -108,7 +108,7 @@ interface IWebGatewaySession extends RpcTarget {
 
   // ─── Model management ─────────────────────────────────────────────────────
 
-  getModel(): Promise<ModelInfo>;
+  getModel(): Promise<string>;
   setModel(modelId: string): Promise<void>;
 
   // ─── Context ──────────────────────────────────────────────────────────────

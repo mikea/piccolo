@@ -108,7 +108,7 @@ describe("PiccoloCore — newSession()", () => {
     });
     expect(await session.id()).toMatch(/^[0-9a-f-]{36}$/);
     const model = await session.getModel();
-    expect(model.id).toBe("openai/gpt-4o-mini");
+    expect(model).toBe("openai/gpt-4o-mini");
   });
 });
 
@@ -183,29 +183,21 @@ describe("PiccoloCore — listSessions()", () => {
 });
 
 describe("PiccoloCore — listModels()", () => {
-  it("returns a non-empty list of models", async () => {
+  it("returns a non-empty list of model ID strings", async () => {
     const core = makeCore();
     const models = await core.listModels();
     expect(models.length).toBeGreaterThan(0);
-    const first = models[0];
-    expect(first?.id).toContain("/");
-    expect(first?.provider).toBeTruthy();
-    expect(first?.label).toBeTruthy();
-  });
-
-  it("falls back to hardcoded catalog when KV is empty", async () => {
-    const core = makeCore();
-    const models = await core.listModels();
-    expect(models.some((m) => m.provider === "anthropic")).toBe(true);
+    expect(models.every((m) => typeof m === "string")).toBe(true);
+    expect(models[0]).toContain("/");
   });
 });
 
 describe("PiccoloCore — ISession methods via returned stub", () => {
-  it("getModel() returns the model set via NewSessionOptions", async () => {
+  it("getModel() returns the model ID set via NewSessionOptions", async () => {
     const core = makeCore();
     const session = await core.newSession(uniqueUserId(), { modelId: "openai/gpt-4o" });
     const model = await session.getModel();
-    expect(model.id).toBe("openai/gpt-4o");
+    expect(model).toBe("openai/gpt-4o");
   });
 
   it("getContextUsage() returns valid ContextUsage shape", async () => {

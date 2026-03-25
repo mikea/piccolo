@@ -243,7 +243,7 @@ export function createMockSession(
     followUp: async () => {},
     abort: async () => {},
     getCurrentTurn: async () => undefined,
-    getModel: async () => ({ id: "test/model", label: "Test Model", provider: "test" }),
+    getModel: async () => "test/model",
     setModel: async () => {},
     listModels: async () => [],
     getActiveTools: async () => [],

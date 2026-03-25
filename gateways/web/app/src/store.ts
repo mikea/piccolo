@@ -16,7 +16,6 @@ import { createStore } from "solid-js/store";
 import type {
   ITurnHandle,
   IWebGatewaySession,
-  ModelInfo,
   SessionInfo,
   WebAgentEvent,
 } from "../../src/types.ts";
@@ -51,10 +50,10 @@ export interface AppState {
   isStreaming: boolean;
   /** Error from the last failed operation (null if none). */
   error: string | null;
-  /** All available models from api.listModels(). */
-  models: ModelInfo[];
-  /** Model currently set for the active session. */
-  activeModel: ModelInfo | null;
+  /** All available model IDs from api.listModels(). */
+  models: string[];
+  /** Model ID currently set for the active session. */
+  activeModel: string | null;
   /** True while sessions are loading. */
   loadingSessions: boolean;
 }
@@ -276,8 +275,7 @@ export async function setModel(modelId: string): Promise<void> {
   setStore("error", null);
   try {
     await session.setModel(modelId);
-    const model = store.models.find((m) => m.id === modelId) ?? null;
-    setStore("activeModel", model);
+    setStore("activeModel", modelId);
   } catch (err) {
     setStore("error", err instanceof Error ? err.message : String(err));
   }

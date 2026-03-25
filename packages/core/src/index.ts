@@ -35,7 +35,6 @@ export type {
   ITextUI,
   ITool,
   IWebUI,
-  ModelInfo,
   NewSessionOptions,
   SessionInfo,
   SessionRecord,
