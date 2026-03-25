@@ -11,12 +11,12 @@ All public interfaces are defined in [api.md](api.md). This document specifies t
 | Responsibility | Mechanism |
 |---|---|
 | Expose `IPiccoloCore` and `ISession` to gateways | `WorkerEntrypoint` JSRPC |
-| Own one `IAgentSessionDO` per session | Durable Object |
+| Own one `AgentSessionDO` per session | Durable Object |
 | Persist conversation history | D1 + DO storage |
 | Dispatch events to extensions | `ExtensionRunner` via dispatch namespace |
 | Assemble the system prompt | `SystemPromptAssembler` |
 | Manage model selection | Stored per session in D1 |
-| Auto-retry transient LLM errors | Retry loop inside `IAgentSessionDO` |
+| Auto-retry transient LLM errors | Retry loop inside `AgentSessionDO` |
 | Trigger and persist context compaction | `CompactionManager` inside DO |
 
 ---
@@ -49,7 +49,8 @@ Declared in `packages/core/wrangler.template.jsonc`:
     "CF_ACCOUNT_ID": "<account_id>",
     "CF_AI_GATEWAY_NAME": "piccolo",
     "AGENT_NAME": "Piccolo",  // display name injected into the base system prompt
-    "MODELS": "provider/model-id,provider/model-id2"  // comma-separated model IDs; authoritative list
+    "MODELS": "provider/model-id,provider/model-id2",  // comma-separated model IDs; authoritative list
+    "COMPACT_TOKENS": "100000"    // token count threshold for context compaction
   }
   // Secrets (set via: pnpm wrangler secret put <NAME>):
   //   CF_AI_GATEWAY_TOKEN  — CF API token with AI Gateway Write permission
@@ -231,8 +232,8 @@ class PiccoloCore extends WorkerEntrypoint<Env> {
   async newSession(userId: string, options?: NewSessionOptions): Promise<ISession> {
     // 1. Generate sessionId = crypto.randomUUID()
     // 2. Resolve DO stub: env.AGENT_SESSION.idFromName(sessionId)
-    // 3. Call stub.initSession(sessionId, userId, options) to initialise the DO
-    // 4. Return stub.getSession(userId) — the DO's own SessionImpl RpcTarget
+    // 3. Call stub.newSession(userId, options) — the DO initialises itself using
+    //    its own name (sessionId) from ctx.id.name; returns the SessionImpl RpcTarget
     // Note: D1 row is NOT written here — lazy creation on first assistant response
   }
 
@@ -256,33 +257,21 @@ class PiccoloCore extends WorkerEntrypoint<Env> {
 }
 ```
 
-### `ISession` — gateway-facing RpcTarget
+### `ISession` — the DO stub is the session
 
-`PiccoloCore` returns the DO's own `SessionImpl` directly to the gateway. Because `SessionImpl extends RpcTarget`, Workers JSRPC serialises it transparently across the WorkerEntrypoint → gateway boundary — no separate wrapper class is needed.
+`AgentSessionDO extends DurableObject implements ISession`. The DO stub from
+`env.AGENT_SESSION.get(idFromName(sessionId))` proxies all `ISession` method calls
+directly to the DO instance. `UserImpl` initialises the DO via `stub.newSession(...)`,
+then returns the stub cast to `ISession`. No wrapper class is needed.
 
-`AgentSessionDO` exposes a `getSession(userId): ISession` method for this purpose:
-
-```typescript
-// On AgentSessionDO:
-getSession(userId: string): ISession {
-  // Creates or re-uses the SessionImpl for this DO, stamping userId.
-  // Returns it as ISession — same instance used by tools and extensions.
-}
-```
-
-The `fork()` method on `SessionImpl` (called by a gateway via this RpcTarget) creates the forked session's DO stub and returns its `SessionImpl` the same way:
+`fork()` returns the new sessionId string; callers use `IUser.getSession(id)` to get the stub:
 
 ```typescript
-async fork(fromEntryId?: string): Promise<ISession> {
+async fork(fromEntryId?: string): Promise<string> {
   const newSessionId = await forkSession(...);
-  return env.AGENT_SESSION
-    .get(env.AGENT_SESSION.idFromName(newSessionId))
-    .getSession(this.doState.userId);
-}
-
-  async appendCustomMessage(customType: string, content: string, display: boolean) {
-    return this.#doStub.appendCustomMessage(customType, content, display);
-  }
+  const newStub = env.AGENT_SESSION.get(env.AGENT_SESSION.idFromName(newSessionId));
+  await newStub.newSession(newSessionId, this.#userId, { modelId: this.#modelId });
+  return newSessionId;
 }
 ```
 
@@ -343,9 +332,7 @@ interface DOState {
 
   // Token counts from the last completed agent turn.
   // lastInputTokens: updated from agent_end.totalUsage; used for compaction threshold.
-  // lastContextWindowTokens: model's declared context window size (default 200_000).
   lastInputTokens: number;
-  lastContextWindowTokens: number;
 
   // Count of agent.state.messages at the start of the current prompt() call.
   // _handleAgentEnd() slices from this index to find new messages to persist.
@@ -374,22 +361,24 @@ When the DO starts cold (evicted and restarted), `initialize()` runs before any 
 7. Load extension registry and initialise ExtensionRunner
 ```
 
-### `initSession()`
+### `newSession()` (DO public RPC)
 
-Called by `IPiccoloCore.newSession()` (step 9) to initialise the DO before the first `prompt()` call. Idempotent — if `sessionId` is already set, it is a no-op.
+Called by `UserImpl.newSession()` to initialise the DO and return its `ISession` stub. Idempotent — if the session is already initialised, the second call is a no-op.
 
 ```typescript
-async initSession(
-  sessionId: string,
+async newSession(
   userId: string,
   options?: { name?: string; modelId?: string },
-): Promise<void>
+): Promise<ISession>
 ```
 
-1. If `state.sessionId !== ""` → return immediately (already initialised).
-2. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name`.
-3. Persist `sessionId` to DO storage (`ctx.storage.put("sessionId", sessionId)`) for cold-start recovery.
-4. Reconstruct the `LanguageModel` from `env` via `createModel(env, modelId)` and call `state.agent.setModel(model)`.
+1. Calls private `#initSession(userId, options)`:
+   a. If `state.sessionId !== ""` → return immediately (already initialised).
+   b. Derive `sessionId = this.ctx.id.name` (the DO was named with `idFromName(uuid)`).
+   c. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name`.
+   d. Persist `sessionId` and `modelId` to DO storage for cold-start recovery.
+   e. Reconstruct the `LanguageModel` via `createModel(env, modelId)`.
+2. Return `getSession(userId)` — the DO's own `SessionImpl` RpcTarget.
 
 The D1 `sessions` row is **not** written here — it is written lazily on the first `agent_end` (see §Lazy session creation).
 
@@ -398,7 +387,7 @@ The D1 `sessions` row is **not** written here — it is written lazily on the fi
 ### `prompt()` pipeline
 
 ```
-IAgentSessionDO.prompt(text, attachments?)
+.prompt(text, attachments?)
 │
 ├─ 1. Emit InputEvent to ExtensionRunner
 │     → InputResult { action: "handled" | "transform" | "continue"; text? }
@@ -416,7 +405,7 @@ IAgentSessionDO.prompt(text, attachments?)
 ├─ 4. Assemble system prompt (see SystemPromptAssembler)
 │
 ├─ 5. Check compaction threshold:
-│     If inputTokens / contextWindowTokens > 0.8: compact() before proceeding
+│     If inputTokens > COMPACT_TOKENS (env var, default 100000): compact() before proceeding
 │
 ├─ 6. Set up ReadableStream<AgentEvent> + subscriber
 │
@@ -664,7 +653,7 @@ Each active tool whose `descriptor.promptSnippet` is set contributes a line to t
 
 Compaction is triggered in two cases:
 
-1. **Threshold**: `contextUsage.usedFraction > 0.8` checked at the start of every `prompt()` call
+1. **Threshold**: `contextUsage.inputTokens > env.COMPACT_TOKENS` checked at the start of every `prompt()` call
 2. **Overflow**: `agent.onError` fires with a context-length error (detected by `finishReason === "length"` or the error message matching `/context.?length|too.?many.?token|prompt.?too.?long/i`)
 
 ### Compaction algorithm

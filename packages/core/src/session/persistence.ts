@@ -28,7 +28,17 @@ import {
   updateSessionLeaf,
   upsertSession,
 } from "../db/schema.ts";
-import type { SessionInfo } from "../types.ts";
+/** Internal session summary used only by persistence.ts for D1 list queries. */
+interface SessionInfo {
+  id: string;
+  userId: string;
+  name?: string;
+  cwd?: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  firstMessage: string;
+}
 import { DEFAULT_MODEL_ID, walkToRoot } from "./context.ts";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

@@ -119,7 +119,7 @@ All session storage, agent state, and extension event payloads use `ModelMessage
 
 ### `AgentEvent` (from `piccolo-agent`)
 
-See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events stream from `IAgentSessionDO` → `IPiccoloCore` → gateways and extensions.
+See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events stream from `AgentSessionDO` → `IPiccoloCore` → gateways and extensions.
 
 ---
 
@@ -147,7 +147,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 
 | Document | Contents |
 |---|---|
-| [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `IAgentSessionDO`, `IWebGatewayApi`, `IWebGatewaySession`, `IAgentEventListener`, `ITurnHandle`, `IWebUiSessionDO`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
+| [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `AgentSessionDO`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
 | [core.md](core.md) | **piccolo-core implementation**: `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, retry, fork, listing |
 | [agent.md](agent.md) | `piccolo-agent`: AI SDK + CF AI Gateway, `Agent` class, steering/follow-up, compaction |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
@@ -155,7 +155,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | [d1_tool.md](d1_tool.md) | D1 tool (provided): schema, select, insert, update, delete, schema_change, sql |
 | [fetch_tool.md](fetch_tool.md) | Fetch tool (provided): HTTPS GET (with ranged GET support) and HEAD to public internet via `fetch()` |
 | [gateway.md](gateway.md) | Gateway concept, `ITextUI`/`IWebUI`/`ITelegramUI` resolution, comparison table |
-| [web_gateway.md](web_gateway.md) | Web UI gateway: Cap'n Web RPC, `IWebGatewayApi`, `IWebGatewaySession`, `IAgentEventListener`, `IWebUI`, SPA spec |
+| [web_gateway.md](web_gateway.md) | Web UI gateway: `IWebGateway`, `IUser`, `ISession`, SPA spec |
 | [telegram_gateway.md](telegram_gateway.md) | Telegram gateway: `ITelegramUI`, webhook handler, `ITelegramChatDO` |
 | [extension-system.md](extension-system.md) | Extension use-cases, 12 examples, dispatch, provided extensions |
 | [skills_extension.md](skills_extension.md) | Skills extension: load from URLs, `/skill:name` commands, Agent Skills standard |

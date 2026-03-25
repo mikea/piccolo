@@ -53,3 +53,13 @@ export interface CommandDescriptor {
 export function parseModels(raw: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
+
+/**
+ * Return the first model ID from the MODELS env var.
+ * Used as the default model for new sessions.
+ */
+export function defaultModelId(modelsEnv: string): string {
+  const first = parseModels(modelsEnv)[0];
+  if (!first) throw new Error("MODELS env var is empty — at least one model ID is required");
+  return first;
+}

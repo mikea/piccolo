@@ -3,8 +3,6 @@
  *
  * Uses @cloudflare/vitest-pool-workers (cloudflareTest plugin) to run tests
  * inside a real Workers runtime sandbox (Miniflare), which provides:
- *   - Durable Objects (WebUiSessionDO)
- *   - R2 bindings (ASSETS)
  *   - Service bindings (CORE — mocked in tests via test helper)
  *
  * Coverage via Istanbul (v8 requires node:inspector/promises, unsupported in workerd).
@@ -28,10 +26,7 @@ export default defineConfig({
       // v8 coverage requires node:inspector/promises which workerd doesn't support.
       // Istanbul works inside the Workers sandbox.
       provider: "istanbul",
-      // auth.ts contains CF Access JWT verification that requires a real CF Access
-      // server — it cannot be tested in the Miniflare sandbox. Exclude it from
-      // the coverage report so the JWT-specific code does not drag down thresholds.
-      exclude: ["**/test/**", "src/auth.ts"],
+      exclude: ["**/test/**"],
       thresholds: {
         lines: 80,
         functions: 80,

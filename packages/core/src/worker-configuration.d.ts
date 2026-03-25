@@ -15,6 +15,8 @@ declare namespace Cloudflare {
 		CF_AI_GATEWAY_NAME: "piccolo";
 		AGENT_NAME: "Piccolo";
 		MODELS: string;
+		/** Token count at which context compaction is triggered. Default: 100000. */
+		COMPACT_TOKENS: string;
 		AGENT_SESSION: DurableObjectNamespace<import("./index").AgentSessionDO>;
 	}
 }

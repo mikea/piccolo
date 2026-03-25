@@ -6,7 +6,7 @@
  */
 
 import { type Component, Match, Show, Switch } from "solid-js";
-import type { Message } from "../store.ts";
+import type { Message } from "./types.ts";
 
 interface Props {
   message: Message;

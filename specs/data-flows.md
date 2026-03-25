@@ -18,10 +18,10 @@ Gateway Worker
         │
         ▼
 IPiccoloCore.getSession() → ISession stub
-ISession.prompt() → delegates to IAgentSessionDO.prompt()
+ISession.prompt() → delegates to AgentSessionDO.prompt()
         │
         ▼
-IAgentSessionDO.prompt()  [see core.md — prompt() pipeline]
+AgentSessionDO.prompt()  [see core.md — prompt() pipeline]
   1. Emit InputEvent  → ExtensionRunner  (may handle/transform)
   2. Build user message
   3. Emit BeforeAgentStartEvent → ExtensionRunner  (may inject context/system prompt)
@@ -42,8 +42,8 @@ CF AI Gateway
   - Normalises to OpenAI-compat SSE format
         │
         ▼
-AgentEvents stream back up through IAgentSessionDO → ISession → gateway:
-  - Web UI:  each AgentEvent pushed to IWebUiSessionDO → fan-out to SSE clients
+AgentEvents stream back up through AgentSessionDO → gateway:
+  - Web UI:  ReadableStream<AgentEvent> consumed directly by the browser over the WebSocket RPC connection
   - Telegram: events buffered; throttled editMessageText to Telegram Bot API
 ```
 
@@ -74,14 +74,14 @@ error (message)
 Each `AgentEvent` is forwarded to:
 1. The `ReadableStream` returned to the gateway
 2. `ExtensionRunner` (fire-and-forget)
-3. `IAgentSessionDO` internal handlers (persistence, retry, compaction)
+3. `AgentSessionDO` internal handlers (persistence, retry, compaction)
 
 ---
 
 ## 3. Context Transformation (per LLM call)
 
 ```
-IAgentSessionDO.messages  (ModelMessage[])
+AgentSessionDO internal message state  (ModelMessage[])
         │
         ▼
 Step 1: ExtensionRunner.emitContext(messages)

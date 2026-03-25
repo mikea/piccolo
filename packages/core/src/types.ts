@@ -48,6 +48,7 @@ import type { ZodObject } from "zod";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
+/** Internal session record stored in D1. Not exposed to gateway clients. */
 export interface SessionRecord {
   id: string; // UUID v4
   userId: string;
@@ -55,18 +56,6 @@ export interface SessionRecord {
   updatedAt: number; // Unix ms
   name?: string;
   cwd?: string;
-}
-
-// Lightweight summary returned by listSessions().
-export interface SessionInfo {
-  id: string;
-  userId: string;
-  name?: string;
-  cwd?: string;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
-  firstMessage: string; // preview of first user message
 }
 
 // TODO(item-9): implement — placeholder only
@@ -221,9 +210,8 @@ export interface ITurn extends RpcTarget {
 // ─── Context / Compaction ─────────────────────────────────────────────────────
 
 export interface ContextUsage {
+  /** Total input tokens used in the last completed turn. */
   inputTokens: number;
-  contextWindowTokens: number; // model's context window size
-  usedFraction: number; // inputTokens / contextWindowTokens
 }
 
 export interface CompactOptions {
@@ -256,10 +244,10 @@ export interface ISession extends IAgentSession {
   // ─── Identity ───────────────────────────────────────────────────────────────
 
   /** Stable session identifier (UUID v4). */
-  id(): Promise<string>;
+  sessionId(): Promise<string>;
 
-  /** Full session record including timestamps and metadata. */
-  info(): Promise<SessionRecord>;
+  /** Unix ms timestamp of the last update (used for sorting). */
+  getUpdatedAt(): Promise<number>;
 
   /** The user who owns this session. */
   readonly userId: string;
@@ -355,57 +343,30 @@ export interface ISession extends IAgentSession {
    * Fork this session from a given entry (or current leaf).
    * Returns a new ISession stub for the forked session.
    */
-  fork(fromEntryId?: string): Promise<ISession>;
+  fork(fromEntryId?: string): Promise<string>; // returns new sessionId; caller fetches stub
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
   delete(): Promise<void>;
 }
 
-// ─── IAgentSessionDO — Durable Object internal interface ─────────────────────
+
+
+// ─── IUser — Per-user interface ───────────────────────────────────────────────
 //
-// Called by IPiccoloCore internally. Not directly accessible to gateways.
-// Implements the stateful runtime behind ISession.
-//
-// Spec ref: specs/api.md §4
-export interface IAgentSessionDO {
-  // ─── Conversation ────────────────────────────────────────────────────────────
-  prompt(
-    text: string,
-    attachments?: Attachment[],
-    callback?: IGatewayCallback,
-  ): Promise<ReadableStream<AgentEvent>>;
-  steer(text: string): Promise<void>;
-  followUp(text: string): Promise<void>;
-  abort(): Promise<void>;
-
-  // ─── Accessors ───────────────────────────────────────────────────────────────
-  getInfo(): Promise<SessionRecord>;
-  getName(): Promise<string | undefined>;
-  setName(name: string): Promise<void>;
-  getModel(): Promise<string>;
-  setModel(modelId: string): Promise<void>;
-  getContextUsage(): Promise<ContextUsage>;
-
-  // ─── Session control ──────────────────────────────────────────────────────────
-  branch(entryId: string): Promise<void>;
-  compact(options?: CompactOptions): Promise<void>;
-  delete(): Promise<void>;
-  fork(fromEntryId?: string): Promise<string>;
-
-  // ─── Core-internal: returns the live ISession RpcTarget for this DO ───────────
-  initSession(sessionId: string, userId: string, options?: NewSessionOptions): Promise<void>;
-  getSession(userId: string): ISession;
+// Spec ref: specs/api.md §IUser
+export interface IUser extends RpcTarget {
+  newSession(options?: NewSessionOptions): Promise<ISession>;
+  getSession(sessionId: string): Promise<ISession>;
+  listSessions(): Promise<ISession[]>;
+  listModels(): Promise<string[]>;
 }
 
 // ─── IPiccoloCore — WorkerEntrypoint interface ────────────────────────────────
 //
 // Spec ref: specs/api.md §1
 export interface IPiccoloCore {
-  newSession(userId: string, options?: NewSessionOptions): Promise<ISession>;
-  getSession(sessionId: string): Promise<ISession>;
-  listSessions(userId: string): Promise<ISession[]>;
-  listModels(): Promise<string[]>;
+  getUser(userId: string): IUser;
 }
 
 // Prevent unused import lint error — ZodObject is used in the JSDoc comment

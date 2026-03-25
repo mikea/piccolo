@@ -4,15 +4,23 @@
 
 import { useNavigate } from "@solidjs/router";
 import type { Component } from "solid-js";
-import { newSession, store } from "../store.ts";
+import type { IUser } from "@piccolo/core";
 
-export const EmptyState: Component = () => {
+interface Props {
+  user: IUser;
+}
+
+export const EmptyState: Component<Props> = (props) => {
   const navigate = useNavigate();
 
   const handleNew = async () => {
-    await newSession();
-    if (store.activeSessionId) {
-      navigate(`/sessions/${store.activeSessionId}`);
+    try {
+      const session = await props.user.newSession();
+      const id = await session.sessionId();
+      console.debug("[rpc] newSession → id:", id);
+      navigate(`/sessions/${id}`);
+    } catch (err) {
+      console.error("[rpc] newSession error:", err);
     }
   };
 

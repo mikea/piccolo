@@ -377,7 +377,7 @@ export class ExtensionRunner implements IExtensionRunner {
 
     // 4. Fire onSessionStart (fire-and-forget)
     const startEvent: SessionStartEvent = {
-      sessionId: await ctx.id(),
+      sessionId: await ctx.sessionId(),
       userId: ctx.userId,
       modelId: modelId ?? "",
     };

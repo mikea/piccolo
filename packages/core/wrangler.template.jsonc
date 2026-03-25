@@ -69,7 +69,9 @@
     "AGENT_NAME": "Piccolo",
     // Comma-separated list of model IDs — the authoritative list of models available to users.
     // Example: "anthropic/claude-sonnet-4-5,openai/gpt-4o"
-    "MODELS": "anthropic/claude-sonnet-4-5"
+    "MODELS": "anthropic/claude-sonnet-4-5,openai/gpt-4o,openai/gpt-4o-mini",
+    // Token count at which context compaction is triggered.
+    "COMPACT_TOKENS": "100000"
   }
 
   // ── Secrets (set via wrangler secret put, never committed) ─────────────

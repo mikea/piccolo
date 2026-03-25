@@ -7,51 +7,19 @@
   // ── Service bindings ───────────────────────────────────────────────────
   "services": [
     {
-      // JSRPC connection to piccolo-core (IPiccoloCore WorkerEntrypoint).
       "binding": "CORE",
       "service": "piccolo-core"
     }
   ],
 
-  // ── Durable Objects ────────────────────────────────────────────────────
-  "durable_objects": {
-    "bindings": [
-      {
-        // SSE fan-out DO — one instance per browser session.
-        "name": "WEB_UI_SESSION",
-        "class_name": "WebUiSessionDO"
-      }
-    ]
-  },
-
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["WebUiSessionDO"]
-    }
-  ],
-
   // ── Static assets (SPA) ───────────────────────────────────────────────
-  // Wrangler native static asset hosting for the SolidJS SPA.
-  // The dist/ directory is produced by `pnpm build:app` (vite build).
-  // not_found_handling: single-page-application makes all non-asset requests
-  // return index.html, enabling client-side routing to work on direct URL access.
-  // Wrangler intercepts GET / automatically; the Worker's /rpc and /components/*
-  // routes are still handled by the Worker fetch handler.
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application"
   },
 
-  // ── R2 ─────────────────────────────────────────────────────────────────
-  "r2_buckets": [
-    {
-      // Serves custom Web Component modules at GET /components/{id}.js (M2+).
-      "binding": "ASSETS",
-      "bucket_name": "piccolo-assets"
-    }
-  ]
-
-  // ── Secrets (set via wrangler secret put, never committed) ─────────────
-  // AUTH_SECRET  — Cloudflare Access shared secret for JWT validation
+  "vars": {
+    // The user ID stamped on all sessions for this deployment.
+    "USER_ID": "default-user"
+  }
 }

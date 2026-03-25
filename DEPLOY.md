@@ -106,10 +106,13 @@ Open `packages/core/wrangler.jsonc` and replace all `<PLACEHOLDER>` values:
   "vars": {
     "CF_ACCOUNT_ID": "PASTE_ACCOUNT_ID_HERE",  // ← from dash sidebar
     "CF_AI_GATEWAY_NAME": "piccolo",            // ← your gateway slug from Step 2
-    "AGENT_NAME": "Piccolo"                     // ← displayed in system prompt; change freely
+    "AGENT_NAME": "Piccolo",                    // ← displayed in system prompt; change freely
+    "MODELS": "anthropic/claude-sonnet-4-5,openai/gpt-4o"  // ← comma-separated model IDs
   }
 }
 ```
+
+**`MODELS`** is a comma-separated list of model IDs that the agent can use. IDs must match the provider routing format understood by your AI Gateway (e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`, `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`). The list is shown in the model picker in the web UI and controls which models users can select.
 
 ---
 
@@ -185,11 +188,13 @@ pnpm wrangler secret put AUTH_SECRET \
 
 ## Step 6 — Build and deploy `piccolo-web-gateway`
 
-The web gateway must be built (SolidJS SPA via Vite) before deploying. The
-build script does both steps:
+The web gateway must be built (SolidJS SPA via Vite) before deploying.
+Always use the script below — it runs `vite build` then `wrangler deploy`.
+**Never run `wrangler deploy` directly** for the web gateway; it will deploy
+stale assets.
 
 ```bash
-pnpm wrangler deploy --config gateways/web/wrangler.jsonc
+pnpm deploy:web
 ```
 
 After deployment, Wrangler prints the Worker URL (e.g.
@@ -238,7 +243,7 @@ VITE_DEV_AUTH_SECRET=your-secret-here
 VITE_DEV_USER_ID=your-user-id
 ```
 
-Then rebuild: `pnpm build:app && wrangler deploy --config gateways/web/wrangler.jsonc`
+Then redeploy: `pnpm deploy:web`
 
 ### Agent returns errors about AI Gateway
 
@@ -261,14 +266,13 @@ After code changes:
 
 ```bash
 # Re-deploy core only
-pnpm wrangler deploy --config packages/core/wrangler.jsonc
+pnpm deploy:core
 
 # Re-deploy web gateway (rebuilds SPA first)
-cd gateways/web && pnpm deploy
+pnpm deploy:web
 
 # Re-deploy both
-pnpm wrangler deploy --config packages/core/wrangler.jsonc
-cd gateways/web && pnpm deploy
+pnpm deploy:core && pnpm deploy:web
 ```
 
 D1 migrations only need to be re-applied when there are new migration files.

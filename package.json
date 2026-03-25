@@ -7,7 +7,9 @@
     "check": "pnpm biome check . && pnpm -r exec tsc --noEmit",
     "lint": "pnpm biome check --write .",
     "test": "pnpm -r test",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "deploy:core": "pnpm wrangler deploy --config packages/core/wrangler.jsonc",
+    "deploy:web": "pnpm --filter @piccolo/web-gateway run deploy"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",

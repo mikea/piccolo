@@ -2,33 +2,5 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "piccolo-web-gateway",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-17",
-
-  // Test config: omits the CORE service binding so Miniflare starts cleanly.
-  // Tests mock IPiccoloCore directly — they never call through CORE.
-
-  // ── Durable Objects ────────────────────────────────────────────────────
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "WEB_UI_SESSION",
-        "class_name": "WebUiSessionDO"
-      }
-    ]
-  },
-
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["WebUiSessionDO"]
-    }
-  ],
-
-  // ── R2 ─────────────────────────────────────────────────────────────────
-  "r2_buckets": [
-    {
-      "binding": "ASSETS",
-      "bucket_name": "piccolo-assets"
-    }
-  ]
+  "compatibility_date": "2026-03-17"
 }

@@ -1,21 +1,30 @@
 /**
  * main.tsx — SPA entry point.
  *
- * Mounts the root SolidJS component into #root.
- * Initializes global data (sessions, models) on startup.
+ * The only file that knows about RpcStub and capnweb. Creates the WebSocket
+ * connection and gets the IUser stub, then passes it as a plain IUser prop.
  *
  * Spec ref: specs/web_gateway.md §Browser SPA
  */
 
 import { render } from "solid-js/web";
+import { newWebSocketRpcSession } from "capnweb";
+import type { IUser } from "@piccolo/core";
+import type { IWebGateway } from "../../src/types.ts";
 import { App } from "./App.tsx";
-import { loadModels, loadSessions } from "./store.ts";
+
+console.debug("[app] main.tsx loading");
+
+const proto = location.protocol === "https:" ? "wss" : "ws";
+const url = `${proto}://${location.host}/rpc`;
+console.debug("[app] connecting to", url);
+
+const gateway = newWebSocketRpcSession<IWebGateway>(url);
+const user: IUser = gateway.getUser();
+
+console.debug("[app] user ready");
 
 const root = document.getElementById("root");
 if (!root) throw new Error("No #root element found");
 
-// Kick off initial data load before rendering
-void loadSessions();
-void loadModels();
-
-render(() => <App />, root);
+render(() => <App user={user} />, root);

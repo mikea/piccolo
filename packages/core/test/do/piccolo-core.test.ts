@@ -1,20 +1,10 @@
 /**
- * Integration tests for PiccoloCore WorkerEntrypoint (step 9).
- *
- * PiccoloCore is instantiated directly with `new PiccoloCore(ctx, env)` — the
- * same pattern used throughout @cloudflare/vitest-pool-workers integration tests.
- * The test env (from `cloudflare:test`) is the live Miniflare environment, so
- * AGENT_SESSION bindings point to real in-process DOs, and SESSIONS_DB is a
- * real in-memory D1 instance.
- *
- * Note on stream draining: Miniflare's in-process JSRPC cannot reliably stream
- * ReadableStream<AgentEvent> across the Worker→DO boundary in tests. In production,
- * real Workers JSRPC handles this correctly. For tests, prompt turns are run via
- * runInDurableObject() which gives direct DO access (no JSRPC boundary).
+ * Integration tests for PiccoloCore WorkerEntrypoint.
  *
  * Spec refs:
- *   specs/api.md §1 IPiccoloCore
- *   specs/api.md §2 ISession
+ *   specs/api.md §IPiccoloCore
+ *   specs/api.md §IUser
+ *   specs/api.md §ISession
  *   specs/core.md §IPiccoloCore WorkerEntrypoint
  */
 
@@ -23,20 +13,15 @@ import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
 import { PiccoloCore } from "../../src/piccolo-core.ts";
-import type { ISession } from "../../src/types.ts";
+import type { ISession, IUser } from "../../src/types.ts";
 import { setupTestDb } from "../mocks/d1.ts";
 import { createMockModel } from "./mock-model.ts";
-
-// ─── Setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(async () => {
   const migrations = inject("migrations") as D1Migration[];
   await setupTestDb(env.SESSIONS_DB, migrations);
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Create a PiccoloCore instance backed by the Miniflare test env. */
 function makeCore(): PiccoloCore {
   return new PiccoloCore(createExecutionContext(), env);
 }
@@ -47,19 +32,16 @@ function uniqueUserId(): string {
   return `user-${_counter.toString().padStart(4, "0")}`;
 }
 
-/**
- * Run a full prompt turn inside the DO via runInDurableObject.
- *
- * Miniflare's in-process JSRPC cannot reliably stream ReadableStream<AgentEvent>
- * across the Worker→DO boundary. In production real Workers JSRPC handles this.
- * Tests use this helper to drive prompts at the DO level directly.
- */
+function makeUser(userId?: string): IUser {
+  return makeCore().getUser(userId ?? uniqueUserId());
+}
+
 async function runPromptViaDoInstance(
   session: ISession,
   text: string,
   mockResponse: string,
 ): Promise<void> {
-  const sessionId = await session.id();
+  const sessionId = await session.sessionId();
   const stub = env.AGENT_SESSION.get(env.AGENT_SESSION.idFromName(sessionId));
   await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
@@ -73,167 +55,146 @@ async function runPromptViaDoInstance(
   });
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-describe("PiccoloCore — newSession()", () => {
-  it("returns a session with a valid UUID id", async () => {
+describe("PiccoloCore — getUser()", () => {
+  it("returns an IUser stub synchronously", () => {
     const core = makeCore();
-    const session = await core.newSession(uniqueUserId());
-    const id = await session.id();
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    const user = core.getUser("user-1");
+    expect(user).toBeDefined();
+    expect(typeof user.newSession).toBe("function");
+    expect(typeof user.listSessions).toBe("function");
+    expect(typeof user.listModels).toBe("function");
   });
+});
 
-  it("session.info() returns the correct userId", async () => {
-    // userId is a readonly field; use info() to retrieve it via JSRPC.
-    const core = makeCore();
-    const userId = uniqueUserId();
-    const session = await core.newSession(userId);
-    const info = await session.info();
-    expect(info.userId).toBe(userId);
+describe("IUser — newSession()", () => {
+  it("returns a session with a valid UUID id", async () => {
+    const user = makeUser();
+    const session = await user.newSession();
+    expect(await session.sessionId()).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("two calls produce different session ids", async () => {
-    const core = makeCore();
-    const uid = uniqueUserId();
-    const a = await core.newSession(uid);
-    const b = await core.newSession(uid);
-    expect(await a.id()).not.toBe(await b.id());
+    const user = makeUser();
+    const a = await user.newSession();
+    const b = await user.newSession();
+    expect(await a.sessionId()).not.toBe(await b.sessionId());
   });
 
   it("accepts NewSessionOptions (name, modelId)", async () => {
-    const core = makeCore();
-    const session = await core.newSession(uniqueUserId(), {
-      name: "My test session",
-      modelId: "openai/gpt-4o-mini",
-    });
-    expect(await session.id()).toMatch(/^[0-9a-f-]{36}$/);
-    const model = await session.getModel();
-    expect(model).toBe("openai/gpt-4o-mini");
+    const user = makeUser();
+    const session = await user.newSession({ name: "My test session", modelId: "openai/gpt-4o-mini" });
+    expect(await session.sessionId()).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await session.getModel()).toBe("openai/gpt-4o-mini");
   });
 });
 
-describe("PiccoloCore — getSession()", () => {
-  it("returns a session stub with the given sessionId", async () => {
-    const core = makeCore();
-    const created = await core.newSession(uniqueUserId());
-    const createdId = await created.id();
-
-    const retrieved = await core.getSession(createdId);
-    expect(await retrieved.id()).toBe(createdId);
+describe("IUser — getSession()", () => {
+  it("returns the same session by id after it is committed", async () => {
+    const user = makeUser();
+    const created = await user.newSession();
+    await runPromptViaDoInstance(created, "hi", "r");
+    const createdId = await created.sessionId();
+    const retrieved = await user.getSession(createdId);
+    expect(await retrieved.sessionId()).toBe(createdId);
   });
 
-  it("session.info() returns the correct userId after a prompt", async () => {
+  it("throws Forbidden for another user's session", async () => {
+    const uid1 = uniqueUserId();
+    const uid2 = uniqueUserId();
     const core = makeCore();
-    const userId = uniqueUserId();
-    const session = await core.newSession(userId);
+    const session = await core.getUser(uid1).newSession();
+    await runPromptViaDoInstance(session, "hi", "r");
+    const sid = await session.sessionId();
+    await expect(core.getUser(uid2).getSession(sid)).rejects.toThrow("Forbidden");
+  });
+
+  it("retrieved session has same id after a prompt", async () => {
+    const user = makeUser();
+    const session = await user.newSession();
     await runPromptViaDoInstance(session, "hi", "hello");
-
-    const retrieved = await core.getSession(await session.id());
-    const info = await retrieved.info();
-    expect(info.userId).toBe(userId);
+    const retrieved = await user.getSession(await session.sessionId());
+    expect(await retrieved.sessionId()).toBe(await session.sessionId());
   });
 });
 
-describe("PiccoloCore — prompt turn (via DO instance)", () => {
-  it("prompt commits the session to D1 and info() reflects it", async () => {
-    const core = makeCore();
-    const userId = uniqueUserId();
-    const session = await core.newSession(userId, { name: "Test" });
-    await runPromptViaDoInstance(session, "hi", "response");
-
-    const info = await session.info();
-    expect(info.userId).toBe(userId);
-    expect(info.name).toBe("Test");
-    expect(info.createdAt).toBeGreaterThan(0);
-  });
-});
-
-describe("PiccoloCore — listSessions()", () => {
+describe("IUser — listSessions()", () => {
   it("returns empty list for user with no committed sessions", async () => {
-    const core = makeCore();
-    const sessions = await core.listSessions(uniqueUserId());
-    expect(sessions).toHaveLength(0);
+    const user = makeUser();
+    expect(await user.listSessions()).toHaveLength(0);
   });
 
   it("returns ISession after first prompt commits it to D1", async () => {
-    const core = makeCore();
-    const userId = uniqueUserId();
-    const session = await core.newSession(userId);
+    const user = makeUser();
+    const session = await user.newSession();
     await runPromptViaDoInstance(session, "hello", "response");
-
-    const list = await core.listSessions(userId);
+    const list = await user.listSessions();
     expect(list).toHaveLength(1);
-    // listSessions returns ISession[] — call info() for metadata
-    const listedInfo = await list[0]?.info();
-    expect(listedInfo?.userId).toBe(userId);
-    expect(listedInfo?.id).toBe(await session.id());
+    expect(await list[0]?.sessionId()).toBe(await session.sessionId());
   });
 
   it("does not list sessions for other users", async () => {
     const core = makeCore();
-    const uid1 = uniqueUserId();
-    const uid2 = uniqueUserId();
-
-    const s1 = await core.newSession(uid1);
+    const user1 = core.getUser(uniqueUserId());
+    const user2 = core.getUser(uniqueUserId());
+    const s1 = await user1.newSession();
     await runPromptViaDoInstance(s1, "hi", "r1");
-
-    const list = await core.listSessions(uid2);
-    expect(list).toHaveLength(0);
+    expect(await user2.listSessions()).toHaveLength(0);
   });
 });
 
-describe("PiccoloCore — listModels()", () => {
+describe("IUser — listModels()", () => {
   it("returns a non-empty list of model ID strings", async () => {
-    const core = makeCore();
-    const models = await core.listModels();
+    const user = makeUser();
+    const models = await user.listModels();
     expect(models.length).toBeGreaterThan(0);
     expect(models.every((m) => typeof m === "string")).toBe(true);
     expect(models[0]).toContain("/");
   });
 });
 
-describe("PiccoloCore — ISession methods via returned stub", () => {
+describe("IUser — ISession methods", () => {
   it("getModel() returns the model ID set via NewSessionOptions", async () => {
-    const core = makeCore();
-    const session = await core.newSession(uniqueUserId(), { modelId: "openai/gpt-4o" });
-    const model = await session.getModel();
-    expect(model).toBe("openai/gpt-4o");
+    const user = makeUser();
+    const session = await user.newSession({ modelId: "openai/gpt-4o" });
+    expect(await session.getModel()).toBe("openai/gpt-4o");
   });
 
   it("getContextUsage() returns valid ContextUsage shape", async () => {
-    const core = makeCore();
-    const session = await core.newSession(uniqueUserId());
+    const user = makeUser();
+    const session = await user.newSession();
     const usage = await session.getContextUsage();
     expect(typeof usage.inputTokens).toBe("number");
-    expect(typeof usage.contextWindowTokens).toBe("number");
-    expect(typeof usage.usedFraction).toBe("number");
-    expect(usage.contextWindowTokens).toBeGreaterThan(0);
   });
 
   it("getName() returns undefined before setName()", async () => {
-    const core = makeCore();
-    const session = await core.newSession(uniqueUserId());
+    const user = makeUser();
+    const session = await user.newSession();
     expect(await session.getName()).toBeUndefined();
   });
 
   it("setName() / getName() round-trips correctly", async () => {
-    const core = makeCore();
-    const session = await core.newSession(uniqueUserId());
+    const user = makeUser();
+    const session = await user.newSession();
     await session.setName("My Session");
     expect(await session.getName()).toBe("My Session");
   });
+
+  it("prompt commits the session to D1 and getUpdatedAt() reflects it", async () => {
+    const user = makeUser();
+    const session = await user.newSession({ name: "Test" });
+    await runPromptViaDoInstance(session, "hi", "response");
+    expect(await session.getName()).toBe("Test");
+    expect(await session.getUpdatedAt()).toBeGreaterThan(0);
+  });
 });
 
-describe("PiccoloCore — fork()", () => {
-  it("fork() returns a new ISession with a different id", async () => {
-    const core = makeCore();
-    const userId = uniqueUserId();
-    const original = await core.newSession(userId);
+describe("IUser — fork()", () => {
+  it("fork() returns a new sessionId different from the original", async () => {
+    const user = makeUser();
+    const original = await user.newSession();
     await runPromptViaDoInstance(original, "hello", "first response");
-
-    const forked = await original.fork();
-    const forkedId = await forked.id();
-    expect(forkedId).not.toBe(await original.id());
+    const forkedId = await original.fork();
+    expect(forkedId).not.toBe(await original.sessionId());
     expect(forkedId).toMatch(/^[0-9a-f-]{36}$/);
   });
 });

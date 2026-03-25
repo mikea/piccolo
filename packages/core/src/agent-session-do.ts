@@ -1,407 +1,293 @@
 /**
  * AgentSessionDO — Durable Object that owns one live piccolo session.
  *
+ * Implements ISession directly — no SessionImpl wrapper needed. The DO
+ * itself is the RpcTarget returned to gateways and tools.
+ *
  * One DO instance per session. This is where all live session logic runs:
  *   - Agent loop (via @piccolo/agent)
  *   - Persistence (D1 via session/persistence.ts)
  *   - Context compaction (compaction.ts)
  *   - Auto-retry (retry.ts)
- *   - Extension dispatch (real ExtensionRunner from step 6)
+ *   - Extension dispatch (ExtensionRunner)
  *   - System prompt assembly (SystemPromptAssembler)
  *
  * The DO is addressed by sessionId via `env.AGENT_SESSION.idFromName(sessionId)`.
  *
  * Spec refs:
  *   specs/core.md §AgentSessionDO
- *   specs/api.md  §4 IAgentSessionDO
+ *   specs/api.md  §ISession
  */
 
-import { DurableObject } from "cloudflare:workers";
-import type { AgentEvent, LanguageModel, ModelMessage } from "@piccolo/agent";
-import { Agent } from "@piccolo/agent";
+import { DurableObject, RpcTarget } from "cloudflare:workers";
+import type { Agent, AgentEvent, LanguageModel, ModelMessage } from "@piccolo/agent";
+import { Agent as AgentClass } from "@piccolo/agent";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
-import type { MessageEntry, ModelChangeEntry, SessionInfoEntry } from "./db/entry-types.ts";
+import type { AnyEntry, MessageEntry, ModelChangeEntry, SessionInfoEntry } from "./db/entry-types.ts";
 import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
-import type { DOState } from "./do-state.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
 import { checkRetry } from "./retry.ts";
-import { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "./session/context.ts";
+import { buildSessionContext, walkToRoot } from "./session/context.ts";
+import { defaultModelId, parseModels } from "./types-internal.ts";
 import {
   commitSession,
   deleteSession,
   flushPendingEntries,
   forkSession,
 } from "./session/persistence.ts";
-import { SessionImpl } from "./session-impl.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import type {
   Attachment,
   CompactOptions,
   ContextUsage,
-  IAgentSessionDO,
+  CustomEntry as CustomEntryType,
+  IAgentTool,
   IGatewayCallback,
   ISession,
-  SessionRecord,
+  ITurn,
+  NewSessionOptions,
+  ToolDescriptor,
 } from "./types.ts";
+import type { CustomEntry, CustomMessageEntry } from "./db/entry-types.ts";
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
-/**
- * Implements IAgentSessionDO from specs/api.md §4.
- * Spec ref: specs/core.md §AgentSessionDO
- */
-export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionDO {
-  #state: DOState | null = null;
-  /** Pending flush promise — tests await this via waitForFlush() to ensure D1 is up-to-date. */
+export class AgentSessionDO extends DurableObject<Env> implements ISession {
+  // ─── Session identity ─────────────────────────────────────────────────────
+  #sessionId = "";
+  #userId = "";
+  #modelId = "";
+  #leafId: string | null = null;
+  #name: string | undefined = undefined;
+  #createdAt = 0;
+  #updatedAt = 0;
+
+  // ─── In-memory session state ──────────────────────────────────────────────
+  #messages: ModelMessage[] = [];
+  #pendingEntries: AnyEntry[] = [];
+  #branchEntries: AnyEntry[] = [];
+  #messageToEntryId = new Map<ModelMessage, string>();
+
+  // ─── Agent and infrastructure ─────────────────────────────────────────────
+  #agent!: Agent;
+  #extensionRunner!: ExtensionRunner;
+  #assembler!: SystemPromptAssembler;
+  #assembledSystemPrompt = "";
+
+  // ─── Turn state ───────────────────────────────────────────────────────────
+  #abortController: AbortController | null = null;
+  #followUpQueue: string[] = [];
+  #callback: IGatewayCallback | undefined = undefined;
+  #lastInputTokens = 0;
+  #messagesAtTurnStart = 0;
+
+  // ─── Test helpers ─────────────────────────────────────────────────────────
+  #modelOverridden = false;
   #flushPromise: Promise<void> | null = null;
+
+  // ─── Initialisation ───────────────────────────────────────────────────────
+
+  readonly userId: string = ""; // ISession requires this; updated after #initialize
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // blockConcurrencyWhile ensures no RPC calls are served until initialize() completes.
     ctx.blockConcurrencyWhile(async () => {
-      this.#state = await this.#initialize();
+      await this.#initialize();
     });
   }
 
-  // ─── Test-only helpers ────────────────────────────────────────────────────
-  // These methods are used by integration tests via runInDurableObject().
-  // They are prefixed with _ to signal internal/test use. They are NOT part
-  // of IAgentSessionDO and must not be called from production code paths.
-
-  /**
-   * Replace the agent's model. Used in tests to inject a mock model.
-   * Sets modelOverridden = true so initSession does not re-create the model.
-   */
-  _setModelForTest(model: LanguageModel): void {
-    const state = this.#requireState();
-    state.agent.setModel(model);
-    state.modelId = "test-mock";
-    state.modelOverridden = true;
-  }
-
-  /** Return the assembled system prompt for the current session. */
-  _getAssembledSystemPrompt(): string {
-    return this.#requireState().assembledSystemPrompt;
-  }
-
-  /**
-   * Wait for the most recent agent-end flush to complete.
-   * Tests must call this after draining the stream to ensure D1 writes are done.
-   */
-  async waitForFlush(): Promise<void> {
-    if (this.#flushPromise !== null) {
-      await this.#flushPromise;
-    }
-  }
-
-  // ─── Initialisation ──────────────────────────────────────────────────────
-
-  /**
-   * Cold start / rehydration.
-   * Spec ref: specs/core.md §Cold start / rehydration
-   */
-  async #initialize(): Promise<DOState> {
-    // 1. Read sessionId from DO storage (set on first prompt)
+  async #initialize(): Promise<void> {
+    // 1. Read sessionId and modelId from DO storage
     const sessionId = (await this.ctx.storage.get<string>("sessionId")) ?? "";
+    const storedModelId = await this.ctx.storage.get<string>("modelId");
 
-    // 2. Start with empty defaults — filled in from D1 if session exists
-    let userId = "";
-    let modelId = DEFAULT_MODEL_ID;
-    let leafId: string | null = null;
-    let name: string | undefined;
-    let createdAt = 0;
-    let updatedAt = 0;
-    let messages: ModelMessage[] = [];
-    const messageToEntryId = new Map<ModelMessage, string>();
+    this.#sessionId = sessionId;
+    this.#modelId = storedModelId ?? defaultModelId(this.env.MODELS);
 
-    // 3–5. If we have a sessionId, load from D1
+    // 2. If session exists in D1, rehydrate
     if (sessionId !== "") {
       const db = this.env.SESSIONS_DB;
       const sessionRow = await getSession(db, sessionId);
       if (sessionRow !== null) {
-        userId = sessionRow.user_id;
-        modelId = sessionRow.model_id;
-        leafId = sessionRow.leaf_id;
-        name = sessionRow.name ?? undefined;
-        createdAt = sessionRow.created_at;
-        updatedAt = sessionRow.updated_at;
+        this.#userId = sessionRow.user_id;
+        this.#modelId = sessionRow.model_id;
+        this.#leafId = sessionRow.leaf_id;
+        this.#name = sessionRow.name ?? undefined;
+        this.#createdAt = sessionRow.created_at;
+        this.#updatedAt = sessionRow.updated_at;
 
-        // Rebuild message history from the entry tree
         const rawRows = await getEntries(db, sessionId);
         const allEntries = rawRows.map(parseEntry);
-        const context = buildSessionContext(allEntries, leafId);
-        messages = context.messages;
-        modelId = context.modelId;
-
-        // Register all message entries in the map (for compaction)
+        const context = buildSessionContext(allEntries, this.#leafId);
+        this.#messages = context.messages;
+        if (allEntries.some((e) => e.type === "model_change")) {
+          this.#modelId = context.modelId;
+        }
         for (const entry of allEntries) {
           if (entry.type === "message") {
-            const msg = (entry as MessageEntry).data;
-            messageToEntryId.set(msg, entry.id);
+            this.#messageToEntryId.set((entry as MessageEntry).data, entry.id);
           }
         }
+        this.#branchEntries = walkToRoot(allEntries, this.#leafId);
       }
     }
 
-    // 6. Build the Agent (needed before ExtensionRunner so tools can be registered)
-    const model = createModel(this.env, modelId);
-    const agent = new Agent({ model, systemPrompt: "" /* filled in step 8 */ });
-    agent.replaceMessages(messages);
+    // 3. Build agent
+    const model = createModel(this.env, this.#modelId);
+    this.#agent = new AgentClass({ model, systemPrompt: "" });
+    this.#agent.replaceMessages(this.#messages);
 
-    // 7. Assemble the ExtensionRunner — we need a bootstrap ISession for initialize().
-    //    Build a partial DOState first, then construct SessionImpl and call initialize().
-    const extensionRunner = new ExtensionRunner();
-    const assembler = new SystemPromptAssembler();
+    // 4. Set up extension runner and system prompt
+    this.#extensionRunner = new ExtensionRunner();
+    this.#assembler = new SystemPromptAssembler();
+    await this.#extensionRunner.initialize(this, this.env.CONFIG, this.env.EXTENSIONS, this.#modelId);
 
-    // Partial state for bootstrap — session and assembledSystemPrompt filled below.
-    const state: DOState = {
-      sessionId,
-      userId,
-      modelId,
-      leafId,
-      name,
-      createdAt,
-      updatedAt,
-      messages,
-      pendingEntries: [],
-      branchEntries: [],
-      agent,
-      abortController: null,
-      followUpQueue: [],
-      extensionRunner,
-      assembler,
-      assembledSystemPrompt: "", // filled after assembly
-      messageToEntryId,
-      lastInputTokens: 0,
-      lastContextWindowTokens: 200_000,
-      messagesAtTurnStart: 0,
-      session: null,
-      callback: undefined,
-      modelOverridden: false,
-      // Bound to the DO instance so SessionImpl.prompt() can start a full agent
-      // turn without an extra JSRPC hop. Set after the state object is created
-      // (placeholder avoids the TS "used before assigned" error).
-      promptFn: () => Promise.reject(new Error("promptFn not yet bound")),
-    };
-
-    // Bind promptFn to this DO instance — avoids circular import.
-    state.promptFn = this.prompt.bind(this);
-
-    // Create the SessionImpl now — it holds a live reference to state so all
-    // mutations during initialize() are visible immediately.
-    const session = new SessionImpl(state, this.env);
-    state.session = session;
-
-    // Initialize ExtensionRunner with the real ISession
-    await extensionRunner.initialize(session, this.env.CONFIG, this.env.EXTENSIONS, modelId);
-
-    // 8. Assemble system prompt (after extensions registered their additions)
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
-    const assembledSystemPrompt = assembler.assemble(
+    this.#assembledSystemPrompt = this.#assembler.assemble(
       basePrompt,
-      extensionRunner.getSystemPromptAdditions(),
-      extensionRunner.getToolDescriptors(),
+      this.#extensionRunner.getSystemPromptAdditions(),
+      this.#extensionRunner.getToolDescriptors(),
     );
-    state.assembledSystemPrompt = assembledSystemPrompt;
-    agent.setSystemPrompt(assembledSystemPrompt);
-
-    // Register all IAgentTool instances with the agent
-    agent.setTools(
-      extensionRunner.getToolsByNames(extensionRunner.getToolDescriptors().map((d) => d.name)),
+    this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
+    this.#agent.setTools(
+      this.#extensionRunner.getToolsByNames(
+        this.#extensionRunner.getToolDescriptors().map((d) => d.name),
+      ),
     );
-
-    // 9. Populate branchEntries from the loaded D1 entries for getEntries() support
-    if (sessionId !== "") {
-      const db = this.env.SESSIONS_DB;
-      const rawRows = await getEntries(db, sessionId);
-      const allEntries = rawRows.map(parseEntry);
-      state.branchEntries = walkToRoot(allEntries, leafId);
-    }
-
-    return state;
   }
 
-  #requireState(): DOState {
-    if (this.#state === null) throw new Error("AgentSessionDO not initialized");
-    return this.#state;
+  // ─── Test-only helpers ────────────────────────────────────────────────────
+
+  _setModelForTest(model: LanguageModel): void {
+    this.#agent.setModel(model);
+    this.#modelId = "test-mock";
+    this.#modelOverridden = true;
   }
 
-  // ─── Session (ISession) ───────────────────────────────────────────────────
-
-  /**
-   * Return the live SessionImpl for this DO.
-   *
-   * Called by PiccoloCore.newSession() / PiccoloCore.getSession() to obtain an
-   * RpcTarget that can be returned directly to a gateway over JSRPC. Because
-   * SessionImpl extends RpcTarget, Workers JSRPC serialises it transparently
-   * across the WorkerEntrypoint → gateway boundary — no wrapper stub needed.
-   *
-   * @param userId  The authenticated user ID to stamp on this session view.
-   *                PiccoloCore passes the gateway-supplied userId here.
-   *
-   * Spec ref: specs/core.md §ISession — Core-Side Implementation
-   */
-  getSession(userId: string): ISession {
-    const s = this.#requireState();
-    // Only update userId if a non-empty value is provided (newSession passes the
-    // real userId; getSession passes "" to avoid a D1 round-trip).
-    if (userId !== "") {
-      s.userId = userId;
-    }
-    if (s.session === null) {
-      s.session = new SessionImpl(s, this.env);
-    }
-    return s.session;
+  _getAssembledSystemPrompt(): string {
+    return this.#assembledSystemPrompt;
   }
 
-  /**
-   * Return the live ISession for the current turn (internal use only).
-   * If no session has been created yet for this turn, create one now (lazy).
-   * The session holds a live reference to state, so mutations are shared.
-   * Spec ref: specs/core.md §ISession — Core-Side Implementation
-   */
-  #getOrCreateSession(): ISession {
-    const s = this.#requireState();
-    if (s.session === null) {
-      s.session = new SessionImpl(s, this.env);
-    }
-    return s.session;
+  async waitForFlush(): Promise<void> {
+    if (this.#flushPromise !== null) await this.#flushPromise;
   }
 
-  // ─── Conversation ─────────────────────────────────────────────────────────
+  // ─── ISession: Identity ───────────────────────────────────────────────────
 
-  /**
-   * Start a new agent turn.
-   * Returns a ReadableStream<AgentEvent> for the caller to consume.
-   * Spec ref: specs/core.md §prompt() pipeline
-   */
+  async sessionId(): Promise<string> {
+    return this.#sessionId;
+  }
+
+  async getUpdatedAt(): Promise<number> {
+    return this.#updatedAt;
+  }
+
+  // ─── ISession: Metadata ───────────────────────────────────────────────────
+
+  async getName(): Promise<string | undefined> {
+    console.debug("[session] getName sessionId=%s →", this.#sessionId, this.#name);
+    return this.#name;
+  }
+
+  async setName(name: string): Promise<void> {
+    console.debug("[session] setName sessionId=%s name=%s", this.#sessionId, name);
+    this.#name = name;
+    const entry: SessionInfoEntry = {
+      id: generateEntryId(),
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      type: "session_info",
+      timestamp: new Date().toISOString(),
+      data: { name },
+    };
+    this.#appendEntry(entry);
+    if (this.#createdAt !== 0) {
+      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId!, this.env.SESSIONS_DB);
+      this.#pendingEntries = [];
+    }
+  }
+
+  // ─── ISession: Conversation ───────────────────────────────────────────────
+
   async prompt(
     text: string,
     attachments?: Attachment[],
     callback?: IGatewayCallback,
   ): Promise<ReadableStream<AgentEvent>> {
-    const state = this.#requireState();
-    // Store the active callback so tools can retrieve it via ctx.getCurrentTurn().getCallback().
-    // Cleared at turn end in the agent.prompt().finally() block below.
-    state.callback = callback;
+    console.debug("[session] prompt sessionId=%s text=%s", this.#sessionId, text.slice(0, 80));
+    this.#callback = callback;
+    this.#agent.setContext(this);
 
-    const ctx = this.#getOrCreateSession();
-
-    // Inject the live ISession into the agent so tools receive it via execute().
-    // Spec ref: specs/core.md §ISession — Context injection into tool execute()
-    state.agent.setContext(ctx);
-
-    // ── Step 1: emitInput ─────────────────────────────────────────────────
-    const inputResult = await state.extensionRunner.emitInput(
+    // emitInput
+    const inputResult = await this.#extensionRunner.emitInput(
       { text, attachments: attachments ?? [], source: "user" },
-      ctx,
+      this,
     );
     if (inputResult.action === "handled") {
-      // Extension handled the input — return an empty stream
-      return new ReadableStream<AgentEvent>({
-        start(controller) {
-          controller.close();
-        },
-      });
+      return new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
     }
     const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
 
-    // ── Step 2: build UserMessage and queue entry ─────────────────────────
+    // Build user message and entry
     const userMessage: ModelMessage =
       attachments && attachments.length > 0
-        ? {
-            role: "user",
-            content: [
-              { type: "text", text: effectiveText },
-              ...attachments.map((a) => ({
-                type: "file" as const,
-                data: a.data,
-                // ai v6 FilePart uses `mediaType` (not `mimeType`)
-                mediaType: a.mimeType,
-              })),
-            ],
-          }
+        ? { role: "user", content: [{ type: "text", text: effectiveText }, ...attachments.map((a) => ({ type: "file" as const, data: a.data, mediaType: a.mimeType }))] }
         : { role: "user", content: effectiveText };
 
     const userEntryId = generateEntryId();
     const userEntry: MessageEntry = {
       id: userEntryId,
-      sessionId: state.sessionId,
-      parentId: state.leafId,
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
       type: "message",
       timestamp: new Date().toISOString(),
       data: userMessage,
     };
-    state.pendingEntries.push(userEntry);
-    state.leafId = userEntryId;
-    state.messageToEntryId.set(userMessage, userEntryId);
+    this.#pendingEntries.push(userEntry);
+    this.#leafId = userEntryId;
+    this.#messageToEntryId.set(userMessage, userEntryId);
 
-    // ── Step 3: emitBeforeAgentStart ──────────────────────────────────────
-    const beforeStart = await state.extensionRunner.emitBeforeAgentStart(
-      {
-        text: effectiveText,
-        attachments: attachments ?? [],
-        systemPrompt: state.assembledSystemPrompt,
-      },
-      ctx,
+    // emitBeforeAgentStart
+    const beforeStart = await this.#extensionRunner.emitBeforeAgentStart(
+      { text: effectiveText, attachments: attachments ?? [], systemPrompt: this.#assembledSystemPrompt },
+      this,
     );
     if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
-      // Context messages are prepended for this turn only — not persisted
-      state.agent.appendMessages(beforeStart.contextMessages);
+      this.#agent.appendMessages(beforeStart.contextMessages);
+    }
+    this.#agent.setSystemPrompt(beforeStart.systemPrompt ?? this.#assembledSystemPrompt);
+
+    if (this.#computeContextUsage().inputTokens > this.#compactTokens()) {
+      await this.#compact({});
     }
 
-    // ── Step 4: assemble system prompt ────────────────────────────────────
-    const systemPrompt = beforeStart.systemPrompt ?? state.assembledSystemPrompt;
-    state.agent.setSystemPrompt(systemPrompt);
-
-    // ── Step 5: compaction threshold check ────────────────────────────────
-    const usage = this.#computeContextUsage(state);
-    if (usage.usedFraction > 0.8) {
-      await this.#compact(state, ctx, {});
-    }
-
-    // ── Steps 6–7: set up ReadableStream and start agent ──────────────────
+    // Set up stream and abort
     const { readable, writable } = new TransformStream<AgentEvent, AgentEvent>();
     const writer = writable.getWriter();
-
-    // Record current message count so _handleAgentEnd can find new messages.
-    // agent.prompt([userMessage]) will append the user message + all response
-    // messages, so messagesAtTurnStart is the count BEFORE the call.
-    state.messagesAtTurnStart = state.agent.state.messages.length;
-
-    // Set up abort controller for this turn
+    this.#messagesAtTurnStart = this.#agent.state.messages.length;
     const abortController = new AbortController();
-    state.abortController = abortController;
+    this.#abortController = abortController;
 
-    const unsub = state.agent.subscribe((event: AgentEvent) => {
-      // Forward event to the caller's stream
+    const unsub = this.#agent.subscribe((event: AgentEvent) => {
       writer.write(event).catch(() => {});
-
-      // Track token usage from turn_end events
       if (event.type === "turn_end") {
-        state.lastInputTokens = event.usage.inputTokens ?? state.lastInputTokens;
+        this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
       }
-
-      // Fire-and-forget to extension runner
-      state.extensionRunner.emit(event.type, event, ctx).catch(() => {});
-
-      // On agent_end: persist and check retry
+      this.#extensionRunner.emit(event.type, event, this).catch(() => {});
       if (event.type === "agent_end") {
-        state.lastInputTokens = event.totalUsage.inputTokens ?? state.lastInputTokens;
-        this.#flushPromise = this.#handleAgentEnd(state, ctx, abortController.signal);
+        this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
+        this.#flushPromise = this.#handleAgentEnd(abortController.signal);
         this.#flushPromise.catch((err) => {
           console.error("AgentSessionDO: _handleAgentEnd error", err);
         });
       }
     });
 
-    // Start the agent turn. We pass only the user message — agent.prompt()
-    // appends it internally. Do NOT call agent.appendMessages() separately.
-    state.agent
+    this.#agent
       .prompt([userMessage])
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -409,302 +295,299 @@ export class AgentSessionDO extends DurableObject<Env> implements IAgentSessionD
       })
       .finally(() => {
         unsub();
-        state.abortController = null;
-        state.callback = undefined; // clear callback when turn ends
+        this.#abortController = null;
+        this.#callback = undefined;
         writer.close().catch(() => {});
       });
 
-    // ── Step 8: return ReadableStream ──────────────────────────────────────
     return readable;
   }
 
+  async sendUserMessage(content: string): Promise<void> {
+    this.#agent.steer({ role: "user", content });
+  }
+
   async steer(text: string): Promise<void> {
-    this.#requireState().agent.steer({ role: "user", content: text });
+    this.#agent.steer({ role: "user", content: text });
   }
 
   async followUp(text: string): Promise<void> {
-    this.#requireState().agent.followUp({ role: "user", content: text });
+    this.#followUpQueue.push(text);
   }
 
   async abort(): Promise<void> {
-    this.#requireState().agent.abort();
+    this.#abortController?.abort();
   }
 
-  // ─── Accessors ────────────────────────────────────────────────────────────
-
-  async getInfo(): Promise<SessionRecord> {
-    const s = this.#requireState();
-    return {
-      id: s.sessionId,
-      userId: s.userId,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-      ...(s.name !== undefined ? { name: s.name } : {}),
-    };
+  async getCurrentTurn(): Promise<ITurn | undefined> {
+    if (this.#callback === undefined && this.#abortController === null) return undefined;
+    return new TurnImpl(this.#callback);
   }
 
-  async getName(): Promise<string | undefined> {
-    return this.#requireState().name;
-  }
-
-  async setName(name: string): Promise<void> {
-    const state = this.#requireState();
-    state.name = name;
-    const entry: SessionInfoEntry = {
-      id: generateEntryId(),
-      sessionId: state.sessionId,
-      parentId: state.leafId,
-      type: "session_info",
-      timestamp: new Date().toISOString(),
-      data: { name },
-    };
-    state.pendingEntries.push(entry);
-    state.leafId = entry.id;
-    if (state.createdAt !== 0) {
-      await flushPendingEntries(
-        state.pendingEntries,
-        state.sessionId,
-        state.leafId,
-        this.env.SESSIONS_DB,
-      );
-      state.pendingEntries = [];
-    }
-  }
+  // ─── ISession: Model management ───────────────────────────────────────────
 
   async getModel(): Promise<string> {
-    return this.#requireState().modelId;
+    const stored = this.#modelId;
+    const allowed = parseModels(this.env.MODELS);
+    const result = allowed.includes(stored) ? stored : (allowed[0] ?? stored);
+    console.debug("[session] getModel sessionId=%s stored=%s → %s", this.#sessionId, stored, result);
+    return result;
   }
 
   async setModel(modelId: string): Promise<void> {
-    const state = this.#requireState();
-    state.modelId = modelId;
-    const newModel = createModel(this.env, modelId);
-    state.agent.setModel(newModel);
-
+    console.debug("[session] setModel sessionId=%s modelId=%s", this.#sessionId, modelId);
+    this.#modelId = modelId;
+    this.#agent.setModel(createModel(this.env, modelId));
     const entry: ModelChangeEntry = {
       id: generateEntryId(),
-      sessionId: state.sessionId,
-      parentId: state.leafId,
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
       type: "model_change",
       timestamp: new Date().toISOString(),
       data: { modelId },
     };
-    state.pendingEntries.push(entry);
-    state.leafId = entry.id;
-    if (state.createdAt !== 0) {
-      await flushPendingEntries(
-        state.pendingEntries,
-        state.sessionId,
-        state.leafId,
-        this.env.SESSIONS_DB,
-      );
-      state.pendingEntries = [];
+    this.#appendEntry(entry);
+    if (this.#createdAt !== 0) {
+      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId!, this.env.SESSIONS_DB);
+      this.#pendingEntries = [];
     }
   }
+
+  async listModels(): Promise<string[]> {
+    const models = parseModels(this.env.MODELS);
+    console.debug("[session] listModels sessionId=%s →", this.#sessionId, models);
+    return models;
+  }
+
+  // ─── ISession: Tools ──────────────────────────────────────────────────────
+
+  async getActiveTools(): Promise<ToolDescriptor[]> {
+    return this.#agent.state.tools.map((t) => t.descriptor as ToolDescriptor);
+  }
+
+  async setActiveTools(tools: IAgentTool[]): Promise<void> {
+    this.#agent.setTools(tools);
+  }
+
+  // ─── ISession: Custom entries ─────────────────────────────────────────────
+
+  async appendCustomMessage(customType: string, content: string, display: boolean): Promise<void> {
+    const entry: CustomMessageEntry = {
+      id: generateEntryId(),
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      type: "custom_message",
+      timestamp: new Date().toISOString(),
+      data: { customType, content, display },
+    };
+    this.#appendEntry(entry);
+  }
+
+  async appendCustomEntry(customType: string, data?: unknown): Promise<void> {
+    const entry: CustomEntry = {
+      id: generateEntryId(),
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      type: "custom",
+      timestamp: new Date().toISOString(),
+      data: { customType, payload: data },
+    };
+    this.#appendEntry(entry);
+  }
+
+  async getEntries(customType?: string): Promise<CustomEntryType[]> {
+    return this.#branchEntries
+      .filter((e): e is CustomEntry => {
+        if (e.type !== "custom") return false;
+        if (customType === undefined) return true;
+        return (e.data as { customType: string }).customType === customType;
+      })
+      .map((e) => {
+        const d = e.data as { customType: string; payload?: unknown };
+        return { id: e.id, customType: d.customType, data: d.payload, timestamp: e.timestamp };
+      });
+  }
+
+  // ─── ISession: Context usage ──────────────────────────────────────────────
 
   async getContextUsage(): Promise<ContextUsage> {
-    return this.#computeContextUsage(this.#requireState());
-  }
-
-  // ─── Session control ──────────────────────────────────────────────────────
-
-  async branch(entryId: string): Promise<void> {
-    const state = this.#requireState();
-    state.leafId = entryId;
-    // Rebuild messages from this new leaf
-    const db = this.env.SESSIONS_DB;
-    const rawRows = await getEntries(db, state.sessionId);
-    const allEntries = rawRows.map(parseEntry);
-    const context = buildSessionContext(allEntries, entryId);
-    state.agent.replaceMessages(context.messages);
-    state.messages = context.messages;
-    if (context.modelId !== state.modelId) {
-      state.modelId = context.modelId;
-      state.agent.setModel(createModel(this.env, context.modelId));
-    }
+    return this.#computeContextUsage();
   }
 
   async compact(options?: CompactOptions): Promise<void> {
-    const state = this.#requireState();
-    const ctx = this.#getOrCreateSession();
-    await this.#compact(state, ctx, options ?? {});
-    // Flush compaction entry if session is committed
-    if (state.createdAt !== 0 && state.leafId !== null) {
-      await flushPendingEntries(
-        state.pendingEntries,
-        state.sessionId,
-        state.leafId,
-        this.env.SESSIONS_DB,
-      );
-      state.pendingEntries = [];
+    await this.#compact(options ?? {});
+    if (this.#createdAt !== 0 && this.#leafId !== null) {
+      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+      this.#pendingEntries = [];
     }
   }
 
-  async delete(): Promise<void> {
-    const state = this.#requireState();
-    if (state.sessionId !== "" && state.createdAt !== 0) {
-      await deleteSession(state.sessionId, this.env.SESSIONS_DB);
+  // ─── ISession: System prompt ──────────────────────────────────────────────
+
+  async getSystemPrompt(): Promise<string> {
+    return this.#assembledSystemPrompt;
+  }
+
+  // ─── ISession: Session tree ───────────────────────────────────────────────
+
+  async branch(entryId: string): Promise<void> {
+    this.#leafId = entryId;
+    const rawRows = await getEntries(this.env.SESSIONS_DB, this.#sessionId);
+    const allEntries = rawRows.map(parseEntry);
+    const context = buildSessionContext(allEntries, entryId);
+    this.#agent.replaceMessages(context.messages);
+    this.#messages = context.messages;
+    if (context.modelId !== this.#modelId) {
+      this.#modelId = context.modelId;
+      this.#agent.setModel(createModel(this.env, context.modelId));
     }
-    // Reset in-memory state
-    state.agent.abort();
-    state.pendingEntries = [];
-    state.messages = [];
-    state.leafId = null;
   }
 
   async fork(fromEntryId?: string): Promise<string> {
-    const state = this.#requireState();
-    return await forkSession(
-      state.sessionId,
+    const newSessionId = await forkSession(
+      this.#sessionId,
       fromEntryId,
-      state.leafId,
-      state.userId,
-      state.modelId,
+      this.#leafId,
+      this.#userId,
+      this.#modelId,
       this.env.SESSIONS_DB,
     );
+    // Seed the new DO's storage so it can cold-start correctly.
+    const newStub = this.env.AGENT_SESSION.get(this.env.AGENT_SESSION.idFromName(newSessionId));
+    await newStub._init(newSessionId, this.#userId, { modelId: this.#modelId });
+    return newSessionId;
   }
 
-  // ─── First-prompt session initialisation ──────────────────────────────────
+  async delete(): Promise<void> {
+    if (this.#sessionId !== "" && this.#createdAt !== 0) {
+      await deleteSession(this.#sessionId, this.env.SESSIONS_DB);
+    }
+    this.#agent.abort();
+    this.#pendingEntries = [];
+    this.#messages = [];
+    this.#leafId = null;
+  }
 
-  /**
-   * Called at the start of the first prompt for a new session.
-   * Stores sessionId in DO storage (so it survives eviction) and
-   * sets up the full DOState for a fresh session.
-   */
-  async initSession(
+  // ─── Internal bootstrap (called only by UserImpl via DO stub) ────────────
+  // Prefixed with _ to signal it is not part of any public interface.
+  // IUser.newSession() is the only public newSession.
+
+  async _init(sessionId: string, userId: string, options?: NewSessionOptions): Promise<void> {
+    await this.#initSession(sessionId, userId, options);
+  }
+
+  async #initSession(
     sessionId: string,
     userId: string,
-    options?: {
-      name?: string;
-      modelId?: string;
-    },
+    options?: { name?: string; modelId?: string },
   ): Promise<void> {
-    const state = this.#requireState();
-    if (state.sessionId !== "") return; // already initialized
-
-    const modelId = options?.modelId ?? DEFAULT_MODEL_ID;
-    state.sessionId = sessionId;
-    state.userId = userId;
-    state.modelId = modelId;
-    state.name = options?.name;
-
-    // Persist sessionId to DO storage for cold-start recovery
+    if (this.#sessionId !== "") return; // already initialized
+    const modelId = options?.modelId ?? defaultModelId(this.env.MODELS);
+    this.#sessionId = sessionId;
+    this.#userId = userId;
+    this.#modelId = modelId;
+    this.#name = options?.name;
     await this.ctx.storage.put("sessionId", sessionId);
-
-    // Re-build the agent with the correct model, unless a test has already
-    // injected a mock model via _setModelForTest().
-    if (!state.modelOverridden) {
-      const model = createModel(this.env, modelId);
-      state.agent.setModel(model);
+    await this.ctx.storage.put("modelId", modelId);
+    if (!this.#modelOverridden) {
+      this.#agent.setModel(createModel(this.env, modelId));
     }
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
-  /** Compute context usage using real last-turn tokens + heuristic delta. */
-  #computeContextUsage(state: DOState): ContextUsage {
-    // Estimate tokens for messages added since the last turn
-    const messagesSinceLastTurn = state.agent.state.messages.slice(
-      state.lastInputTokens === 0 ? 0 : undefined,
-    );
-    const heuristicExtra = estimateTokens(messagesSinceLastTurn);
-    const inputTokens = state.lastInputTokens + heuristicExtra;
-    const contextWindowTokens = state.lastContextWindowTokens;
-    return {
-      inputTokens,
-      contextWindowTokens,
-      usedFraction: contextWindowTokens > 0 ? inputTokens / contextWindowTokens : 0,
-    };
+  #appendEntry(entry: AnyEntry): void {
+    this.#pendingEntries.push(entry);
+    this.#branchEntries.push(entry);
+    this.#leafId = entry.id;
   }
 
-  /** Run context compaction. Mutates state directly. */
-  async #compact(state: DOState, ctx: ISession, options: CompactOptions): Promise<void> {
+  #compactTokens(): number {
+    const val = parseInt(this.env.COMPACT_TOKENS, 10);
+    return Number.isFinite(val) && val > 0 ? val : 100_000;
+  }
+
+  #computeContextUsage(): ContextUsage {
+    const extra = estimateTokens(this.#agent.state.messages.slice(this.#lastInputTokens === 0 ? 0 : undefined));
+    return { inputTokens: this.#lastInputTokens + extra };
+  }
+
+  async #compact(options: CompactOptions): Promise<void> {
     const compactionState: CompactionState = {
-      sessionId: state.sessionId,
-      leafId: state.leafId,
-      agent: state.agent,
-      extensionRunner: state.extensionRunner,
-      messageToEntryId: state.messageToEntryId,
-      pendingEntries: state.pendingEntries,
-      lastInputTokens: state.lastInputTokens,
+      sessionId: this.#sessionId,
+      leafId: this.#leafId,
+      agent: this.#agent,
+      extensionRunner: this.#extensionRunner,
+      messageToEntryId: this.#messageToEntryId,
+      pendingEntries: this.#pendingEntries,
+      lastInputTokens: this.#lastInputTokens,
     };
-    await compact(compactionState, ctx, options);
-    // Sync back any mutations from compact()
-    state.leafId = compactionState.leafId;
+    await compact(compactionState, this, options);
+    this.#leafId = compactionState.leafId;
   }
 
-  /** Persist new messages after an agent turn completes. */
-  async #handleAgentEnd(state: DOState, ctx: ISession, signal: AbortSignal): Promise<void> {
-    const currentMessages = state.agent.state.messages;
-    const newMessages = currentMessages.slice(state.messagesAtTurnStart);
-
-    // Create MessageEntry for each new message
+  async #handleAgentEnd(signal: AbortSignal): Promise<void> {
+    const newMessages = this.#agent.state.messages.slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
       const entryId = generateEntryId();
       const entry: MessageEntry = {
         id: entryId,
-        sessionId: state.sessionId,
-        parentId: state.leafId,
+        sessionId: this.#sessionId,
+        parentId: this.#leafId,
         type: "message",
         timestamp: new Date().toISOString(),
         data: msg,
       };
-      state.pendingEntries.push(entry);
-      state.leafId = entryId;
-      state.messageToEntryId.set(msg, entryId);
+      this.#pendingEntries.push(entry);
+      this.#leafId = entryId;
+      this.#messageToEntryId.set(msg, entryId);
     }
 
-    // Lazy session creation: commit D1 sessions row on first assistant response
-    if (state.createdAt === 0 && state.sessionId !== "") {
+    if (this.#createdAt === 0 && this.#sessionId !== "") {
       const now = Date.now();
-      state.createdAt = now;
-      state.updatedAt = now;
+      this.#createdAt = now;
+      this.#updatedAt = now;
       await commitSession(
-        state.sessionId,
-        state.userId,
-        {
-          ...(state.name !== undefined ? { name: state.name } : {}),
-          modelId: state.modelId,
-        },
+        this.#sessionId,
+        this.#userId,
+        { ...(this.#name !== undefined ? { name: this.#name } : {}), modelId: this.#modelId },
         this.env.SESSIONS_DB,
       );
     }
 
-    // Flush all pending entries to D1
-    if (state.pendingEntries.length > 0 && state.leafId !== null) {
-      await flushPendingEntries(
-        state.pendingEntries,
-        state.sessionId,
-        state.leafId,
-        this.env.SESSIONS_DB,
-      );
-      state.pendingEntries = [];
-      state.updatedAt = Date.now();
+    if (this.#pendingEntries.length > 0 && this.#leafId !== null) {
+      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+      this.#pendingEntries = [];
+      this.#updatedAt = Date.now();
     }
 
-    // Check if the last event was an error and retry if transient
-    if (state.agent.state.error) {
-      await checkRetry(state.agent.state.error, state.agent, signal, async () => {
-        // Context overflow — compact and continue
-        await this.#compact(state, ctx, {});
-        if (state.sessionId !== "" && state.leafId !== null) {
-          await flushPendingEntries(
-            state.pendingEntries,
-            state.sessionId,
-            state.leafId,
-            this.env.SESSIONS_DB,
-          );
-          state.pendingEntries = [];
+    if (this.#agent.state.error) {
+      await checkRetry(this.#agent.state.error, this.#agent, signal, async () => {
+        await this.#compact({});
+        if (this.#sessionId !== "" && this.#leafId !== null) {
+          await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+          this.#pendingEntries = [];
         }
-        await state.agent.continue();
+        await this.#agent.continue();
       });
     }
   }
 }
 
-// ─── Token estimation helper ──────────────────────────────────────────────────
+// ─── TurnImpl ─────────────────────────────────────────────────────────────────
 
-/** Estimate token count for a list of messages using the 4-chars/token heuristic. */
+export class TurnImpl extends RpcTarget implements ITurn {
+  constructor(private readonly callback: IGatewayCallback | undefined) {
+    super();
+  }
+
+  async getCallback(): Promise<IGatewayCallback | undefined> {
+    return this.callback;
+  }
+}
+
+// ─── Token estimation ─────────────────────────────────────────────────────────
+
 function estimateTokens(messages: ModelMessage[]): number {
   let chars = 0;
   for (const msg of messages) {
@@ -712,13 +595,7 @@ function estimateTokens(messages: ModelMessage[]): number {
       chars += msg.content.length;
     } else if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (
-          typeof part === "object" &&
-          part !== null &&
-          "type" in part &&
-          part.type === "text" &&
-          "text" in part
-        ) {
+        if (typeof part === "object" && part !== null && "type" in part && part.type === "text" && "text" in part) {
           chars += String(part.text).length;
         } else {
           chars += 50;

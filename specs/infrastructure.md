@@ -55,7 +55,6 @@ Gateways declare a service binding to `piccolo-core`. They are deployed independ
 | DO class | Worker | Purpose |
 |---|---|---|
 | `AgentSessionDO` | `piccolo-core` | Per-session state, message history, agent loop |
-| `WebUiSessionDO` | `piccolo-web-gateway` | SSE fan-out to browser clients |
 | `TelegramChatDO` | `piccolo-telegram-gateway` | Concurrent update serialisation per Telegram chat |
 
 ---
@@ -67,15 +66,9 @@ Gateways declare a service binding to `piccolo-core`. They are deployed independ
 ```jsonc
 {
   "name": "piccolo-web-gateway",
-  "services": [
-    { "binding": "CORE", "service": "piccolo-core" }
-  ],
-  "durable_objects": {
-    "bindings": [
-      { "name": "WEB_UI_SESSION", "class_name": "WebUiSessionDO" }
-    ]
-  }
-  // Secrets: AUTH_SECRET
+  "services": [{ "binding": "CORE", "service": "piccolo-core" }],
+  "assets": { "directory": "./dist", "not_found_handling": "single-page-application" },
+  "vars": { "USER_ID": "default-user" }
 }
 ```
 

@@ -224,15 +224,16 @@ export function createMockDispatchNamespace(
  * Tests can override specific methods as needed.
  */
 export function createMockSession(
-  overrides: Partial<ISession> & { sessionId?: string; userId?: string } = {},
+  overrides: Omit<Partial<ISession>, "sessionId" | "userId"> & { sessionId?: string; userId?: string } = {},
 ): ISession {
-  const sessionId = overrides.sessionId ?? "test-session-id";
-  const userId = overrides.userId ?? "test-user-id";
+  const { sessionId: sessionIdStr, userId: userIdStr, ...sessionOverrides } = overrides;
+  const sessionId = sessionIdStr ?? "test-session-id";
+  const userId = userIdStr ?? "test-user-id";
 
   return {
     userId,
-    id: async () => sessionId,
-    info: async () => ({ id: sessionId, userId, createdAt: 0, updatedAt: 0 }),
+    sessionId: async () => sessionId,
+    getUpdatedAt: async () => 0,
     getName: async () => undefined,
     setName: async () => {},
     prompt: async () => {
@@ -253,8 +254,6 @@ export function createMockSession(
     getEntries: async () => [],
     getContextUsage: async () => ({
       inputTokens: 0,
-      contextWindowTokens: 200_000,
-      usedFraction: 0,
     }),
     compact: async () => {},
     getSystemPrompt: async () => "",
@@ -263,6 +262,6 @@ export function createMockSession(
       throw new Error("not implemented in mock");
     },
     delete: async () => {},
-    ...overrides,
+    ...sessionOverrides,
   } as ISession;
 }

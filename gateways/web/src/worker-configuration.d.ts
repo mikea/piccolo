@@ -3,11 +3,9 @@
 // Runtime types generated with workerd@1.20260317.1 2026-03-24 
 declare namespace Cloudflare {
 	interface Env {
-		ASSETS: R2Bucket;
-		WEB_UI_SESSION: DurableObjectNamespace<import("./web-ui-session-do").WebUiSessionDO>;
 		CORE: Fetcher /* piccolo-core */;
-		/** Dev-only auth bypass secret. NEVER set in production. Set via `wrangler secret put AUTH_SECRET`. */
-		AUTH_SECRET?: string;
+		/** The user ID for all sessions on this deployment. */
+		USER_ID: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

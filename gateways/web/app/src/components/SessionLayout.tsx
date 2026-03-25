@@ -1,37 +1,47 @@
 /**
  * SessionLayout.tsx — Two-panel layout: sidebar + chat area.
- *
- * Renders the SessionSidebar on the left and the router outlet
- * (EmptyState or ChatView) on the right.
  */
 
 import { type RouteSectionProps, useNavigate } from "@solidjs/router";
-import type { Component } from "solid-js";
-import { newSession, store } from "../store.ts";
+import { type Component, createResource } from "solid-js";
+import type { ISession, IUser } from "@piccolo/core";
 import { SessionSidebar } from "./SessionSidebar.tsx";
 
-const styles = {
-  layout: [
-    "display:grid",
-    "grid-template-columns:260px 1fr",
-    "height:100vh",
-    "overflow:hidden",
-  ].join(";"),
-} as const;
+interface Props extends RouteSectionProps {
+  user: IUser;
+}
 
-export const SessionLayout: Component<RouteSectionProps> = (props) => {
+export const SessionLayout: Component<Props> = (props) => {
   const navigate = useNavigate();
 
+  const [sessions, { refetch: refetchSessions }] = createResource(async () => {
+    console.debug("[rpc] listSessions calling...");
+    const result = await props.user.listSessions();
+    console.debug("[rpc] listSessions →", result.length, "sessions");
+    return result as ISession[];
+  });
+
   const handleNewSession = async () => {
-    await newSession();
-    if (store.activeSessionId) {
-      navigate(`/sessions/${store.activeSessionId}`);
+    console.debug("[rpc] newSession calling...");
+    try {
+      const session = await props.user.newSession();
+      const id = await session.sessionId();
+      console.debug("[rpc] newSession → id:", id);
+      refetchSessions();
+      navigate(`/sessions/${id}`);
+    } catch (err) {
+      console.error("[rpc] newSession error:", err);
     }
   };
 
   return (
-    <div style={styles.layout}>
-      <SessionSidebar onNewSession={() => void handleNewSession()} />
+    <div style="display:grid;grid-template-columns:260px 1fr;height:100vh;overflow:hidden;">
+      <SessionSidebar
+        sessions={sessions() ?? []}
+        loading={sessions.loading}
+        onNewSession={() => void handleNewSession()}
+        refetchSessions={refetchSessions}
+      />
       <main style="display:flex;flex-direction:column;overflow:hidden;">{props.children}</main>
     </div>
   );

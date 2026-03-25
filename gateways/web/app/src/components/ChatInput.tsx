@@ -1,35 +1,33 @@
 /**
  * ChatInput.tsx — Message input area.
  *
- * Features:
- * - Multi-line textarea (grows with content)
- * - Enter to send, Shift+Enter for newline
- * - Disabled while streaming (replaced by Abort button)
- * - Abort button calls abort() from the store
+ * Pure presentational component. All state is owned by ChatView and passed
+ * as props — this component has no store dependency.
  */
 
 import { type Component, createSignal, Show } from "solid-js";
-import { abort, sendMessage, store } from "../store.ts";
 
-export const ChatInput: Component = () => {
+interface Props {
+  isStreaming: boolean;
+  onSend: (text: string) => void;
+  onAbort: () => void;
+}
+
+export const ChatInput: Component<Props> = (props) => {
   const [text, setText] = createSignal("");
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void handleSend();
+      handleSend();
     }
   };
 
-  const handleSend = async () => {
+  const handleSend = () => {
     const msg = text().trim();
-    if (!msg || store.isStreaming) return;
+    if (!msg || props.isStreaming) return;
     setText("");
-    await sendMessage(msg);
-  };
-
-  const handleAbort = async () => {
-    await abort();
+    props.onSend(msg);
   };
 
   return (
@@ -39,9 +37,9 @@ export const ChatInput: Component = () => {
           value={text()}
           onInput={(e) => setText(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          disabled={store.isStreaming}
+          disabled={props.isStreaming}
           placeholder={
-            store.isStreaming
+            props.isStreaming
               ? "Generating..."
               : "Type a message... (Enter to send, Shift+Enter for newline)"
           }
@@ -50,7 +48,7 @@ export const ChatInput: Component = () => {
             "flex:1",
             "padding:10px 12px",
             "background:#1a1a1a",
-            `color:${store.isStreaming ? "#666" : "#e8e8e8"}`,
+            `color:${props.isStreaming ? "#666" : "#e8e8e8"}`,
             "border:1px solid #2a2a2a",
             "border-radius:8px",
             "font-size:14px",
@@ -64,11 +62,11 @@ export const ChatInput: Component = () => {
           ].join(";")}
         />
         <Show
-          when={store.isStreaming}
+          when={props.isStreaming}
           fallback={
             <button
               type="button"
-              onClick={() => void handleSend()}
+              onClick={handleSend}
               disabled={!text().trim()}
               style={[
                 "padding:10px 18px",
@@ -81,8 +79,6 @@ export const ChatInput: Component = () => {
                 "font-weight:500",
                 "white-space:nowrap",
                 "flex-shrink:0",
-                "disabled:opacity:0.4",
-                "disabled:cursor:not-allowed",
               ].join(";")}
             >
               Send
@@ -91,7 +87,7 @@ export const ChatInput: Component = () => {
         >
           <button
             type="button"
-            onClick={() => void handleAbort()}
+            onClick={props.onAbort}
             style={[
               "padding:10px 18px",
               "background:#8b2222",

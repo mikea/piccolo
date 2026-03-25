@@ -612,8 +612,8 @@ describe("createMockSession() — all methods reachable", () => {
   it("covers all ISession no-op methods", async () => {
     const s = createMockSession({ sessionId: "s1", userId: "u1" });
     expect(s.userId).toBe("u1");
-    expect(await s.id()).toBe("s1");
-    expect(await s.info()).toMatchObject({ id: "s1" });
+    expect(await s.sessionId()).toBe("s1");
+    expect(typeof await s.getUpdatedAt()).toBe("number");
     expect(await s.getName()).toBeUndefined();
     await expect(s.setName("X")).resolves.toBeUndefined();
     await expect(s.sendUserMessage("hi")).resolves.toBeUndefined();

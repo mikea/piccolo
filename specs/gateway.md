@@ -105,11 +105,11 @@ When a gateway renders a tool call or result:
 | Aspect | Web UI | Telegram |
 |---|---|---|
 | Transport | Cap'n Web over WebSocket (`capnweb`) | Telegram Bot API (webhook) |
-| Browser→server | Typed RPC stub method calls | N/A |
-| Server→browser events | `IAgentEventListener.onEvent()` callback stub | N/A |
-| Streaming | Typed callback per `AgentEvent` | Throttled `editMessageText` |
-| Session reference | `IWebGatewaySession` stub (pipeline-able) | Chat ID → sessionId (KV) |
+| Browser→server | `IUser` / `ISession` RPC method calls | N/A |
+| Server→browser events | `ReadableStream<AgentEvent>` from `session.prompt()` | Throttled `editMessageText` |
+| Streaming | Stream consumed directly by browser | Throttled `editMessageText` |
+| Session reference | `ISession` stub via `IUser.getSession(id)` | Chat ID → sessionId (KV) |
 | Custom tool UI interface | `IWebUI` | `ITelegramUI` |
 | Shared fallback UI | `ITextUI` | `ITextUI` |
 | Callback UI | `IGatewayCallback` stubs (modal dialogs) | Inline keyboards |
-| Auth | CF Access JWT at WebSocket upgrade | Bot token + KV allowlist |
+| Auth | `USER_ID` env var (single-user deployment) | Bot token + KV allowlist |

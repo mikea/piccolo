@@ -13,6 +13,8 @@ import type { ModelMessage, LanguageModelUsage, FinishReason } from "ai";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
+// Internal session record — used only by piccolo-core persistence layer.
+// Not exposed to gateway clients.
 interface SessionRecord {
   id: string;          // UUID v4
   userId: string;
@@ -22,7 +24,8 @@ interface SessionRecord {
   cwd?: string;
 }
 
-// Lightweight summary returned by listSessions()
+// SessionInfo is an internal D1 query result type, not a public interface.
+// Kept here for reference only; clients always work with ISession stubs.
 interface SessionInfo {
   id: string;
   userId: string;
@@ -51,7 +54,7 @@ interface Attachment {
 
 // ─── Agent Events ─────────────────────────────────────────────────────────────
 
-// Streamed from IAgentSessionDO → IPiccoloCore → gateways over JSRPC ReadableStream.
+// Streamed from AgentSessionDO → gateways over JSRPC ReadableStream.
 // Also dispatched to extensions via ExtensionRunner.
 type AgentEvent =
   | { type: "agent_start" }
@@ -172,8 +175,6 @@ interface ITextUI extends RpcTarget {
 
 interface ContextUsage {
   inputTokens: number;
-  contextWindowTokens: number;  // model's context window size
-  usedFraction: number;          // inputTokens / contextWindowTokens
 }
 
 interface CompactOptions {
@@ -214,7 +215,7 @@ class IPiccoloCore extends WorkerEntrypoint {
   getSession(sessionId: string): Promise<ISession>;
 
   // List sessions for a given user as live ISession RpcTargets.
-  // Gateways call session.info() on each to retrieve metadata.
+  // Gateways call id(), getName(), getUpdatedAt() etc. on each stub directly.
   // userId is provided by the calling gateway after it has authenticated the user.
   listSessions(userId: string): Promise<ISession[]>;
 
@@ -239,10 +240,10 @@ class ISession extends RpcTarget {
   // ─── Identity ─────────────────────────────────────────────────────────────
 
   // Stable session identifier (UUID v4). Use this to persist references.
-  id(): Promise<string>;
+  sessionId(): Promise<string>;
 
-  // Full session record including timestamps and metadata.
-  info(): Promise<SessionRecord>;
+  // Unix ms timestamp of the last update (used for sorting).
+  getUpdatedAt(): Promise<number>;
 
   // The user who owns this session.
   readonly userId: string;
@@ -387,38 +388,21 @@ interface TelegramInlineKeyboard {
 
 ---
 
-## 4. Agent Session DO API — `IAgentSessionDO`
+## 4. `AgentSessionDO` — Durable Object
 
-One Durable Object per session. Called by `IPiccoloCore` internally — not directly accessible to gateways. Implements the stateful runtime behind `ISession`.
+One Durable Object per session. `AgentSessionDO extends DurableObject` implements `ISession` directly — no wrapper class needed. The DO stub returned by `env.AGENT_SESSION.get(idFromName(sessionId))` proxies all `ISession` method calls to the DO instance.
+
+Callers (gateways, tools) receive the DO stub and use it as an `ISession`. `UserImpl` initialises a new DO via `stub.newSession(sessionId, userId, options?)` then returns the stub cast to `ISession`.
 
 > **Implementation:** see [core.md — `AgentSessionDO`](core.md#agentsessiondo--durable-object-implementation).
 
 ```typescript
-import { DurableObject } from "cloudflare:workers";
-
-class IAgentSessionDO extends DurableObject {
-
-  // ─── Conversation ─────────────────────────────────────────────────────────
-
-  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ReadableStream<AgentEvent>>;
-  steer(text: string): Promise<void>;
-  followUp(text: string): Promise<void>;
-  abort(): Promise<void>;
-
-  // ─── Accessors ────────────────────────────────────────────────────────────
-
-  getInfo(): Promise<SessionRecord>;
-  getName(): Promise<string | undefined>;
-  setName(name: string): Promise<void>;
-  getModel(): Promise<string>;
-  setModel(modelId: string): Promise<void>;
-  getContextUsage(): Promise<ContextUsage>;
-
-  // ─── Session control ──────────────────────────────────────────────────────
-
-  branch(entryId: string): Promise<void>;
-  compact(options?: CompactOptions): Promise<void>;
-  delete(): Promise<void>;
+// AgentSessionDO implements ISession directly.
+// The DO stub (DurableObjectStub<AgentSessionDO>) is the ISession returned to callers.
+class AgentSessionDO extends DurableObject implements ISession {
+  // All ISession methods — see ISession above
+  // Plus:
+  newSession(sessionId: string, userId: string, options?: NewSessionOptions): Promise<void>;
 }
 ```
 
@@ -457,88 +441,21 @@ class IGatewayCallback extends RpcTarget {
 
 ## 6. Web UI Gateway API
 
-The Web UI Gateway exposes three browser-facing interfaces over Cap'n Web (`capnweb`), plus a Durable Object for connection durability. Full spec in [web_gateway.md](web_gateway.md).
+Full spec in [web_gateway.md](web_gateway.md).
 
 ```typescript
+import type { IUser } from "@piccolo/core";
 import { RpcTarget } from "capnweb";
 
-// Root interface. Browser connects via newWebSocketRpcSession<IWebGatewayApi>(url).
-interface IWebGatewayApi extends RpcTarget {
-  newSession(options?: NewSessionOptions): IWebGatewaySession;
-  getSession(sessionId: string): IWebGatewaySession;
-  listSessions(): Promise<SessionInfo[]>;
-  listModels(): Promise<string[]>;
-}
-
-// Per-session interface. Wraps ISession with browser-facing additions.
-interface IWebGatewaySession extends RpcTarget {
-  id(): Promise<string>;
-  info(): Promise<SessionRecord>;
-  getName(): Promise<string | undefined>;
-  setName(name: string): Promise<void>;
-
-  // Start a turn. Server calls listener.onEvent() for each AgentEvent.
-  // callback is the browser's IGatewayCallback stub for mid-turn interactive prompts.
-  prompt(
-    text: string,
-    listener: IAgentEventListener,
-    callback: IGatewayCallback,
-    attachments?: Attachment[],
-  ): ITurnHandle;
-
-  steer(text: string): Promise<void>;
-  followUp(text: string): Promise<void>;
-  abort(): Promise<void>;
-  getModel(): Promise<string>;
-  setModel(modelId: string): Promise<void>;
-  getContextUsage(): Promise<ContextUsage>;
-  compact(options?: CompactOptions): Promise<void>;
-  branch(entryId: string): Promise<void>;
-  fork(fromEntryId?: string): IWebGatewaySession;
-  delete(): Promise<void>;
-  uploadAttachment(attachment: Attachment): Promise<string>;
-}
-
-// Implemented by the browser. Server calls onEvent() for each AgentEvent.
-interface IAgentEventListener extends RpcTarget {
-  onEvent(event: AgentEvent): Promise<void>;
-}
-
-// Handle for an active turn. Returned by IWebGatewaySession.prompt().
-interface ITurnHandle extends RpcTarget {
-  abort(): Promise<void>;
-  done(): Promise<void>;
+// Root interface. Browser connects via newWebSocketRpcSession<IWebGateway>(url).
+interface IWebGateway extends RpcTarget {
+  // Return the IUser stub for this connection's authenticated user.
+  getUser(): IUser;
 }
 ```
 
-### `IWebUiSessionDO`
-
-Durable Object for connection durability and event buffering across Worker evictions.
-
-This is a **pure transport** — no capnweb RpcTarget stubs are stored here. The DO accepts
-native WebSocket connections via the Workers hibernation API (`ctx.acceptWebSocket`),
-broadcasts events as serialized JSON, and buffers events for reconnect replay.
-The capnweb session lives in the gateway Worker; the DO provides the persistent WebSocket
-connections that survive Worker eviction.
-
-```typescript
-import { DurableObject } from "cloudflare:workers";
-
-class IWebUiSessionDO extends DurableObject {
-  // Accept a WebSocket upgrade request from a browser tab.
-  // Returns 101 Switching Protocols. The connection is hibernated so it
-  // survives Worker eviction. Recent buffered events are replayed to the
-  // new connection immediately after upgrade.
-  addConnection(request: Request): Promise<Response>;
-
-  // Broadcast a serialized AgentEvent to all connected WebSocket clients.
-  // Buffers the event (last 50) for reconnecting clients.
-  pushEvent(event: AgentEvent): Promise<void>;
-
-  // Return recent buffered events for reconnecting clients.
-  getRecentEvents(): Promise<AgentEvent[]>;
-}
-```
+The browser calls `getUser()` once and then uses `IUser` and `ISession` directly.
+`ISession.prompt()` returns `ReadableStream<AgentEvent>` consumed by the browser.
 
 ---
 
@@ -753,17 +670,13 @@ Full authoring guide in [tools.md](tools.md). Provided tool specs: [r2_tool.md](
 | Interface | Kind | Called by | Implemented by |
 |---|---|---|---|
 | `IPiccoloCore` | `WorkerEntrypoint` | Gateways | `piccolo-core` Worker |
-| `ISession` | `RpcTarget` | Gateways, extensions, tools | `piccolo-core` Worker |
-| `IAgentSessionDO` | `DurableObject` | `IPiccoloCore` | `piccolo-core` Worker |
+| `IUser` | `RpcTarget` | Gateways | `piccolo-core` Worker |
+| `ISession` | `DurableObject` stub | Gateways, extensions, tools | `AgentSessionDO` in `piccolo-core` |
 | `ITextUI` | `RpcTarget` | Gateways | Each tool Worker (optional) |
 | `IWebUI` | `RpcTarget` | Web UI Gateway | Each tool Worker (optional) |
 | `ITelegramUI` | `RpcTarget` | Telegram Gateway | Each tool Worker (optional) |
-| `IGatewayCallback` | `RpcTarget` | `IAgentSessionDO` | Each gateway Worker |
-| `IWebGatewayApi` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
-| `IWebGatewaySession` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
-| `IAgentEventListener` | `RpcTarget` (capnweb) | Web UI Gateway Worker | Browser |
-| `ITurnHandle` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
-| `IWebUiSessionDO` | `DurableObject` | Web UI Gateway Worker | Web UI Gateway Worker |
+| `IGatewayCallback` | `RpcTarget` | `AgentSessionDO` | Each gateway Worker |
+| `IWebGateway` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
 | `ITelegramChatDO` | `DurableObject` | Telegram Gateway Worker | Telegram Gateway Worker |
 | `IExtensionWorker` | `WorkerEntrypoint` | `ExtensionRunner` (core) | Each extension Worker |
 | `ITool` | Worker class | `IExtensionWorker` (via core) | Each tool Worker |
