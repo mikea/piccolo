@@ -1,6 +1,6 @@
 # Fetch Tool — Specification
 
-Gives the LLM the ability to make HTTP requests to the public internet using the standard `fetch()` Web API. Suitable for reading web pages, calling external APIs, downloading files, and checking URLs.
+Gives the LLM the ability to make HTTP GET requests to the public internet using the standard `fetch()` Web API. Suitable for reading web pages, calling external APIs, downloading files (including large files via ranged GETs), and inspecting URL headers.
 
 See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `ToolDescriptor`).
 
@@ -33,70 +33,79 @@ import type { ToolDescriptor } from "piccolo-core";
 const descriptor: ToolDescriptor = {
   name: "fetch",
   label: "Fetch URL",
-  description: `Make an HTTP request to a public URL and return the response body.
+  description: `Make an HTTP request to a public HTTPS URL and return the response.
 
 Actions:
-- get    : HTTP GET — retrieve a resource (default)
-- post   : HTTP POST — send a body to an endpoint
-- put    : HTTP PUT — replace a resource
-- patch  : HTTP PATCH — partially update a resource
-- delete : HTTP DELETE — remove a resource
-- head   : HTTP HEAD — retrieve headers only, no body
+- get  : HTTP GET — retrieve a resource. Supports optional byte-range parameters
+         for fetching large files in chunks.
+- head : HTTP HEAD — retrieve response headers only, no body. Use to check
+         Content-Length and Accept-Ranges before issuing ranged GETs on large resources.
 
 Parameters:
-  url       : The full URL to request (must include scheme, e.g. https://…)
-  action    : One of "get", "post", "put", "patch", "delete", "head" (default: "get")
-  headers?  : Key-value map of request headers to include
-  body?     : Request body string (for post/put/patch). Use JSON.stringify for JSON payloads.
-  bodyType? : MIME type of the body (default: "application/json"). Sent as Content-Type.
-  maxBytes? : Maximum response body size to return in bytes (default: 1 048 576 = 1 MiB).
-              Responses larger than this are truncated; a truncation notice is appended.
+  url        : The full HTTPS URL to request (must begin with https://).
+  action     : One of "get", "head" (default: "get").
+  byteStart? : First byte of the range to fetch, inclusive (0-based). "get" only.
+               If provided, sends a Range: bytes=byteStart-byteEnd request header.
+  byteEnd?   : Last byte of the range to fetch, inclusive (0-based). "get" only.
+               If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.
+  maxBytes?  : Maximum response body size to return in bytes (default: 1 048 576 = 1 MiB).
+               Applies after range slicing. Surplus is truncated with a notice appended.
 
 Response body is returned as UTF-8 text. Binary responses are base64-encoded and noted as such.
-The response status code and headers are included in the result text.
+The response status code and all response headers are included in the result text.
 
 Errors:
-  Throws if the URL is not reachable, the scheme is not https/http, or the request times out.
-  Non-2xx status codes do NOT throw — the status is included in the result so the LLM can react.`,
+  Throws if the URL scheme is not https.
+  Throws if byteStart/byteEnd are provided but the server does not respond with 206 Partial Content
+  (indicating the server does not support Range requests for this resource).
+  Non-2xx status codes for non-ranged requests do NOT throw — the status is included in the result.`,
 
-  promptSnippet: "Make HTTP requests to public URLs (GET, POST, PUT, PATCH, DELETE, HEAD)",
+  promptSnippet: "Fetch the content of a public HTTPS URL (GET/HEAD, supports ranged GET for large files)",
 
   promptGuidelines: [
-    "Use fetch get to read a web page or call a REST API endpoint.",
-    "Set the appropriate Content-Type via bodyType when posting JSON or form data.",
-    "Always use https:// URLs. Plain http:// is allowed but should be avoided.",
-    "Non-2xx responses are returned as results, not errors — check the status before acting on the body.",
-    "Use fetch head to check existence or Content-Type of a resource without downloading its body.",
-    "Avoid requesting very large binary files; use maxBytes to cap the download size.",
+    "Use fetch head to get Content-Length and Accept-Ranges headers before downloading large files.",
+    "If the head response includes Accept-Ranges: bytes, use byteStart/byteEnd on a get to fetch only the portion you need.",
+    "Only https:// URLs are supported.",
+    "Non-2xx responses to non-ranged GETs are returned as results, not errors — check the status before acting on the body.",
+    "If you request a range and the server responds 200 instead of 206, the tool will throw — the server does not support range requests for that resource.",
     "Do not use fetch to access localhost, internal IP ranges, or Cloudflare metadata endpoints.",
+    "Use maxBytes to cap the size of any single response chunk returned to the LLM.",
   ],
 
   inputSchema: z.object({
     action: z
-      .enum(["get", "post", "put", "patch", "delete", "head"])
+      .enum(["get", "head"])
       .default("get")
-      .describe('HTTP method to use. Default: "get".'),
-    url: z.string().url().describe("Full URL to request, including scheme (https:// or http://)."),
-    headers: z
-      .record(z.string())
-      .optional()
-      .describe("Optional key-value map of HTTP request headers."),
-    body: z
+      .describe('"get" retrieves the resource body; "head" retrieves headers only (no body).'),
+    url: z
       .string()
+      .url()
+      .describe("Full HTTPS URL to request. Must begin with https://."),
+    byteStart: z
+      .number()
+      .int()
+      .nonnegative()
       .optional()
-      .describe("Request body string. Required for post/put/patch. Ignored for get/delete/head."),
-    bodyType: z
-      .string()
+      .describe(
+        'First byte of the range to fetch, inclusive (0-based). "get" only. ' +
+        "Sends a Range: bytes=byteStart-byteEnd header. Requires server support for Range requests (206 response).",
+      ),
+    byteEnd: z
+      .number()
+      .int()
+      .nonnegative()
       .optional()
-      .default("application/json")
-      .describe('MIME type sent as Content-Type. Default: "application/json".'),
+      .describe(
+        'Last byte of the range to fetch, inclusive (0-based). "get" only. ' +
+        "If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.",
+      ),
     maxBytes: z
       .number()
       .int()
       .positive()
       .optional()
       .default(1_048_576)
-      .describe("Maximum response body size in bytes. Default: 1 MiB. Larger responses are truncated."),
+      .describe("Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated."),
   }),
 };
 ```
@@ -105,14 +114,13 @@ Errors:
 
 ## Input Schema
 
-| Field      | Type                                               | Required | Default              | Description                                                         |
-|------------|----------------------------------------------------|----------|----------------------|---------------------------------------------------------------------|
-| `action`   | `"get"\|"post"\|"put"\|"patch"\|"delete"\|"head"` | no       | `"get"`              | HTTP method                                                         |
-| `url`      | `string` (URL)                                     | yes      | —                    | Fully qualified URL                                                 |
-| `headers`  | `Record<string, string>`                           | no       | `{}`                 | Additional request headers                                          |
-| `body`     | `string`                                           | no       | —                    | Request body (for post/put/patch)                                   |
-| `bodyType` | `string`                                           | no       | `"application/json"` | `Content-Type` of the body                                          |
-| `maxBytes` | `number`                                           | no       | `1_048_576`          | Max bytes of response body to read; surplus is truncated            |
+| Field       | Type             | Required | Default     | Description                                                                          |
+|-------------|------------------|----------|-------------|--------------------------------------------------------------------------------------|
+| `action`    | `"get"\|"head"`  | no       | `"get"`     | HTTP method                                                                          |
+| `url`       | `string` (URL)   | yes      | —           | Fully qualified HTTPS URL                                                            |
+| `byteStart` | `number`         | no       | —           | First byte of range, inclusive (0-based). `get` only. Requires 206 from server.     |
+| `byteEnd`   | `number`         | no       | —           | Last byte of range, inclusive (0-based). `get` only. Omit for open-ended range.     |
+| `maxBytes`  | `number`         | no       | `1_048_576` | Max bytes of response body to include in result; surplus truncated with notice.      |
 
 ---
 
@@ -122,77 +130,115 @@ Errors:
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { ITool, ISession, ToolResult } from "piccolo-core";
 
+/** Hard ceiling on maxBytes regardless of what the LLM requests. */
+const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB
+
+function validateScheme(url: URL): void {
+  if (url.protocol !== "https:") {
+    throw new Error(`Unsupported scheme: ${url.protocol}. Only https:// is allowed.`);
+  }
+}
+
+function validateNotSsrf(url: URL): void {
+  const h = url.hostname;
+  if (
+    h === "localhost" ||
+    h === "::1" ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^169\.254\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+  ) {
+    throw new Error(`SSRF: private address not allowed: ${h}`);
+  }
+}
+
 export default class FetchTool extends WorkerEntrypoint implements ITool {
   readonly descriptor = descriptor; // from above
 
   async execute(
     toolCallId: string,
     params: {
-      action: "get" | "post" | "put" | "patch" | "delete" | "head";
+      action: "get" | "head";
       url: string;
-      headers?: Record<string, string>;
-      body?: string;
-      bodyType?: string;
+      byteStart?: number;
+      byteEnd?: number;
       maxBytes?: number;
     },
     ctx: ISession,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    const method = params.action.toUpperCase();
-    const maxBytes = params.maxBytes ?? 1_048_576;
+    const url = new URL(params.url);
+    validateScheme(url);
+    validateNotSsrf(url);
 
-    // Build request init
-    const init: RequestInit = {
-      method,
-      headers: {
-        "User-Agent": "piccolo-fetch-tool/1.0",
-        ...(params.body !== undefined ? { "Content-Type": params.bodyType ?? "application/json" } : {}),
-        ...params.headers,
-      },
-      signal,
-    };
-    if (params.body !== undefined && method !== "GET" && method !== "HEAD" && method !== "DELETE") {
-      init.body = params.body;
+    const isHead = params.action === "head";
+    const isRanged = !isHead && (params.byteStart !== undefined || params.byteEnd !== undefined);
+    const effectiveMax = Math.min(params.maxBytes ?? 1_048_576, MAX_BYTES_HARD_CAP);
+
+    const reqHeaders: Record<string, string> = {};
+    let rangeRequested: string | null = null;
+    if (isRanged) {
+      const start = params.byteStart ?? 0;
+      const end = params.byteEnd !== undefined ? String(params.byteEnd) : "";
+      rangeRequested = `bytes=${start}-${end}`;
+      reqHeaders["Range"] = rangeRequested;
     }
 
-    const response = await fetch(params.url, init);
+    const response = await fetch(params.url, {
+      method: isHead ? "HEAD" : "GET",
+      headers: reqHeaders,
+      signal,
+    });
 
-    // Build result header summary
+    // Ranged requests must receive 206; anything else means the server does not support ranges.
+    if (isRanged && response.status !== 206) {
+      throw new Error(
+        `Range request failed: expected 206 Partial Content but got ${response.status} ${response.statusText}. ` +
+        `The server may not support Range requests for this resource.`,
+      );
+    }
+
+    // Build response header summary
     const headerLines: string[] = [];
     response.headers.forEach((value, key) => {
       headerLines.push(`${key}: ${value}`);
     });
-    const headerBlock = headerLines.join("\n");
+    const contentRange = response.headers.get("content-range");
 
     // Read body (HEAD returns no body)
     let bodyText = "";
     let truncated = false;
-    if (method !== "HEAD") {
+    let bodyBytes = 0;
+    if (!isHead) {
       const contentType = response.headers.get("content-type") ?? "";
-      const isBinary = !contentType.includes("text") && !contentType.includes("json") && !contentType.includes("xml") && !contentType.includes("javascript");
+      const isBinary =
+        !contentType.includes("text") &&
+        !contentType.includes("json") &&
+        !contentType.includes("xml") &&
+        !contentType.includes("javascript");
 
       const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > maxBytes) {
-        truncated = true;
-        const slice = buffer.slice(0, maxBytes);
-        bodyText = isBinary
-          ? `[base64] ${btoa(String.fromCharCode(...new Uint8Array(slice)))}`
-          : new TextDecoder().decode(slice);
-      } else {
-        bodyText = isBinary
-          ? `[base64] ${btoa(String.fromCharCode(...new Uint8Array(buffer)))}`
-          : new TextDecoder().decode(buffer);
-      }
+      const slice = buffer.byteLength > effectiveMax
+        ? (truncated = true, buffer.slice(0, effectiveMax))
+        : buffer;
+
+      bodyText = isBinary
+        ? `[base64] ${btoa(String.fromCharCode(...new Uint8Array(slice)))}`
+        : new TextDecoder().decode(slice);
+
+      bodyBytes = new TextEncoder().encode(bodyText).byteLength;
     }
 
     const parts: string[] = [
       `HTTP/${response.status} ${response.statusText}`,
-      headerBlock,
+      headerLines.join("\n"),
       "",
       bodyText,
     ];
     if (truncated) {
-      parts.push(`\n[Response truncated at ${maxBytes} bytes]`);
+      parts.push(`\n[Response truncated at ${effectiveMax} bytes]`);
     }
 
     const text = parts.join("\n");
@@ -201,12 +247,15 @@ export default class FetchTool extends WorkerEntrypoint implements ITool {
       content: [{ type: "text", text }],
       details: {
         url: params.url,
-        method,
+        method: isHead ? "HEAD" : "GET",
         status: response.status,
         statusText: response.statusText,
         contentType: response.headers.get("content-type"),
-        bodyBytes: method !== "HEAD" ? Math.min((new TextEncoder().encode(bodyText)).byteLength, maxBytes) : 0,
+        bodyBytes,
         truncated,
+        ranged: isRanged,
+        rangeRequested,
+        contentRange,
       } satisfies FetchDetails,
     };
   }
@@ -219,20 +268,26 @@ export default class FetchTool extends WorkerEntrypoint implements ITool {
 
 ```typescript
 interface FetchDetails {
-  /** The URL that was requested (after any redirect resolution by the runtime). */
+  /** The URL that was requested. */
   url: string;
-  /** Uppercase HTTP method used. */
+  /** HTTP method used: "GET" or "HEAD". */
   method: string;
   /** HTTP response status code. */
   status: number;
-  /** HTTP response status text (e.g. "OK", "Not Found"). */
+  /** HTTP response status text (e.g. "OK", "Partial Content"). */
   statusText: string;
-  /** Value of the response `Content-Type` header, or null if absent. */
+  /** Value of the response Content-Type header, or null if absent. */
   contentType: string | null;
-  /** Number of bytes of the body included in the result (after truncation). */
+  /** Number of bytes of body text included in the result (after truncation). */
   bodyBytes: number;
-  /** True if the response body was truncated due to `maxBytes`. */
+  /** True if the response body was truncated due to maxBytes. */
   truncated: boolean;
+  /** True if a Range header was sent in the request. */
+  ranged: boolean;
+  /** The Range header value sent, e.g. "bytes=0-1023". Null if not a ranged request. */
+  rangeRequested: string | null;
+  /** Value of the Content-Range response header, e.g. "bytes 0-1023/5242880". Null if absent. */
+  contentRange: string | null;
 }
 ```
 
@@ -242,10 +297,10 @@ interface FetchDetails {
 
 The following constraints are enforced in `execute()` at runtime:
 
-1. **Scheme allowlist** — only `https://` and `http://` URLs are permitted. `file://`, `data://`, and other schemes throw immediately.
-2. **SSRF guard** — requests to private IP ranges (`10.x`, `172.16–31.x`, `192.168.x`, `127.x`, `::1`, `169.254.x`) and the Cloudflare metadata endpoint (`169.254.169.254`) are rejected with an error before the request is made. URL resolution is performed before the check.
-3. **`maxBytes` cap** — enforced server-side regardless of what the LLM passes; the implementation hard-caps at 10 MiB even if the caller requests more.
-4. **`User-Agent`** — always set to `piccolo-fetch-tool/1.0`; cannot be overridden by the `headers` param.
+1. **Scheme allowlist** — only `https://` URLs are permitted. `http://`, `file://`, `data://`, and all other schemes throw immediately.
+2. **SSRF guard** — requests to private IP ranges (`10.x`, `172.16–31.x`, `192.168.x`, `127.x`, `::1`, `169.254.x`, `localhost`) are rejected with an error before the request is made.
+3. **`maxBytes` hard cap** — enforced server-side regardless of what the LLM passes; hard cap at 10 MiB.
+4. **No custom request headers from LLM** — the only header the tool sends is `Range` when `byteStart`/`byteEnd` are provided. The LLM cannot inject arbitrary headers.
 
 ---
 
@@ -253,11 +308,12 @@ The following constraints are enforced in `execute()` at runtime:
 
 | Condition | Behaviour |
 |---|---|
-| Non-`http`/`https` scheme | Throws `Error("Unsupported scheme: …")` |
+| Non-`https` scheme | Throws `Error("Unsupported scheme: …")` |
 | Private/reserved IP target | Throws `Error("SSRF: private address not allowed: …")` |
+| Ranged request but server returns non-206 | Throws `Error("Range request failed: expected 206 …")` |
 | Network timeout / unreachable | Throws the underlying `fetch()` error |
 | Response body exceeds `maxBytes` | Body truncated; `truncated: true` in `details`; notice appended to `content[0].text` |
-| Non-2xx status code | Returned as a normal result (not thrown); LLM sees status in `content[0].text` |
+| Non-2xx status (non-ranged) | Returned as a normal result (not thrown); LLM sees status in `content[0].text` |
 
 ---
 
@@ -265,30 +321,37 @@ The following constraints are enforced in `execute()` at runtime:
 
 | Test | Coverage |
 |---|---|
-| `get` a JSON endpoint → status 200, headers, body parsed | Happy path |
-| `post` with JSON body → correct `Content-Type` forwarded | POST |
-| `head` → no body in result | HEAD |
-| `delete` → status 204, empty body | DELETE |
-| Response body > `maxBytes` → truncated with notice | Truncation |
-| Binary response → base64-encoded prefix in body | Binary |
-| `https://` URL with redirect → follows redirect | Redirects |
-| Private IP target → throws SSRF error | SSRF guard |
+| `get` a JSON endpoint → status 200, headers, body in result | Happy path |
+| `head` → no body, response headers present | HEAD action |
+| `get` with `byteStart=0, byteEnd=999` → `Range` header sent, 206 response, `ranged: true` in details | Ranged GET |
+| `get` with `byteStart` only (no `byteEnd`) → `Range: bytes=N-` sent | Open-ended range |
+| `get` with range, server returns 200 → throws with 206 expected message | Range not supported |
+| `get` with range, server returns 416 → throws | Range out of bounds |
+| Response body > `maxBytes` → truncated with notice, `truncated: true` | Truncation |
+| `maxBytes` hard cap at 10 MiB | Hard cap enforcement |
+| Binary response (`image/png`) → `[base64]` prefix in body | Binary detection |
+| `http://` URL → throws scheme error | Scheme guard |
 | `file://` URL → throws scheme error | Scheme guard |
-| Network error (mock `fetch` throws) → throws | Network error |
-| Non-2xx (404, 500) → result, not error | Non-2xx |
+| Private IP (`192.168.1.1`) → throws SSRF error | SSRF guard |
+| Private IP (`10.0.0.1`) → throws SSRF error | SSRF guard |
+| Private IP (`127.0.0.1`) → throws SSRF error | SSRF loopback guard |
+| Metadata IP (`169.254.169.254`) → throws SSRF error | CF metadata guard |
+| Network error (mock `fetch` throws) → throws | Network error propagation |
+| Non-2xx (404) non-ranged → result, not error | Non-2xx handling |
 
 ---
 
 ## Deployment
 
 ```bash
-# 1. Deploy the tool Worker
-wrangler deploy --name ext-fetch-tool \
+# 1. Deploy the tool Worker into the dispatch namespace
+pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc \
   --dispatch-namespace piccolo-extensions
 
 # 2. Register in KV
-wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-fetch-tool", "ext-r2-tool", "ext-d1-tool"]'
+pnpm wrangler kv key put --binding CONFIG \
+  --config packages/core/wrangler.jsonc \
+  extensions:registry '["ext-fetch-tool"]'
 ```
 
-No additional bindings are required. See [tools.md](tools.md) for the general deployment checklist.
+No additional bindings are required. No `piccolo-core` redeploy needed — the extension registry is polled at session start. See [tools.md](tools.md) for the general deployment checklist.

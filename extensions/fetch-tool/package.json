@@ -1,0 +1,25 @@
+{
+  "name": "@piccolo/ext-fetch-tool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ext-fetch-tool: HTTPS GET/HEAD fetch tool extension Worker",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types src/worker-configuration.d.ts"
+  },
+  "dependencies": {
+    "zod": "*"
+  },
+  "devDependencies": {
+    "@piccolo/core": "workspace:*",
+    "@cloudflare/vitest-pool-workers": "^0.13.4",
+    "@vitest/coverage-istanbul": "^4.1.1",
+    "vitest": "*",
+    "wrangler": "*"
+  }
+}

@@ -281,6 +281,32 @@ D1 migrations only need to be re-applied when there are new migration files.
 
 ---
 
+## Step 8 — Deploy `ext-fetch-tool`
+
+The fetch tool gives the agent the ability to make HTTPS GET and HEAD requests to the public internet, including ranged GET for large files. It requires no Cloudflare bindings.
+
+### 8a. Deploy the tool Worker into the dispatch namespace
+
+```bash
+pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc \
+  --dispatch-namespace piccolo-extensions
+```
+
+### 8b. Register in the extension registry KV
+
+Replace the registry value with the current list of extensions you want active.
+If this is your first extension, the value is just the fetch tool:
+
+```bash
+pnpm wrangler kv key put --binding CONFIG \
+  --config packages/core/wrangler.jsonc \
+  extensions:registry '["ext-fetch-tool"]'
+```
+
+No `piccolo-core` redeploy is needed. The extension registry is polled at session start.
+
+---
+
 ## Summary of resources created
 
 | Resource | Name | Used by |

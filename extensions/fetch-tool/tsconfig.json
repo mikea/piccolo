@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["./src/worker-configuration.d.ts"],
+    // Redirect @piccolo/core to its types-only export (avoids pulling in core's Env bindings).
+    "paths": {
+      "@piccolo/core": ["../../packages/core/src/types-public.ts"]
+    },
+    // skipLibCheck is required: test files use `cloudflare:test` ambient module which
+    // is not a true ES module and triggers verbatimModuleSyntax violations.
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
+}

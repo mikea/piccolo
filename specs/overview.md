@@ -153,7 +153,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |
 | [d1_tool.md](d1_tool.md) | D1 tool (provided): schema, select, insert, update, delete, schema_change, sql |
-| [fetch_tool.md](fetch_tool.md) | Fetch tool (provided): HTTP GET/POST/PUT/PATCH/DELETE/HEAD to public internet via `fetch()` |
+| [fetch_tool.md](fetch_tool.md) | Fetch tool (provided): HTTPS GET (with ranged GET support) and HEAD to public internet via `fetch()` |
 | [gateway.md](gateway.md) | Gateway concept, `ITextUI`/`IWebUI`/`ITelegramUI` resolution, comparison table |
 | [web_gateway.md](web_gateway.md) | Web UI gateway: Cap'n Web RPC, `IWebGatewayApi`, `IWebGatewaySession`, `IAgentEventListener`, `IWebUI`, SPA spec |
 | [telegram_gateway.md](telegram_gateway.md) | Telegram gateway: `ITelegramUI`, webhook handler, `ITelegramChatDO` |

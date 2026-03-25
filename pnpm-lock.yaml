@@ -36,6 +36,28 @@ importers:
         specifier: '*'
         version: 4.77.0(@cloudflare/workers-types@4.20260317.1)
 
+  extensions/fetch-tool:
+    dependencies:
+      zod:
+        specifier: '*'
+        version: 4.3.6
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: ^0.13.4
+        version: 0.13.4(@cloudflare/workers-types@4.20260317.1)(@vitest/runner@4.1.1)(@vitest/snapshot@4.1.1)(vitest@4.1.1(@opentelemetry/api@1.9.0)(vite@8.0.2(esbuild@0.27.3)))
+      '@piccolo/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@vitest/coverage-istanbul':
+        specifier: ^4.1.1
+        version: 4.1.1(vitest@4.1.1(@opentelemetry/api@1.9.0)(vite@8.0.2(esbuild@0.27.3)))
+      vitest:
+        specifier: '*'
+        version: 4.1.1(@opentelemetry/api@1.9.0)(vite@8.0.2(esbuild@0.27.3))
+      wrangler:
+        specifier: '*'
+        version: 4.77.0(@cloudflare/workers-types@4.20260317.1)
+
   extensions/r2-tool:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
