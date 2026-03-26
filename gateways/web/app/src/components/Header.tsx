@@ -5,8 +5,8 @@
  * — never pass it as a reactive source to SolidJS primitives.
  */
 
-import { type Component, createSignal, onMount } from "solid-js";
 import type { ISession } from "@piccolo/core";
+import { type Component, createSignal, onMount } from "solid-js";
 import { ModelPicker } from "./ModelPicker.tsx";
 
 interface Props {
@@ -20,8 +20,11 @@ export const Header: Component<Props> = (props) => {
   const [sessionName, setSessionName] = createSignal("Chat");
 
   onMount(() => {
-    session.getName()
-      .then((name) => { if (name) setSessionName(name); })
+    session
+      .getName()
+      .then((name) => {
+        if (name) setSessionName(name);
+      })
       .catch((err) => console.error("[rpc] getName error:", err));
   });
 

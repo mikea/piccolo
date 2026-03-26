@@ -1,6 +1,5 @@
 import type { LanguageModel, ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
 import { Agent } from "../src/agent.ts";
 import type { AgentEvent, AgentToolResult, IAgentTool } from "../src/types.ts";
 import { createMockModel } from "./mock-gateway.ts";
@@ -23,7 +22,11 @@ function makeTool(
     descriptor: {
       name,
       description: `${name} tool`,
-      inputSchema: z.object({ input: z.string().optional() }),
+      inputSchema: {
+        type: "object",
+        properties: { input: { type: "string" } },
+        additionalProperties: false,
+      },
     },
     execute: vi.fn().mockResolvedValue(result),
   };

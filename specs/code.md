@@ -75,7 +75,7 @@ Each package extends this base:
 | Unknown JSON from `fetch()` | `unknown` | Force callers to narrow before use |
 | Catch clause variables | `unknown` | Enforced by `useUnknownInCatchVariables` |
 | Generic record shapes | `Record<string, unknown>` | Never `Record<string, any>` |
-| Zod schema generics | `ZodObject<any>` | Permitted — Zod's own API requires this |
+| JSON schema objects | `JsonSchema7` | Preferred for tool input schemas and RPC serialization |
 | Tool `params` before validation | `unknown` | Validated by the core before `execute()` is called |
 | `RpcTarget` method stubs | typed overloads | Never accept `any` in JSRPC method signatures |
 
@@ -94,7 +94,7 @@ The TypeScript compiler must produce zero `any`-related errors. Running `tsc --n
 pnpm install
 
 # Add a dependency
-pnpm add zod --filter @piccolo/agent
+pnpm add <package> --filter @piccolo/agent
 
 # Run a script in a specific package
 pnpm --filter @piccolo/core test

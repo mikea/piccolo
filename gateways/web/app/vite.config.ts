@@ -22,6 +22,7 @@ const __dirname = dirname(__filename);
 export default defineConfig({
   plugins: [solid()],
   root: __dirname,
+  publicDir: resolve(__dirname, "static"),
   build: {
     outDir: resolve(__dirname, "../dist"),
     emptyOutDir: true,

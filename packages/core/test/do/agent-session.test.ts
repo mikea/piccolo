@@ -227,17 +227,19 @@ describe("AgentSessionDO — session accessors", () => {
     const sid = uniqueId();
     await runPrompt(sid, "hi", "there");
     const stub = getStub(sid);
-    const updatedAt = await runInDurableObject(stub, (instance: AgentSessionDO) => instance.getUpdatedAt());
+    const updatedAt = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getUpdatedAt(),
+    );
     expect(typeof updatedAt).toBe("number");
     expect(updatedAt).toBeGreaterThan(0);
   });
 
-  it("getName() returns undefined before setName()", async () => {
+  it("getName() defaults to sessionId before setName()", async () => {
     const sid = uniqueId();
     await runPrompt(sid, "hi", "there");
     const stub = getStub(sid);
     const name = await runInDurableObject(stub, (instance: AgentSessionDO) => instance.getName());
-    expect(name).toBeUndefined();
+    expect(name).toBe(sid);
   });
 
   it("setName() persists the name and getName() returns it", async () => {
@@ -285,6 +287,8 @@ describe("AgentSessionDO — session accessors", () => {
     const usage = await runInDurableObject(stub, (instance: AgentSessionDO) =>
       instance.getContextUsage(),
     );
+    expect(typeof usage.inputTokens).toBe("number");
+    expect(usage.inputTokens).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -379,8 +383,9 @@ describe("AgentSessionDO — branch", () => {
     });
 
     // Branch back to leaf after turn 1 — confirm no throw
+    if (!leafAfterTurn1) throw new Error("Expected leafAfterTurn1");
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
-      await instance.branch(leafAfterTurn1!);
+      await instance.branch(leafAfterTurn1);
     });
   });
 });
@@ -554,9 +559,11 @@ describe("AgentSessionDO — estimateTokens with non-text content", () => {
       instance._setModelForTest(createMockModel({ response: "ok" }));
       await instance._init(sid, "user-1");
       // Pass an attachment (file part) — hits the else branch in estimateTokens
-      await drainStream(await promptStream(instance, "describe this", [
-        { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
-      ]));
+      await drainStream(
+        await promptStream(instance, "describe this", [
+          { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
+        ]),
+      );
       await instance.waitForFlush();
     });
     const usage = await runInDurableObject(stub, (instance: AgentSessionDO) =>
@@ -635,7 +642,7 @@ describe("AgentSessionDO — getStatus", () => {
     expect(status.isStreaming).toBe(false);
     expect(typeof status.model).toBe("string");
     expect(status.model.length).toBeGreaterThan(0);
-    expect(status.name).toBeUndefined();
+    expect(status.name).toBe(sid);
   });
 
   it("getStatus() returns the session name after setName()", async () => {
@@ -723,11 +730,11 @@ describe("AgentSessionDO — getCurrentTurn reconnect", () => {
       // Start prompt — getTurn() should now return an ITurn.
       const promptTurn = await instance.prompt("go");
       const reconnectTurn = await instance.getCurrentTurn();
-      expect(reconnectTurn).toBeDefined();
+      if (!reconnectTurn) throw new Error("Expected reconnectTurn");
 
       // Both refer to the same underlying stream — drain via the reconnect turn.
       // (The prompt turn's stream is already the same object; drain via reconnect stream.)
-      const stream = await reconnectTurn!.getStream();
+      const stream = await reconnectTurn.getStream();
       const ev = await drainStream(stream);
       await instance.waitForFlush();
       // Suppress unused warning — promptTurn was used to trigger turn creation.

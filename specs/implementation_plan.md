@@ -169,7 +169,7 @@ Same principle: `agentCompact(messages, keepRecentTokens, model)` takes the same
 - `ITool extends IAgentTool` — adds `descriptor: ToolDescriptor` and `getGatewayUI`
 - `ToolResult extends AgentToolResult` — adds `details`
 - `AgentEvent`, `IAgentTool`, `AgentToolDescriptor`, `AgentToolResult`, `ModelMessage`, `LanguageModel` etc. are re-exported from `@piccolo/agent` — no duplication.
-- `ai` and `zod` remain direct dependencies of `packages/core` for non-agent types.
+- `ai` remains a direct dependency of `packages/core` for non-agent types; tool schemas are JSON Schema.
 
 ---
 
@@ -299,8 +299,8 @@ The component that discovers, initialises, and dispatches to extension Workers.
 - All 6 emit methods with correct merge semantics from [core.md](core.md): `emitInput`, `emitBeforeAgentStart`, `emitContext`, `emitToolCall`, `emitToolResult`, `emitBeforeCompact`
 - Fire-and-forget emit for all other events (`onAgentStart`, `onAgentEnd`, `onTurnStart`, etc.)
 - `getSystemPromptAdditions()` — collect from all extensions, sort by priority
-- `getCommands()` — collect all `CommandDescriptor[]` from extensions
-- `getToolDescriptors()` — collect all `ToolDescriptorLike[]` from extensions
+- `getCommands()` — collect all `ICommand[]` from extensions
+- `getTools()` — collect all `ITool[]` from extensions
 - `parseCommand(text, commands)` — `/name args` parsing
 - Unit tests: all merge rules with mock extension stubs; command parsing; empty extension list; single extension error isolation (one extension throws, others proceed)
 - `test/mocks/extension-stub.ts` — configurable mock `IExtensionWorker`
@@ -315,7 +315,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 | File | Contents |
 |---|---|
-| `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; all event/result types; `IExtensionRunner` interface; `IExtensionWorkerLike` interface; `parseCommand()` |
+| `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; `parseCommand()`; extension contracts extracted to `extension-types.ts` (`IExtensionRunner`, `IExtensionWorker`, event/result types) |
 | `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` only (removed in step 7; `IExtensionContextLike` removed in step 8) |
 | `packages/core/src/do/compaction.ts` | Updated to use `IExtensionRunner` interface (not `ExtensionRunnerStub`) |
 | `packages/core/src/do/agent-session.ts` | Updated to instantiate and call `ExtensionRunner`; `DOState.extensionRunner` typed as `ExtensionRunner` |
@@ -328,7 +328,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 **`emitContext` included**: Although the current `prompt()` pipeline does not yet call `emitContext` (no `prepareStep` hook yet), the method is present on `ExtensionRunner` and fully tested. Wiring it into the agent loop's `prepareStep` is deferred to step 8 or step 9 when the full pipeline is assembled.
 
-**`getToolDescriptors()`**: Collects `ToolDescriptorLike[]` from all extensions during `initialize()`. `AgentSessionDO` passes these to `assembler.assemble()` for system prompt construction. Tool execution routing via `executeTool` is not yet wired (step 9).
+**`getTools()`**: Collects `ITool[]` from all extensions during `initialize()`. `AgentSessionDO` passes these directly to `assembler.assemble()` and `agent.setTools()`.
 
 **Error isolation in `initialize()`**: `getTools()`, `getCommands()`, and `getSystemPromptAdditions()` are all individually `.catch()`-wrapped. A throwing extension's registration data is skipped; the extension stub is NOT added to `#stubs`, so fire-and-forget emit calls also skip it.
 
@@ -368,7 +368,7 @@ Assembles the system prompt from the base constant and extension additions.
 
 #### Key design decisions
 
-**`ToolDescriptorLike[]` instead of `ITool[]`**: The `assemble()` method takes `ToolDescriptorLike[]` (the duck-typed shape from `ExtensionRunner`) rather than `ITool[]` (the full `piccolo-core` interface defined in step 12). Only `promptSnippet` and `promptGuidelines` are accessed — both present on `ToolDescriptorLike`. When step 12 implements real `ITool` / `ToolDescriptor`, the type is structurally compatible with no changes needed to the assembler.
+**`ITool[]` directly**: The `assemble()` method takes `ITool[]` and reads `tool.descriptor.promptSnippet` / `tool.descriptor.promptGuidelines`.
 
 **Section ordering**: `base → context → skills → available-tools → guidelines → tool-guidelines → footer`. The "Available Tools" section (from `promptSnippet`) is placed between skills and guidelines additions, matching the spec's intent that tool discovery information comes before usage guidelines.
 
@@ -393,8 +393,7 @@ extension handler call and every tool `execute()` call. Eliminates the former
 - `ISession extends IAgentSession` in `packages/core/src/types.ts` — full unified surface; all extension-specific methods merged in (`sendUserMessage`, `appendCustomMessage`, `appendCustomEntry`, `getEntries`, `getSystemPrompt`, `listModels`, `getActiveTools`, `setActiveTools`)
 - `packages/core/src/do/do-state.ts` — extracted `DOState` interface; adds `branchEntries: AnyEntry[]` and `session: ISession | null`
 - `packages/core/src/do/context.ts` — `SessionImpl extends RpcTarget implements ISession`; holds live `DOState` reference; delegates all methods; no D1 flush (flush at `agent_end`)
-- `ExtensionToolAdapter` in `extension-runner.ts` — wraps extension tool descriptors into full `IAgentTool` instances that dispatch via `executeTool()` with live `ISession` as `ctx`
-- `getToolsByNames(names)` on `ExtensionRunner` — used by `ISession.setActiveTools()`
+- `ExtensionRunner` stores `ITool[]` directly from extensions (no adapter layer)
 - `AgentSessionDO` wired: creates `SessionImpl` before `extensionRunner.initialize()`, stores in `doState.session`, calls `agent.setContext(session)` at start of each `prompt()`
 - `doState.branchEntries` populated from D1 on cold start; `appendCustomEntry`/`appendCustomMessage` append to both `pendingEntries` and `branchEntries`; `getEntries()` reads from `branchEntries` (no D1 roundtrip)
 - `test/mocks/extension-stub.ts` — `createMockSession()` helper; all `ctx` params updated to `ISession`
@@ -422,7 +421,7 @@ extension handler call and every tool `execute()` call. Eliminates the former
 | `packages/core/src/types.ts` | `ISession extends IAgentSession` — full unified interface (replaces `IExtensionContext = unknown`) |
 | `packages/core/src/do/do-state.ts` | New: `DOState` interface with `branchEntries` and `session: ISession \| null` |
 | `packages/core/src/do/session-impl.ts` | New: `SessionImpl extends RpcTarget implements ISession` |
-| `packages/core/src/do/extension-runner.ts` | `ExtensionToolAdapter`, `getToolsByNames()`, all ctx params → `ISession` |
+| `packages/core/src/do/extension-runner.ts` | `getTools()` and event dispatch; all ctx params → `ISession` |
 | `packages/core/src/do/agent-session.ts` | Wires `SessionImpl`, `branchEntries`, `agent.setContext()` |
 | `packages/core/src/do/compaction.ts` | `ctx: ISession` |
 | `packages/core/test/do/context.test.ts` | New: 38 unit tests for `SessionImpl` |
@@ -451,14 +450,15 @@ and stores the result in `doState.branchEntries`. New entries from
 `pendingEntries` (for D1 flush) and `branchEntries` (for `getEntries()` queries).
 This avoids a D1 roundtrip on every `getEntries()` call.
 
-#### `ExtensionToolAdapter` and JSRPC tool dispatch
+#### Direct `ITool` dispatch
 
-When `ExtensionRunner.initialize()` collects tools via `stub.getTools()`, each
-`ToolDescriptorLike` is wrapped in an `ExtensionToolAdapter implements IAgentTool`.
-The adapter's `execute()` calls `stub.executeTool(name, toolCallId, params, ctx)`
-where `ctx` is the live `ISession` — a real `RpcTarget` that crosses the Worker
-dispatch boundary. This is the correct JSRPC pattern: the extension Worker
-receives a callable stub back to the session, not a plain data object.
+`ExtensionRunner.initialize()` collects `ITool[]` directly from each extension via
+`getTools(ctx)`. The agent uses these tools directly (no adapter layer).
+
+Temporary DO/runtime limitation: core passes a self DO stub capability
+(`env.AGENT_SESSION.get(ctx.id)`) to extension handlers instead of
+passing the `AgentSessionDO` instance directly, because DO instances are not
+serializable over dispatch RPC.
 
 ---
 
@@ -691,6 +691,9 @@ Gives the LLM the ability to make HTTPS GET/HEAD requests to the public internet
 
 **Deliverables:**
 - `FetchTool extends WorkerEntrypoint` implementing `ITool`
+- `FetchTool extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `getTools()` returning the fetch `ToolDescriptor`
+- `execute()` on `ITool` handles fetch runtime implementation directly
 - `descriptor` with `inputSchema` (action, url, byteStart, byteEnd, maxBytes)
 - `execute()` supporting `get` and `head` actions; ranged GET via `byteStart`/`byteEnd`
 - SSRF guard: reject private IP ranges and metadata endpoints before making the request
@@ -701,7 +704,7 @@ Gives the LLM the ability to make HTTPS GET/HEAD requests to the public internet
 - `FetchDetails` result type: url, method, status, statusText, contentType, bodyBytes, truncated, ranged, rangeRequested, contentRange
 - No `wrangler` bindings required — uses runtime `fetch()` only
 - No custom headers from LLM — only `Range` header is ever sent (tool-controlled)
-- 19 unit tests; truncation; binary encoding; SSRF guard; scheme guard; ranged GET; non-2xx as result not error; network error propagation
+- 21 unit tests; extension interface dispatch + truncation; binary encoding; SSRF guard; scheme guard; ranged GET; non-2xx as result not error; network error propagation
 
 **Spec refs:** [fetch_tool.md](fetch_tool.md), [tools.md](tools.md)
 
@@ -709,21 +712,21 @@ Gives the LLM the ability to make HTTPS GET/HEAD requests to the public internet
 
 ### 12.1 Implementation Notes
 
-**Status:** Complete. 19 tests pass. Coverage: statements 100%, functions 100%, lines 100%, branches 97.82% — all above thresholds (80/80/70). `pnpm biome check .` and `tsc --noEmit` pass with zero errors.
+**Status:** Complete. 21 tests pass. Coverage: statements 96.66%, functions 85.71%, lines 96.61%, branches 95.83% — all above thresholds (80/80/70). `pnpm biome check .` and `tsc --noEmit` pass with zero errors.
 
 #### File layout
 
 | File | Contents |
 |---|---|
 | `extensions/fetch-tool/src/index.ts` | `FetchTool` class, `descriptor`, `validateScheme`, `validateNotSsrf`, `FetchDetails` interface |
-| `extensions/fetch-tool/test/index.test.ts` | 19 unit tests covering all paths |
+| `extensions/fetch-tool/test/index.test.ts` | 21 unit tests covering all paths and extension dispatch |
 | `extensions/fetch-tool/test/env.d.ts` | `cloudflare:test` ambient module declaration for test types |
 | `extensions/fetch-tool/test/tsconfig.json` | Test-specific tsconfig with `@cloudflare/vitest-pool-workers/types` |
 | `extensions/fetch-tool/src/worker-configuration.d.ts` | Generated by `wrangler types`; empty `Env` (no bindings) |
 | `extensions/fetch-tool/vitest.config.ts` | `cloudflareTest` plugin + istanbul coverage |
 | `extensions/fetch-tool/wrangler.template.jsonc` | Worker config — no bindings |
 | `extensions/fetch-tool/tsconfig.json` | Extends base; `@piccolo/core` → `types-public.ts` path alias |
-| `extensions/fetch-tool/package.json` | `@piccolo/ext-fetch-tool`; deps: `zod`; devDeps: `@piccolo/core`, vitest-pool-workers |
+| `extensions/fetch-tool/package.json` | `@piccolo/ext-fetch-tool`; deps: none; devDeps: `@piccolo/core`, vitest-pool-workers |
 
 #### Key design decisions
 
@@ -770,7 +773,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 **Deliverables:**
 - `R2ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
 - `getTools()` returning the R2 `ToolDescriptor` with full `inputSchema`
-- `executeTool()` dispatching all 7 actions: `read`, `write`, `delete`, `list`, `stat`, `copy`, `move`
+- `execute()` on returned `ITool` handles all 7 actions: `read`, `write`, `delete`, `list`, `stat`, `copy`, `move`
 - All result `details` types: `R2ReadDetails`, `R2WriteDetails`, `R2DeleteDetails`, `R2ListDetails`, `R2StatDetails`, `R2CopyDetails`
 - `wrangler.template.jsonc` with `BUCKET` R2 binding
 - Unit tests: all 7 actions against `createMockR2()`; binary encoding/decoding; move atomicity (put succeeds, delete only after); error paths (not found, etc.)
@@ -784,7 +787,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 **Deliverables:**
 - `D1ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
 - `getTools()` returning the D1 `ToolDescriptor`
-- `executeTool()` dispatching all 7 actions: `schema`, `select`, `insert`, `update`, `delete`, `schema_change`, `sql`
+- `execute()` on returned `ITool` handles all 7 actions: `schema`, `select`, `insert`, `update`, `delete`, `schema_change`, `sql`
 - All result `details` types: `D1SchemaDetails`, `D1SelectDetails`, `D1InsertDetails`, `D1UpdateDetails`, `D1DeleteDetails`, `D1SchemaChangeDetails`, `D1SqlDetails`
 - `confirm: true` guard on `schema_change`
 - `dryRun` path on `delete`
@@ -801,7 +804,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 - `SkillsExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
 - `onSessionStart`: fetch skills from source list, parse frontmatter, build registry
 - `getSystemPromptAdditions()`: return `skills` section listing names + descriptions
-- `getCommands()`: one `CommandDescriptor` per skill
+- `getCommands()`: one `ICommand` per skill
 - `onInput()`: handle `/skill:{name}` commands — fetch full content, optionally append args, return `transform`
 - KV caching with TTL
 - JSRPC admin endpoints: `addSource()`, `removeSource()`, `listSources()`, `reloadSkills()`, `listSkills()`, `getSkillContent()`
@@ -819,7 +822,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 - `TemplatesExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
 - `onSessionStart`: fetch templates from source list, extract name + description
 - `getSystemPromptAdditions()`: return `context` section listing templates
-- `getCommands()`: one `CommandDescriptor` per template
+- `getCommands()`: one `ICommand` per template
 - `onInput()`: handle `/template:{name}` commands — fetch content, substitute arguments, return `transform`
 - Argument substitution: `$1`, `$2`, `$@`, `$ARGUMENTS`, `${@:N}`, `${@:N:L}`
 - Quoted argument parsing (shell-style)

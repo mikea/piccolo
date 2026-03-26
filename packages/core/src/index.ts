@@ -10,14 +10,39 @@
 // ── Durable Objects ───────────────────────────────────────────────────────────
 // AgentSessionDO — must be a named export for Wrangler DO registration
 export { AgentSessionDO } from "./agent-session-do.ts";
+// ── Public types ──────────────────────────────────────────────────────────────
+// All shared types from specs/api.md — consumed by gateways and extensions.
+export type {
+  AgentEndEvent,
+  AgentStartEvent,
+  BeforeAgentStartEvent,
+  BeforeAgentStartResult,
+  BeforeCompactEvent,
+  BeforeCompactResult,
+  CompactEvent,
+  ContextEvent,
+  ContextResult,
+  IExtensionListener,
+  IExtensionRunner,
+  IExtensionWorker,
+  InputEvent,
+  InputResult,
+  SessionShutdownEvent,
+  SessionStartEvent,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolEndEvent,
+  ToolResultEvent,
+  ToolResultOverride,
+  ToolStartEvent,
+  TurnEndEvent,
+  TurnStartEvent,
+} from "./extension-types.ts";
 // ── Worker entrypoint ─────────────────────────────────────────────────────────
 export { PiccoloCore as default } from "./piccolo-core.ts";
-
 // ── Public library API ────────────────────────────────────────────────────────
 // Session persistence layer
 export * from "./session/index.ts";
-// ── Public types ──────────────────────────────────────────────────────────────
-// All shared types from specs/api.md — consumed by gateways and extensions.
 export type {
   AgentEvent,
   AgentToolDescriptor,
@@ -29,14 +54,16 @@ export type {
   GatewayId,
   HistoryEntry,
   IAgentTool,
+  ICommand,
   IGatewayCallback,
   IPiccoloCore,
   ISession,
-  ITurn,
-  IUser,
   ITextUI,
   ITool,
+  ITurn,
+  IUser,
   IWebUI,
+  JsonSchema7,
   NewSessionOptions,
   SessionRecord,
   SessionStatus,

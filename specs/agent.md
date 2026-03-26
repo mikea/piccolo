@@ -119,18 +119,17 @@ import type { ModelMessage } from "ai";
 
 ```typescript
 import { tool } from "ai";
-import { z } from "zod";
 
 const myTool = tool({
   description: "...",
-  inputSchema: z.object({ ... }),
+  inputSchema: { type: "object", properties: { ... } },
   execute: async (input, { toolCallId, abortSignal }) => {
     return { result: "..." };
   },
 });
 ```
 
-Tools are defined using **Zod schemas** (not TypeBox). The AI SDK validates inputs automatically.
+Tools are defined using **JSON Schema** (draft-07 style). The AI SDK validates inputs automatically.
 
 ### `streamText` / `generateText`
 
@@ -166,7 +165,7 @@ The minimal tool interface used by `packages/agent`. Contains only what the agen
 interface AgentToolDescriptor {
   name: string;         // snake_case, LLM-facing
   description: string;  // full description sent to LLM
-  inputSchema: ZodObject<any>;
+  inputSchema: JsonSchema7;
 }
 
 interface IAgentTool {

@@ -62,6 +62,14 @@ export default {
 
 SolidJS + Vite. `IUser` stub passed as a prop through the component tree. No global store. Components call `IUser`/`ISession` methods directly via JSRPC.
 
+Static assets are served from `gateways/web/app/static` (configured as Vite `publicDir`), and `index.html` links `/favicon.ico` as the site icon.
+
+### Routes and empty-session view
+
+- `/` redirects to `/sessions`.
+- `/sessions/:id` renders the two-panel chat layout (session sidebar + chat view).
+- `/sessions` renders the same sidebar with the conversation list and a main-pane CTA button (`Start a new chat`). The empty view does not show a "No session selected" message.
+
 ### Stateless UI principle
 
 The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:

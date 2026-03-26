@@ -14,6 +14,9 @@
       },
       "style": {
         "noNonNullAssertion": "warn"
+      },
+      "complexity": {
+        "useLiteralKeys": "off"
       }
     }
   },
@@ -35,6 +38,16 @@
         "parser": {
           "allowComments": true,
           "allowTrailingCommas": true
+        }
+      }
+    },
+    {
+      "includes": ["**/test/**/*.ts", "**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
         }
       }
     }

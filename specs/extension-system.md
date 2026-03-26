@@ -10,7 +10,7 @@ Extensions are independent Cloudflare Workers deployed into piccolo's dispatch n
 
 There is no in-process extension loading, no TypeScript evaluation at runtime, and no filesystem scanning. Users install an extension by deploying a Worker and registering its name in the extension registry (Workers KV). No core redeploy is required.
 
-All types (`IExtensionWorker`, `IExtensionContext`, `ToolDescriptor`, event and result types) are defined in [api.md](api.md).
+All types (`IExtensionWorker`, `ISession`, `ToolDescriptor`, event and result types) are defined in [api.md](api.md).
 
 ---
 
@@ -278,8 +278,6 @@ export default class InputTransformExtension extends WorkerEntrypoint {
 Tools that maintain per-session state across turns by reading and writing custom entries.
 
 ```typescript
-import { z } from "zod";
-
 export default class TodoExtension extends WorkerEntrypoint {
 
   static todoDescriptor = {
@@ -287,17 +285,19 @@ export default class TodoExtension extends WorkerEntrypoint {
     label: "Todo List",
     description: "Manage a persistent todo list for this session. Actions: list, add, complete, delete.",
     promptSnippet: "Manage a persistent per-session todo list",
-    inputSchema: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("list") }),
-      z.object({ action: z.literal("add"),      item: z.string() }),
-      z.object({ action: z.literal("complete"), item: z.string() }),
-      z.object({ action: z.literal("delete"),   item: z.string() }),
-    ]),
+    inputSchema: {
+      oneOf: [
+        { type: "object", additionalProperties: false, properties: { action: { const: "list" } }, required: ["action"] },
+        { type: "object", additionalProperties: false, properties: { action: { const: "add" }, item: { type: "string" } }, required: ["action", "item"] },
+        { type: "object", additionalProperties: false, properties: { action: { const: "complete" }, item: { type: "string" } }, required: ["action", "item"] },
+        { type: "object", additionalProperties: false, properties: { action: { const: "delete" }, item: { type: "string" } }, required: ["action", "item"] },
+      ],
+    },
   };
 
   async getTools() { return [TodoExtension.todoDescriptor]; }
 
-  async executeTool(name, toolCallId, params, ctx) {
+  async execute(toolCallId, params, ctx) {
     // Rebuild state from custom entries (survives compaction since entries are in the session tree)
     const entries = await ctx.getEntries("todo");
     let items: Array<{ text: string; done: boolean }> = [];
@@ -443,7 +443,7 @@ export default class SearchExtension extends WorkerEntrypoint {
 
   // Standard IExtensionWorker tools
   async getTools() { return [SearchExtension.searchDescriptor]; }
-  async executeTool(name, toolCallId, params, ctx) { /* ... */ }
+  async execute(toolCallId, params, ctx) { /* ... */ }
 
   // Additional JSRPC endpoint — callable from gateways or other extensions
   // e.g.: env.EXTENSIONS.get("ext-search").suggest(prefix)
@@ -462,7 +462,7 @@ Gateways call extra methods to power autocomplete, dashboards, or admin UIs with
 
 Each extension declares its own Cloudflare bindings in its own `wrangler.template.jsonc`. The core does not share its bindings. Extensions that need storage (KV, D1, R2) must provision their own.
 
-The `IExtensionContext` stub gives extensions a controlled API into the core session — they cannot access core internals directly.
+The `ISession` stub gives extensions a controlled API into the core session — they cannot access core internals directly.
 
 ---
 

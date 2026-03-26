@@ -10,11 +10,12 @@
     "test:watch": "vitest",
     "build": "wrangler deploy --dry-run",
     "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.4",
     "vitest": "*",
-    "wrangler": "*"
+    "wrangler": "^4.77.0"
   }
 }

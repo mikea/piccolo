@@ -27,18 +27,8 @@ export interface SystemPromptAddition {
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
-/**
- * A command registered by an extension.
- * Spec ref: specs/api.md §8 §Commands
- */
-export interface CommandDescriptor {
-  /** Command name without the leading /. E.g. "skill:brave-search". */
-  name: string;
-  /** One-line description shown in gateway autocomplete and /help. */
-  description: string;
-  /** If true, gateway autocomplete lists this command. Default: true. */
-  showInAutocomplete?: boolean;
-}
+import type { ICommand } from "./types.ts";
+export type CommandDescriptor = ICommand;
 
 // ─── Model list ───────────────────────────────────────────────────────────────
 
@@ -51,7 +41,10 @@ export interface CommandDescriptor {
  * Spec ref: specs/api.md §IPiccoloCore.listModels
  */
 export function parseModels(raw: string): string[] {
-  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /**

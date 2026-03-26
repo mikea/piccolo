@@ -13,9 +13,9 @@
  * at component init — never pass it into SolidJS reactive primitives.
  */
 
+import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/core";
 import { type Component, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/core";
 import { ChatInput } from "./ChatInput.tsx";
 import { Header } from "./Header.tsx";
 import { MessageList } from "./MessageList.tsx";
@@ -132,7 +132,11 @@ export const ChatView: Component<Props> = (props) => {
         finishStreamingEntry();
         setEntries((es) => [
           ...es,
-          { type: "error", id: Math.random().toString(36).slice(2), message: event.message } as HistoryEntry,
+          {
+            type: "error",
+            id: Math.random().toString(36).slice(2),
+            message: event.message,
+          } as HistoryEntry,
         ]);
         break;
     }
@@ -162,10 +166,7 @@ export const ChatView: Component<Props> = (props) => {
       try {
         // Load status and history in parallel.
         console.debug("[rpc] getStatus + getHistory calling...");
-        const [status, history] = await Promise.all([
-          session.getStatus(),
-          session.getHistory(),
-        ]);
+        const [status, history] = await Promise.all([session.getStatus(), session.getHistory()]);
         console.debug("[rpc] getStatus →", JSON.stringify(status));
         console.debug("[rpc] getHistory →", history.length, "entries");
         setEntries(history);
@@ -191,7 +192,10 @@ export const ChatView: Component<Props> = (props) => {
   // ─── User actions ──────────────────────────────────────────────────────────
 
   async function handleSend(text: string): Promise<void> {
-    if (isStreaming()) { console.debug("[ui] handleSend blocked — already streaming"); return; }
+    if (isStreaming()) {
+      console.debug("[ui] handleSend blocked — already streaming");
+      return;
+    }
     console.debug("[rpc] prompt calling... text=%s", text.slice(0, 60));
     const userId = Math.random().toString(36).slice(2);
     setEntries((es) => [...es, { type: "user", id: userId, content: text } as HistoryEntry]);
@@ -200,7 +204,10 @@ export const ChatView: Component<Props> = (props) => {
     try {
       const turn = await session.prompt(text);
       const stream = await turn.getStream();
-      console.debug("[rpc] prompt returned turn+stream, type=%s", Object.prototype.toString.call(stream));
+      console.debug(
+        "[rpc] prompt returned turn+stream, type=%s",
+        Object.prototype.toString.call(stream),
+      );
       // Pass setStreaming=false — isStreaming is already true above.
       await consumeStream(stream, false);
       console.debug("[rpc] consumeStream finished");
@@ -216,7 +223,11 @@ export const ChatView: Component<Props> = (props) => {
   }
 
   async function handleAbort(): Promise<void> {
-    try { await session.abort(); } catch { /* turn may have ended */ }
+    try {
+      await session.abort();
+    } catch {
+      /* turn may have ended */
+    }
     finishStreamingEntry();
     setIsStreaming(false);
   }

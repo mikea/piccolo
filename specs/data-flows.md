@@ -118,7 +118,7 @@ ai package (multi-step mode via stopWhen: stepCountIs(N))
     │   → ToolCallResult { block, reason }
     │   If block: inject tool-error result, skip execute()
     │
-    ├─ Validate params against descriptor.inputSchema (Zod)
+    ├─ Validate params against descriptor.inputSchema (JSON Schema)
     │   → invalid: inject tool-error result, skip execute()
     │
     ├─ tool.execute(toolCallId, validatedParams, ctx, signal)

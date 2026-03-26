@@ -30,6 +30,7 @@ export type {
   IAgentSession,
   IAgentTool,
   ImagePart,
+  JsonSchema7,
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,
@@ -42,8 +43,8 @@ import type {
   AgentToolResult,
   IAgentSession,
   IAgentTool,
+  JsonSchema7,
 } from "@piccolo/agent";
-import type { ZodObject } from "zod";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -98,7 +99,13 @@ export interface ToolDescriptor extends AgentToolDescriptor {
   // Inherits from AgentToolDescriptor:
   //   name: string
   //   description: string
-  //   inputSchema: ZodObject<any>  — biome-ignore lint/suspicious/noExplicitAny: Zod API
+  //   inputSchema: JsonSchema7
+}
+
+export interface ICommand {
+  name: string;
+  description: string;
+  showInAutocomplete?: boolean;
 }
 
 // ToolResult extends AgentToolResult with the piccolo-core-specific `details` field.
@@ -246,10 +253,18 @@ export interface CustomEntry {
 //
 // Spec ref: specs/api.md §Shared Types
 export type HistoryEntry =
-  | { type: "user";      id: string; content: string }
+  | { type: "user"; id: string; content: string }
   | { type: "assistant"; id: string; content: string; isStreaming: boolean }
-  | { type: "tool";      id: string; toolName: string; input: unknown; output: unknown; isError: boolean; isStreaming: boolean }
-  | { type: "error";     id: string; message: string };
+  | {
+      type: "tool";
+      id: string;
+      toolName: string;
+      input: unknown;
+      output: unknown;
+      isError: boolean;
+      isStreaming: boolean;
+    }
+  | { type: "error"; id: string; message: string };
 
 // ─── Session Status ───────────────────────────────────────────────────────────
 
@@ -257,8 +272,8 @@ export type HistoryEntry =
 // Gateways use this to render controls (e.g. disable send while streaming).
 // Spec ref: specs/api.md §Shared Types
 export interface SessionStatus {
-  isStreaming: boolean;   // true while a prompt() turn is in progress
-  model: string;          // current model ID
+  isStreaming: boolean; // true while a prompt() turn is in progress
+  model: string; // current model ID
   name: string | undefined;
 }
 
@@ -300,11 +315,7 @@ export interface ISession extends IAgentSession {
    * this turn. Callers consume ITurn.getStream() to receive AgentEvents.
    * The callback is bound to the turn (not the session) and is ephemeral.
    */
-  prompt(
-    text: string,
-    attachments?: Attachment[],
-    callback?: IGatewayCallback,
-  ): Promise<ITurn>;
+  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ITurn>;
 
   /**
    * Inject a user-role message into the conversation (visible to the LLM).
@@ -405,8 +416,6 @@ export interface ISession extends IAgentSession {
   delete(): Promise<void>;
 }
 
-
-
 // ─── IUser — Per-user interface ───────────────────────────────────────────────
 //
 // Spec ref: specs/api.md §IUser
@@ -424,8 +433,5 @@ export interface IPiccoloCore {
   getUser(userId: string): IUser;
 }
 
-// Prevent unused import lint error — ZodObject is used in the JSDoc comment
-// for ToolDescriptor.inputSchema which is inherited. Explicitly reference it
-// so the import is not flagged.
-// biome-ignore lint/suspicious/noExplicitAny: Zod's own API requires ZodObject<any>
-type _ZodRef = ZodObject<any>;
+// Prevent unused import lint error — JsonSchema7 is referenced in ToolDescriptor docs.
+type _JsonSchemaRef = JsonSchema7;

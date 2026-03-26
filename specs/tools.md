@@ -28,14 +28,14 @@ ITool
  │     ├── description
  │     ├── promptSnippet?
  │     ├── promptGuidelines?
- │     └── inputSchema (Zod)
+ │     └── inputSchema (JSON Schema)
  ├── execute(toolCallId, params, ctx, signal) → ToolResult
  └── getGatewayUI?(gatewayId) → ITextUI | undefined   ← optional
 ```
 
 **`ToolDescriptor`** is static and logic-free. It describes the tool to the LLM (via the system prompt) and to the piccolo core (for registration and schema generation). It carries no behaviour.
 
-**`execute`** is where all logic lives. The core calls it after validating `params` against `descriptor.inputSchema`.
+**`execute`** is where all logic lives. The core calls it with params validated by the AI SDK against `descriptor.inputSchema`.
 
 **`getGatewayUI`** is optional. When present, gateways call it before rendering a tool call or result to get a custom UI stub. See [Gateway UI Integration](#gateway-ui-integration) below.
 
@@ -43,7 +43,6 @@ ITool
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { z } from "zod";
 import type { ITool, ToolDescriptor, ToolResult, IExtensionContext } from "piccolo-core";
 
 export default class GreetTool extends WorkerEntrypoint implements ITool {
@@ -53,9 +52,14 @@ export default class GreetTool extends WorkerEntrypoint implements ITool {
     label: "Greet",
     description: "Greet a person by name. Returns a greeting string.",
     promptSnippet: "Greet a user by name",
-    inputSchema: z.object({
-      name: z.string().describe("The name to greet"),
-    }),
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: { type: "string", description: "The name to greet" },
+      },
+      required: ["name"],
+    },
   };
 
   async execute(
@@ -115,7 +119,6 @@ For tools that want consistent text rendering across all gateways:
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { z } from "zod";
 import type { ITool, ITextUI, GatewayId } from "piccolo-core";
 
 class MyToolUI extends RpcTarget implements ITextUI {

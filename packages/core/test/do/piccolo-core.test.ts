@@ -83,7 +83,10 @@ describe("IUser — newSession()", () => {
 
   it("accepts NewSessionOptions (name, modelId)", async () => {
     const user = makeUser();
-    const session = await user.newSession({ name: "My test session", modelId: "openai/gpt-4o-mini" });
+    const session = await user.newSession({
+      name: "My test session",
+      modelId: "openai/gpt-4o-mini",
+    });
     expect(await session.sessionId()).toMatch(/^[0-9a-f-]{36}$/);
     expect(await session.getModel()).toBe("openai/gpt-4o-mini");
   });
@@ -167,10 +170,10 @@ describe("IUser — ISession methods", () => {
     expect(typeof usage.inputTokens).toBe("number");
   });
 
-  it("getName() returns undefined before setName()", async () => {
+  it("getName() defaults to sessionId before setName()", async () => {
     const user = makeUser();
     const session = await user.newSession();
-    expect(await session.getName()).toBeUndefined();
+    expect(await session.getName()).toBe(await session.sessionId());
   });
 
   it("setName() / getName() round-trips correctly", async () => {

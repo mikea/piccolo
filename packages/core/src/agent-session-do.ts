@@ -24,14 +24,21 @@ import type { Agent, LanguageModel, ModelMessage } from "@piccolo/agent";
 import { Agent as AgentClass } from "@piccolo/agent";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
-import type { AnyEntry, MessageEntry, ModelChangeEntry, SessionInfoEntry } from "./db/entry-types.ts";
+import type {
+  AnyEntry,
+  CustomEntry,
+  CustomMessageEntry,
+  MessageEntry,
+  ModelChangeEntry,
+  SessionInfoEntry,
+} from "./db/entry-types.ts";
 import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
+import { LoggingTransformStream } from "./logging-stream.ts";
 import { checkRetry } from "./retry.ts";
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
-import { defaultModelId, parseModels } from "./types-internal.ts";
 import {
   commitSession,
   deleteSession,
@@ -40,7 +47,6 @@ import {
 } from "./session/persistence.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
-import { LoggingTransformStream } from "./logging-stream.ts";
 import type {
   AgentEvent,
   Attachment,
@@ -56,7 +62,7 @@ import type {
   SessionStatus,
   ToolDescriptor,
 } from "./types.ts";
-import type { CustomEntry, CustomMessageEntry } from "./db/entry-types.ts";
+import { defaultModelId, parseModels } from "./types-internal.ts";
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
@@ -114,9 +120,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 1. Read sessionId and modelId from DO storage
     const sessionId = (await this.ctx.storage.get<string>("sessionId")) ?? "";
     const storedModelId = await this.ctx.storage.get<string>("modelId");
+    const storedName = await this.ctx.storage.get<string>("name");
 
     this.#sessionId = sessionId;
     this.#modelId = storedModelId ?? defaultModelId(this.env.MODELS);
+    this.#name = storedName ?? (sessionId !== "" ? sessionId : undefined);
 
     // 2. If session exists in D1, rehydrate
     if (sessionId !== "") {
@@ -126,7 +134,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         this.#userId = sessionRow.user_id;
         this.#modelId = sessionRow.model_id;
         this.#leafId = sessionRow.leaf_id;
-        this.#name = sessionRow.name ?? undefined;
+        this.#name = sessionRow.name ?? this.#sessionId;
         this.#createdAt = sessionRow.created_at;
         this.#updatedAt = sessionRow.updated_at;
 
@@ -154,20 +162,23 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 4. Set up extension runner and system prompt
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
-    await this.#extensionRunner.initialize(this, this.env.CONFIG, this.env.EXTENSIONS, this.#modelId);
+    const extensionCtx = this.#asSessionStub();
+    await this.#extensionRunner.initialize(
+      extensionCtx,
+      this.env.CONFIG,
+      this.env.EXTENSIONS,
+      this.#modelId,
+    );
 
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
+    const extensionTools = this.#extensionRunner.getTools();
     this.#assembledSystemPrompt = this.#assembler.assemble(
       basePrompt,
       this.#extensionRunner.getSystemPromptAdditions(),
-      this.#extensionRunner.getToolDescriptors(),
+      extensionTools,
     );
     this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
-    this.#agent.setTools(
-      this.#extensionRunner.getToolsByNames(
-        this.#extensionRunner.getToolDescriptors().map((d) => d.name),
-      ),
-    );
+    this.#agent.setTools(extensionTools);
   }
 
   // ─── Test-only helpers ────────────────────────────────────────────────────
@@ -206,6 +217,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async setName(name: string): Promise<void> {
     console.debug("[session] setName sessionId=%s name=%s", this.#sessionId, name);
     this.#name = name;
+    await this.ctx.storage.put("name", name);
     const entry: SessionInfoEntry = {
       id: generateEntryId(),
       sessionId: this.#sessionId,
@@ -216,7 +228,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     };
     this.#appendEntry(entry);
     if (this.#createdAt !== 0) {
-      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId!, this.env.SESSIONS_DB);
+      await flushPendingEntries(
+        this.#pendingEntries,
+        this.#sessionId,
+        this.#requireLeafId(),
+        this.env.SESSIONS_DB,
+      );
       this.#pendingEntries = [];
     }
   }
@@ -233,14 +250,19 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
     this.#agent.setContext(this);
+    const extensionCtx = this.#asSessionStub();
 
     // emitInput
     const inputResult = await this.#extensionRunner.emitInput(
       { text, attachments: attachments ?? [], source: "user" },
-      this,
+      extensionCtx,
     );
     if (inputResult.action === "handled") {
-      const emptyStream = new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
+      const emptyStream = new ReadableStream<AgentEvent>({
+        start(c) {
+          c.close();
+        },
+      });
       const turn = new TurnImpl(emptyStream, callback);
       this.#currentTurn = turn;
       return turn;
@@ -250,7 +272,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // Build user message and entry
     const userMessage: ModelMessage =
       attachments && attachments.length > 0
-        ? { role: "user", content: [{ type: "text", text: effectiveText }, ...attachments.map((a) => ({ type: "file" as const, data: a.data, mediaType: a.mimeType }))] }
+        ? {
+            role: "user",
+            content: [
+              { type: "text", text: effectiveText },
+              ...attachments.map((a) => ({
+                type: "file" as const,
+                data: a.data,
+                mediaType: a.mimeType,
+              })),
+            ],
+          }
         : { role: "user", content: effectiveText };
 
     const userEntryId = generateEntryId();
@@ -268,8 +300,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
     // emitBeforeAgentStart
     const beforeStart = await this.#extensionRunner.emitBeforeAgentStart(
-      { text: effectiveText, attachments: attachments ?? [], systemPrompt: this.#assembledSystemPrompt },
-      this,
+      {
+        text: effectiveText,
+        attachments: attachments ?? [],
+        systemPrompt: this.#assembledSystemPrompt,
+      },
+      extensionCtx,
     );
     if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
       this.#agent.appendMessages(beforeStart.contextMessages);
@@ -286,7 +322,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
     let controller!: ReadableStreamDefaultController<AgentEvent>;
     const raw = new ReadableStream<AgentEvent>({
-      start: (c) => { controller = c; },
+      start: (c) => {
+        controller = c;
+      },
     });
 
     const unsub = this.#agent.subscribe((event: AgentEvent) => {
@@ -296,17 +334,18 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       if (event.type === "turn_end") {
         this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
       }
-      this.#extensionRunner.emit(event.type, event, this).catch(() => {});
+      this.#extensionRunner.emit(event.type, event, extensionCtx).catch(() => {});
       if (event.type === "agent_end") {
         this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
         this.#flushPromise = this.#handleAgentEnd(abortController.signal);
         this.#flushPromise.catch((err) => {
           console.error("AgentSessionDO: _handleAgentEnd error", err);
         });
+        this.ctx.waitUntil(this.#flushPromise);
       }
     });
 
-    this.#agent
+    const runTurn = this.#agent
       .prompt([userMessage])
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -318,6 +357,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         this.#currentTurn = null;
         controller.close();
       });
+    this.ctx.waitUntil(runTurn);
 
     const stream = raw.pipeThrough(new LoggingTransformStream<AgentEvent>("[session:prompt]"));
     const turn = new TurnImpl(stream, callback);
@@ -462,7 +502,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const stored = this.#modelId;
     const allowed = parseModels(this.env.MODELS);
     const result = allowed.includes(stored) ? stored : (allowed[0] ?? stored);
-    console.debug("[session] getModel sessionId=%s stored=%s → %s", this.#sessionId, stored, result);
+    console.debug(
+      "[session] getModel sessionId=%s stored=%s → %s",
+      this.#sessionId,
+      stored,
+      result,
+    );
     return result;
   }
 
@@ -480,7 +525,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     };
     this.#appendEntry(entry);
     if (this.#createdAt !== 0) {
-      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId!, this.env.SESSIONS_DB);
+      await flushPendingEntries(
+        this.#pendingEntries,
+        this.#sessionId,
+        this.#requireLeafId(),
+        this.env.SESSIONS_DB,
+      );
       this.#pendingEntries = [];
     }
   }
@@ -549,7 +599,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async compact(options?: CompactOptions): Promise<void> {
     await this.#compact(options ?? {});
     if (this.#createdAt !== 0 && this.#leafId !== null) {
-      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+      await flushPendingEntries(
+        this.#pendingEntries,
+        this.#sessionId,
+        this.#leafId,
+        this.env.SESSIONS_DB,
+      );
       this.#pendingEntries = [];
     }
   }
@@ -618,9 +673,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#sessionId = sessionId;
     this.#userId = userId;
     this.#modelId = modelId;
-    this.#name = options?.name;
+    this.#name = options?.name ?? sessionId;
     await this.ctx.storage.put("sessionId", sessionId);
     await this.ctx.storage.put("modelId", modelId);
+    await this.ctx.storage.put("name", this.#name);
     if (!this.#modelOverridden) {
       this.#agent.setModel(createModel(this.env, modelId));
     }
@@ -674,7 +730,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   #computeContextUsage(): ContextUsage {
-    const extra = estimateTokens(this.#agent.state.messages.slice(this.#lastInputTokens === 0 ? 0 : undefined));
+    const extra = estimateTokens(
+      this.#agent.state.messages.slice(this.#lastInputTokens === 0 ? 0 : undefined),
+    );
     return { inputTokens: this.#lastInputTokens + extra };
   }
 
@@ -688,8 +746,22 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       pendingEntries: this.#pendingEntries,
       lastInputTokens: this.#lastInputTokens,
     };
-    await compact(compactionState, this, options);
+    await compact(compactionState, this.#asSessionStub(), options);
     this.#leafId = compactionState.leafId;
+  }
+
+  #asSessionStub(): ISession {
+    // Pass the raw DurableObjectStub across dispatch RPC.
+    // Wrapping with stubAsRpc() here creates a nested Proxy that capnweb
+    // cannot duplicate correctly when used as an RPC argument.
+    return this.env.AGENT_SESSION.get(this.ctx.id) as unknown as ISession;
+  }
+
+  #requireLeafId(): string {
+    if (this.#leafId === null) {
+      throw new Error("Session leafId is not initialized");
+    }
+    return this.#leafId;
   }
 
   async #handleAgentEnd(signal: AbortSignal): Promise<void> {
@@ -722,7 +794,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
 
     if (this.#pendingEntries.length > 0 && this.#leafId !== null) {
-      await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+      await flushPendingEntries(
+        this.#pendingEntries,
+        this.#sessionId,
+        this.#leafId,
+        this.env.SESSIONS_DB,
+      );
       this.#pendingEntries = [];
       this.#updatedAt = Date.now();
     }
@@ -731,7 +808,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       await checkRetry(this.#agent.state.error, this.#agent, signal, async () => {
         await this.#compact({});
         if (this.#sessionId !== "" && this.#leafId !== null) {
-          await flushPendingEntries(this.#pendingEntries, this.#sessionId, this.#leafId, this.env.SESSIONS_DB);
+          await flushPendingEntries(
+            this.#pendingEntries,
+            this.#sessionId,
+            this.#leafId,
+            this.env.SESSIONS_DB,
+          );
           this.#pendingEntries = [];
         }
         await this.#agent.continue();
@@ -770,7 +852,13 @@ function estimateTokens(messages: ModelMessage[]): number {
       chars += msg.content.length;
     } else if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (typeof part === "object" && part !== null && "type" in part && part.type === "text" && "text" in part) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "text" &&
+          "text" in part
+        ) {
           chars += String(part.text).length;
         } else {
           chars += 50;

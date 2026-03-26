@@ -69,7 +69,7 @@ type AgentEvent =
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
-import type { ZodObject } from "zod";
+type JsonSchema7 = Record<string, unknown>;
 
 // Implementation layering note:
 //   AgentToolDescriptor (packages/agent) — name, description, inputSchema
@@ -103,9 +103,9 @@ interface ToolDescriptor {
   // Optional bullets appended to "Guidelines" while this tool is active.
   promptGuidelines?: string[];
 
-  // Zod schema for the tool's input parameters.
-  // Used for LLM function-calling schema generation and server-side validation.
-  inputSchema: ZodObject<any>;
+  // Tool input schema (JSON Schema draft-07 style).
+  // Must be RPC-serializable when returned by extension Workers.
+  inputSchema: JsonSchema7;
 }
 
 // ITool — the full interface every tool Worker must implement.
@@ -136,7 +136,7 @@ interface ITool {
   getGatewayUI?(gatewayId: GatewayId): Promise<ITextUI | undefined>;
 }
 
-// Returned by tool execute() and extension executeTool() calls.
+// Returned by tool execute() calls.
 interface ToolResult {
   content: Array<
     | { type: "text";  text: string }
@@ -532,73 +532,33 @@ Implemented by each extension Worker. Called by `ExtensionRunner` inside `piccol
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-class IExtensionWorker extends WorkerEntrypoint {
-
-  // ─── Tool registration ───────────────────────────────────────────────────
-
-  // Called once at session start. Returns the ToolDescriptor for each ITool this extension provides.
-  // The core reads each tool Worker's static `descriptor` property to build this list.
-  getTools(): Promise<ToolDescriptor[]>;
-
-  // Called by the core when the LLM invokes one of this extension's tools.
-  executeTool(
-    name: string,
-    toolCallId: string,
-    params: Record<string, unknown>,
-    ctx: ISession,
-  ): Promise<ToolResult>;
-
-  // ─── Lifecycle ───────────────────────────────────────────────────────────
-
+interface IExtensionListener {
   onSessionStart(event: SessionStartEvent, ctx: ISession): Promise<void>;
   onSessionShutdown(event: SessionShutdownEvent, ctx: ISession): Promise<void>;
-
-  // ─── Agent loop events ───────────────────────────────────────────────────
-
   onBeforeAgentStart(event: BeforeAgentStartEvent, ctx: ISession): Promise<BeforeAgentStartResult | void>;
   onAgentStart(event: AgentStartEvent, ctx: ISession): Promise<void>;
   onAgentEnd(event: AgentEndEvent, ctx: ISession): Promise<void>;
-
   onTurnStart(event: TurnStartEvent, ctx: ISession): Promise<void>;
   onTurnEnd(event: TurnEndEvent, ctx: ISession): Promise<void>;
-
   onToolStart(event: ToolStartEvent, ctx: ISession): Promise<void>;
   onToolEnd(event: ToolEndEvent, ctx: ISession): Promise<void>;
-
-  // ─── Interception ────────────────────────────────────────────────────────
-
-  // Called before each LLM call. May filter or inject messages.
   onContext(event: ContextEvent, ctx: ISession): Promise<ContextResult | void>;
-
-  // Called before a tool's execute(). May block execution.
   onToolCall(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult | void>;
-
-  // Called after a tool's execute(). May override the result.
   onToolResult(event: ToolResultEvent, ctx: ISession): Promise<ToolResultOverride | void>;
-
-  // Called on every user input. May handle, transform, or pass through.
   onInput(event: InputEvent, ctx: ISession): Promise<InputResult | void>;
-
-  // ─── Compaction ──────────────────────────────────────────────────────────
-
-  // Called before compaction runs. May cancel or provide a pre-built summary.
   onBeforeCompact(event: BeforeCompactEvent, ctx: ISession): Promise<BeforeCompactResult | void>;
-
   onCompact(event: CompactEvent, ctx: ISession): Promise<void>;
+}
 
-  // ─── System prompt contributions ─────────────────────────────────────────
+class IExtensionWorker extends WorkerEntrypoint implements IExtensionListener {
+  // Called once at session start. Returns the ITool instances this extension provides.
+  getTools(ctx: ISession): Promise<ITool[] | void>;
 
   // Called once during system prompt assembly (at session start and after /reload).
-  // Returns snippets that the core appends to the assembled system prompt.
-  // Used by skills, prompt templates, tool guideline extensions, etc.
   getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[] | void>;
 
-  // ─── Command registration ────────────────────────────────────────────────
-
   // Called at session start. Returns commands this extension exposes.
-  // Gateways use these for slash-command autocomplete and help text.
-  // Commands are invoked via onInput when the user types /{name}.
-  getCommands(ctx: ISession): Promise<CommandDescriptor[] | void>;
+  getCommands(ctx: ISession): Promise<ICommand[] | void>;
 }
 ```
 
@@ -631,7 +591,7 @@ interface InputEvent {
   text: string;
   attachments: Attachment[];
   source: "user";
-  // Set when input starts with /{name} matching a registered CommandDescriptor.
+  // Set when input starts with /{name} matching a registered ICommand.
   // Extension onInput handlers use this to route command invocations.
   commandName?: string;
   // Arguments following the command name, if commandName is set.
@@ -692,7 +652,7 @@ interface SystemPromptAddition {
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
-interface CommandDescriptor {
+interface ICommand {
   // Command name without the leading /. E.g. "skill:brave-search", "template:review".
   // Must be unique across all extensions. Convention: "{extension-prefix}:{name}".
   name: string;

@@ -206,7 +206,9 @@ export class Agent {
     // ── Debug: log what is sent to the LLM ────────────────────────────────────
     console.debug(
       "[agent] _runStream start — model=%s systemPrompt=%d chars messages=%d",
-      typeof this._state.model === "object" && this._state.model !== null && "modelId" in this._state.model
+      typeof this._state.model === "object" &&
+        this._state.model !== null &&
+        "modelId" in this._state.model
         ? String((this._state.model as { modelId: string }).modelId)
         : String(this._state.model),
       this._state.systemPrompt.length,

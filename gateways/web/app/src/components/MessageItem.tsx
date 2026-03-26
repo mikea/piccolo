@@ -5,8 +5,8 @@
  * The server is the single source of truth for all chat state.
  */
 
-import { type Component, Match, Show, Switch } from "solid-js";
 import type { HistoryEntry } from "@piccolo/core";
+import { type Component, Match, Show, Switch } from "solid-js";
 
 interface Props {
   entry: HistoryEntry;
@@ -22,7 +22,13 @@ export const MessageItem: Component<Props> = (props) => {
         {(e) => <AssistantMessage content={e().content} isStreaming={e().isStreaming} />}
       </Match>
       <Match when={props.entry.type === "tool" ? props.entry : null}>
-        {(e) => <ToolMessage toolName={e().toolName} isStreaming={e().isStreaming} isError={e().isError} />}
+        {(e) => (
+          <ToolMessage
+            toolName={e().toolName}
+            isStreaming={e().isStreaming}
+            isError={e().isError}
+          />
+        )}
       </Match>
       <Match when={props.entry.type === "error" ? props.entry : null}>
         {(e) => <ErrorMessage content={e().message} />}
@@ -50,9 +56,16 @@ const AssistantMessage: Component<{ content: string; isStreaming: boolean }> = (
   </div>
 );
 
-const ToolMessage: Component<{ toolName: string; isStreaming: boolean; isError: boolean }> = (props) => (
-  <div style={`background:#1a1a2a;color:${props.isError ? "#ff6b6b" : "#888"};padding:6px 10px;border-radius:4px;font-size:12px;font-family:monospace;border-left:2px solid ${props.isError ? "#ff4444" : "#3d7eff"};`}>
-    <Show when={props.isStreaming} fallback={`Tool: ${props.toolName}${props.isError ? " (error)" : ""}`}>
+const ToolMessage: Component<{ toolName: string; isStreaming: boolean; isError: boolean }> = (
+  props,
+) => (
+  <div
+    style={`background:#1a1a2a;color:${props.isError ? "#ff6b6b" : "#888"};padding:6px 10px;border-radius:4px;font-size:12px;font-family:monospace;border-left:2px solid ${props.isError ? "#ff4444" : "#3d7eff"};`}
+  >
+    <Show
+      when={props.isStreaming}
+      fallback={`Tool: ${props.toolName}${props.isError ? " (error)" : ""}`}
+    >
       {`Running: ${props.toolName}…`}
     </Show>
   </div>

@@ -26,7 +26,10 @@ function userIdFromAccessJwt(request: Request): string | null {
   const parts = jwt.split(".");
   if (parts.length !== 3 || !parts[1]) return null;
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as Record<string, unknown>;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"))) as Record<
+      string,
+      unknown
+    >;
     const email = payload["email"];
     if (typeof email === "string" && email.length > 0) return email;
     // Fall back to sub if email is absent
@@ -47,7 +50,7 @@ export default {
       if (!userId) {
         return new Response("Unauthorized", { status: 401 });
       }
-      console.debug("[gateway] /rpc userId=%s", userId);
+      console.debug(`[gateway] /rpc userId=${userId}`);
       const core = env.CORE as unknown as IPiccoloCore;
       return newWorkersRpcResponse(request, new WebGatewayImpl(core, userId));
     }

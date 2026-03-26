@@ -12,7 +12,7 @@
  * Spec ref: specs/core.md §SystemPromptAssembler
  */
 
-import type { ToolDescriptorLike } from "./extension-runner.ts";
+import type { ITool } from "./types.ts";
 import type { SystemPromptAddition } from "./types-internal.ts";
 
 export class SystemPromptAssembler {
@@ -31,7 +31,7 @@ export class SystemPromptAssembler {
   assemble(
     base: string,
     additions: SystemPromptAddition[],
-    activeTools: ToolDescriptorLike[],
+    activeTools: ITool[],
     override?: string,
   ): string {
     if (override) return override;
@@ -53,15 +53,15 @@ export class SystemPromptAssembler {
     }
 
     // 3. "Available Tools" section — one line per tool that declares a promptSnippet
-    const toolsWithSnippets = activeTools.filter((t) => t.promptSnippet);
+    const toolsWithSnippets = activeTools.filter((tool) => tool.descriptor.promptSnippet);
     const availableToolsSection =
       toolsWithSnippets.length > 0
-        ? `## Available Tools\n\n${toolsWithSnippets.map((t) => `- **${t.name}**: ${t.promptSnippet}`).join("\n")}`
+        ? `## Available Tools\n\n${toolsWithSnippets.map((tool) => `- **${tool.descriptor.name}**: ${tool.descriptor.promptSnippet}`).join("\n")}`
         : "";
 
     // 4. "Tool Guidelines" section — bullet list from all active tools' promptGuidelines
     const guidelineLines = activeTools
-      .flatMap((t) => t.promptGuidelines ?? [])
+      .flatMap((tool) => tool.descriptor.promptGuidelines ?? [])
       .map((g) => `- ${g}`);
     const toolGuidelinesSection =
       guidelineLines.length > 0 ? `## Tool Guidelines\n\n${guidelineLines.join("\n")}` : "";

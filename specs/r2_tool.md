@@ -28,7 +28,6 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 ## `ToolDescriptor`
 
 ```typescript
-import { z } from "zod";
 import type { ToolDescriptor } from "piccolo-core";
 
 const descriptor: ToolDescriptor = {
@@ -58,65 +57,17 @@ e.g. 'projects/myapp/README.md'. Keys are case-sensitive.`,
     "r2 stat retrieves metadata without downloading the object body — use it to check existence or size.",
   ],
 
-  inputSchema: z.discriminatedUnion("action", [
-
-    z.object({
-      action: z.literal("read"),
-      key: z.string().describe("Full object key to read"),
-      encoding: z.enum(["text", "base64"]).default("text")
-        .describe("Return content as UTF-8 text (default) or base64-encoded binary"),
-    }),
-
-    z.object({
-      action: z.literal("write"),
-      key: z.string().describe("Full object key to write"),
-      content: z.string()
-        .describe("Content to store. UTF-8 text, or base64-encoded bytes when binary: true"),
-      binary: z.boolean().default(false)
-        .describe("If true, content is treated as base64-encoded binary"),
-      contentType: z.string().optional()
-        .describe("MIME type, e.g. 'text/plain' or 'image/png'"),
-      metadata: z.record(z.string()).optional()
-        .describe("Custom key/value metadata stored alongside the object"),
-    }),
-
-    z.object({
-      action: z.literal("delete"),
-      keys: z.array(z.string()).min(1).max(1000)
-        .describe("One or more object keys to delete (up to 1000 per call)"),
-    }),
-
-    z.object({
-      action: z.literal("list"),
-      prefix: z.string().default("")
-        .describe("Only return keys starting with this prefix"),
-      delimiter: z.string().optional()
-        .describe("Group keys by this character. Use '/' for directory-like listing"),
-      limit: z.number().int().min(1).max(1000).default(100)
-        .describe("Maximum number of objects to return"),
-      cursor: z.string().optional()
-        .describe("Pagination cursor returned by a previous list call"),
-    }),
-
-    z.object({
-      action: z.literal("stat"),
-      key: z.string().describe("Full object key to inspect"),
-    }),
-
-    z.object({
-      action: z.literal("copy"),
-      sourceKey: z.string().describe("Key of the object to copy"),
-      destKey: z.string().describe("Destination key"),
-    }),
-
-    z.object({
-      action: z.literal("move"),
-      sourceKey: z.string().describe("Key of the object to move"),
-      destKey: z.string()
-        .describe("Destination key. Source is deleted only after the copy succeeds"),
-    }),
-
-  ]),
+  inputSchema: {
+    oneOf: [
+      { type: "object", additionalProperties: false, properties: { action: { const: "read" }, key: { type: "string" }, encoding: { type: "string", enum: ["text", "base64"], default: "text" } }, required: ["action", "key"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "write" }, key: { type: "string" }, content: { type: "string" }, binary: { type: "boolean", default: false }, contentType: { type: "string" }, metadata: { type: "object", additionalProperties: { type: "string" } } }, required: ["action", "key", "content"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "delete" }, keys: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string" } } }, required: ["action", "keys"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "list" }, prefix: { type: "string", default: "" }, delimiter: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 1000, default: 100 }, cursor: { type: "string" } }, required: ["action"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "stat" }, key: { type: "string" } }, required: ["action", "key"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "copy" }, sourceKey: { type: "string" }, destKey: { type: "string" } }, required: ["action", "sourceKey", "destKey"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "move" }, sourceKey: { type: "string" }, destKey: { type: "string" } }, required: ["action", "sourceKey", "destKey"] },
+    ],
+  },
 };
 ```
 

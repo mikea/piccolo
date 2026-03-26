@@ -375,8 +375,8 @@ async newSession(
 1. Calls private `#initSession(userId, options)`:
    a. If `state.sessionId !== ""` → return immediately (already initialised).
    b. Derive `sessionId = this.ctx.id.name` (the DO was named with `idFromName(uuid)`).
-   c. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name`.
-   d. Persist `sessionId` and `modelId` to DO storage for cold-start recovery.
+   c. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name` where `state.name = options.name ?? sessionId`.
+   d. Persist `sessionId`, `modelId`, and `name` to DO storage for cold-start recovery.
    e. Reconstruct the `LanguageModel` via `createModel(env, modelId)`.
 2. Return `getSession(userId)` — the DO's own `SessionImpl` RpcTarget.
 
@@ -414,9 +414,15 @@ The D1 `sessions` row is **not** written here — it is written lazily on the fi
 │       - Forward to ReadableStream pushed to caller
 │       - Emit to ExtensionRunner (fire-and-forget)
 │       - On "agent_end": flushPendingEntries(), checkRetry()
+│     The prompt task is anchored with `ctx.waitUntil(...)` so it continues
+│     after the RPC method returns.
 │
 └─ 8. Return ReadableStream<AgentEvent> to IPiccoloCore
 ```
+
+When `agent_end` schedules the async flush/retry work, that promise is also
+passed to `ctx.waitUntil(...)` so persistence is not cut off when the RPC call
+frame completes.
 
 ### Persistence
 
@@ -460,53 +466,23 @@ Manages dispatch to all installed extension Workers.
 ```typescript
 class ExtensionRunner {
   async initialize(ctx: SessionImpl): Promise<void> {
+    // Logs start/end and per-extension bootstrap failures at [extensions] scope.
     // 1. Read extensions:registry from CONFIG KV → string[]
     // 2. For each name:
-    //    stub = env.EXTENSIONS.get(name)
-    //    tools = await stub.getTools()           // wrapped in ExtensionToolAdapter
-    //    commands = await stub.getCommands(ctx)  // store for onInput routing
-    //    sysPromptAdditions = await stub.getSystemPromptAdditions(ctx)
-    // 3. Store stubs as IAgentTool[] (via ExtensionToolAdapter), commands, sysPromptAdditions
+    //    worker = env.EXTENSIONS.get(name)
+    //    tools = await worker.getTools(ctx)
+    //    commands = await worker.getCommands(ctx)  // store for onInput routing
+    //    sysPromptAdditions = await worker.getSystemPromptAdditions(ctx)
+    // 3. Store tools directly as ITool[], plus commands and sysPromptAdditions
   }
 }
 ```
 
-### `ExtensionToolAdapter`
-
-Each tool descriptor returned by `getTools()` is wrapped in an `ExtensionToolAdapter` that implements `IAgentTool`. When the LLM calls a tool, the adapter dispatches to the extension Worker via `executeTool()`, passing the full `SessionImpl` as `ctx`:
-
-```typescript
-class ExtensionToolAdapter implements IAgentTool {
-  readonly descriptor: AgentToolDescriptor; // ToolDescriptorLike satisfies AgentToolDescriptor
-
-  constructor(
-    private readonly stub: IExtensionWorkerLike,
-    descriptorLike: ToolDescriptorLike,
-  ) {
-    this.descriptor = descriptorLike;
-  }
-
-  async execute(toolCallId, params, ctx, signal?) {
-    // ctx is the live SessionImpl, injected by agent.setContext()
-    return await this.stub.executeTool?.(
-      this.descriptor.name, toolCallId, params as Record<string, unknown>,
-      ctx as SessionImpl,
-    ) ?? { content: [] };
-  }
-}
-```
-
-### `getToolsByNames`
-
-```typescript
-getToolsByNames(names: string[]): IAgentTool[]
-```
-
-Filters the stored `IAgentTool[]` list by `descriptor.name`. Used by `ISession.setActiveTools(names)`.
+No adapter layer is used. Extension workers return `ITool[]` directly.
 
 ### Dispatch and merge rules
 
-All dispatch calls are `Promise.all` across all extension stubs. Each method follows specific merge semantics:
+All dispatch calls are `Promise.all` across all extension workers. Each method follows specific merge semantics:
 
 | Method | Merge rule |
 |---|---|
@@ -521,10 +497,13 @@ All dispatch calls are `Promise.all` across all extension stubs. Each method fol
 ```typescript
 // All emit methods accept the full SessionImpl (not a minimal stub).
 // This is the live RpcTarget that extensions call back on over JSRPC.
+// Current DO limitation: AgentSessionDO passes a self-stub capability
+// (via env.AGENT_SESSION.get(ctx.id)) rather than `this` directly,
+// because DurableObject instances are not serializable across dispatch RPC.
 class ExtensionRunner {
   async emitInput(event: InputEvent, ctx: SessionImpl): Promise<InputResult> {
     const results = await Promise.all(
-      this.stubs.map(s => s.onInput?.(event, ctx).catch(() => undefined))
+      this.extensions.map(({ worker }) => worker.onInput?.(event, ctx).catch(() => undefined))
     );
     return results.find(r => r && r.action !== "continue")
       ?? { action: "continue" };
@@ -532,7 +511,7 @@ class ExtensionRunner {
 
   async emitToolCall(event: ToolCallEvent, ctx: SessionImpl): Promise<ToolCallResult> {
     const results = await Promise.all(
-      this.stubs.map(s => s.onToolCall?.(event, ctx).catch(() => undefined))
+      this.extensions.map(({ worker }) => worker.onToolCall?.(event, ctx).catch(() => undefined))
     );
     return results.find(r => r?.block)
       ?? { block: false };
@@ -541,8 +520,8 @@ class ExtensionRunner {
   async emitToolResult(event: ToolResultEvent, ctx: SessionImpl): Promise<ToolResultOverride | undefined> {
     // Chain: each handler receives the output of the previous
     let current: ToolResultOverride | undefined;
-    for (const stub of this.stubs) {
-      const result = await stub.onToolResult?.(
+    for (const { worker } of this.extensions) {
+      const result = await worker.onToolResult?.(
         current ? { ...event, output: current } : event, ctx
       ).catch(() => undefined);
       if (result) current = result;
@@ -552,7 +531,7 @@ class ExtensionRunner {
 
   async emitBeforeAgentStart(event: BeforeAgentStartEvent, ctx: SessionImpl): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
-      this.stubs.map(s => s.onBeforeAgentStart?.(event, ctx).catch(() => undefined))
+      this.extensions.map(({ worker }) => worker.onBeforeAgentStart?.(event, ctx).catch(() => undefined))
     );
     return {
       contextMessages: results.flatMap(r => r?.contextMessages ?? []),
@@ -567,7 +546,7 @@ class ExtensionRunner {
 Before dispatching to extensions, the DO checks if the input text matches a registered command:
 
 ```typescript
-function parseCommand(text: string, commands: CommandDescriptor[]): {
+function parseCommand(text: string, commands: ICommand[]): {
   commandName: string; commandArgs: string
 } | undefined {
   if (!text.startsWith("/")) return undefined;
@@ -855,7 +834,9 @@ class SessionImpl extends RpcTarget implements ISession {
 
 ### Context injection into tool execute()
 
-`AgentSessionDO.prompt()` calls `state.agent.setContext(session)` immediately after creating the session (typed as `ISession`). The agent stores it as `IAgentSession` and passes it to `toAiSdkTools(tools, ctx)`, which threads it into every tool `execute()` call. This is the JSRPC-correct approach: the full `RpcTarget` crosses the Worker dispatch boundary with the tool call.
+`AgentSessionDO.prompt()` calls `state.agent.setContext(session)` immediately after creating the session (typed as `ISession`). The agent stores it as `IAgentSession` and passes it to `toAiSdkTools(tools, ctx)`, which threads it into every tool `execute()` call. This is the JSRPC-correct approach: an `ISession` `RpcTarget` capability crosses the Worker dispatch boundary with the tool call.
+
+For extension dispatch calls, `AgentSessionDO` currently passes a raw self DO stub (`env.AGENT_SESSION.get(ctx.id)`) instead of passing `this` directly, due a temporary runtime limitation where `AgentSessionDO` instances cannot be serialized over dispatch RPC.
 
 ---
 
@@ -925,7 +906,7 @@ async function forkSession(
   const newSessionId = crypto.randomUUID();
   await db.prepare(
     "INSERT INTO sessions (id, user_id, created_at, updated_at, name, model_id, leaf_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).bind(newSessionId, userId, Date.now(), Date.now(), undefined, modelId, path.at(-1)?.id ?? null).run();
+  ).bind(newSessionId, userId, Date.now(), Date.now(), newSessionId, modelId, path.at(-1)?.id ?? null).run();
 
   // 4. Copy all path entries with new IDs into new session
   // Remap parentId references: old ID → new ID
@@ -966,7 +947,7 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
   return rows.results.map(r => ({
     id: r.id,
     userId: r.user_id,
-    name: r.name ?? undefined,
+    name: r.name ?? r.id,
     cwd: r.cwd ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

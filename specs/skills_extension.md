@@ -137,7 +137,7 @@ This is added to the system prompt at the `"skills"` section with `priority: 100
 
 ### Command registration
 
-`getCommands` returns one `CommandDescriptor` per skill:
+`getCommands` returns one `ICommand` per skill:
 
 ```typescript
 [

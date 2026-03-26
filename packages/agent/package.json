@@ -11,8 +11,7 @@
     "build": "echo 'No build step for agent (Wrangler/Vite handle bundling)'"
   },
   "dependencies": {
-    "ai": "^6.0.138",
-    "zod": "^4.3.6"
+    "ai": "^6.0.138"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.8",

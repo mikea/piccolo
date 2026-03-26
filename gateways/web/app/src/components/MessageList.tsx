@@ -5,8 +5,8 @@
  * No client-side Message type — the server is the source of truth.
  */
 
-import { type Component, createEffect, For, onMount } from "solid-js";
 import type { HistoryEntry } from "@piccolo/core";
+import { type Component, createEffect, For, onMount } from "solid-js";
 import { MessageItem } from "./MessageItem.tsx";
 
 interface Props {

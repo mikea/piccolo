@@ -2,8 +2,8 @@
  * ModelPicker.tsx — Model selector dropdown.
  */
 
-import { type Component, For, createResource, createSignal } from "solid-js";
 import type { ISession } from "@piccolo/core";
+import { type Component, createResource, createSignal, For } from "solid-js";
 
 interface Props {
   session: ISession;
@@ -22,10 +22,13 @@ export const ModelPicker: Component<Props> = (props) => {
 
   const [activeModel, setActiveModel] = createSignal<string>("");
 
-  session.getModel().then((m) => {
-    console.debug("[rpc] getModel →", m);
-    setActiveModel(m);
-  }).catch((err) => console.error("[rpc] getModel error:", err));
+  session
+    .getModel()
+    .then((m) => {
+      console.debug("[rpc] getModel →", m);
+      setActiveModel(m);
+    })
+    .catch((err) => console.error("[rpc] getModel error:", err));
 
   const handleChange = async (e: Event) => {
     const modelId = (e.currentTarget as HTMLSelectElement).value;
@@ -47,7 +50,9 @@ export const ModelPicker: Component<Props> = (props) => {
     >
       <For each={models()}>
         {(model) => (
-          <option value={model} selected={activeModel() === model}>{model}</option>
+          <option value={model} selected={activeModel() === model}>
+            {model}
+          </option>
         )}
       </For>
     </select>

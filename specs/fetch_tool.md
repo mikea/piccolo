@@ -9,7 +9,7 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 ## Worker
 
 **Name:** `ext-fetch-tool`  
-**Implements:** `ITool` (see [api.md](api.md))  
+**Implements:** `IExtensionWorker` (see [api.md](api.md))  
 **Bindings required:** none — uses the runtime `fetch()` Web API directly.
 
 ### `wrangler.template.jsonc`
@@ -22,14 +22,13 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 
 No additional bindings are required. Cloudflare Workers have unrestricted outbound `fetch()` access to the public internet by default.
 
-Cloudflare requires every deployed Worker to register at least one event handler. Because `FetchTool` is invoked exclusively over JSRPC (never via HTTP), it registers a minimal `fetch()` handler that returns `405 Method Not Allowed` for any direct HTTP requests.
+Cloudflare requires every deployed Worker to register at least one event handler. Because this extension is invoked exclusively over JSRPC (never via HTTP), it registers a minimal `fetch()` handler that returns `405 Method Not Allowed` for any direct HTTP requests.
 
 ---
 
 ## `ToolDescriptor`
 
 ```typescript
-import { z } from "zod";
 import type { ToolDescriptor } from "piccolo-core";
 
 const descriptor: ToolDescriptor = {
@@ -74,41 +73,43 @@ Errors:
     "Use maxBytes to cap the size of any single response chunk returned to the LLM.",
   ],
 
-  inputSchema: z.object({
-    action: z
-      .enum(["get", "head"])
-      .default("get")
-      .describe('"get" retrieves the resource body; "head" retrieves headers only (no body).'),
-    url: z
-      .string()
-      .url()
-      .describe("Full HTTPS URL to request. Must begin with https://."),
-    byteStart: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        'First byte of the range to fetch, inclusive (0-based). "get" only. ' +
-        "Sends a Range: bytes=byteStart-byteEnd header. Requires server support for Range requests (206 response).",
-      ),
-    byteEnd: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        'Last byte of the range to fetch, inclusive (0-based). "get" only. ' +
-        "If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.",
-      ),
-    maxBytes: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .default(1_048_576)
-      .describe("Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated."),
-  }),
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      action: {
+        type: "string",
+        enum: ["get", "head"],
+        default: "get",
+        description: '"get" retrieves the resource body; "head" retrieves headers only (no body).',
+      },
+      url: {
+        type: "string",
+        format: "uri",
+        description: "Full HTTPS URL to request. Must begin with https://.",
+      },
+      byteStart: {
+        type: "integer",
+        minimum: 0,
+        description:
+          'First byte of the range to fetch, inclusive (0-based). "get" only. Sends a Range: bytes=byteStart-byteEnd header. Requires server support for Range requests (206 response).',
+      },
+      byteEnd: {
+        type: "integer",
+        minimum: 0,
+        description:
+          'Last byte of the range to fetch, inclusive (0-based). "get" only. If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.',
+      },
+      maxBytes: {
+        type: "integer",
+        minimum: 1,
+        default: 1_048_576,
+        description:
+          "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
+      },
+    },
+    required: ["url"],
+  },
 };
 ```
 
@@ -126,11 +127,11 @@ Errors:
 
 ---
 
-## `execute` — Implementation
+## `IExtensionWorker` implementation
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ITool, ISession, ToolResult } from "piccolo-core";
+import type { IExtensionWorker, ISession, ToolDescriptor, ToolResult } from "piccolo-core";
 
 /** Hard ceiling on maxBytes regardless of what the LLM requests. */
 const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB
@@ -156,8 +157,13 @@ function validateNotSsrf(url: URL): void {
   }
 }
 
-export default class FetchTool extends WorkerEntrypoint implements ITool {
-  readonly descriptor = descriptor; // from above
+export default class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
+
+  readonly descriptor: ToolDescriptor = descriptor;
+
+  async getTools(_ctx: ISession): Promise<ITool[]> {
+    return [this];
+  }
 
   async execute(
     toolCallId: string,
@@ -346,7 +352,7 @@ The following constraints are enforced in `execute()` at runtime:
 ## Deployment
 
 ```bash
-# 1. Deploy the tool Worker into the dispatch namespace
+# 1. Deploy the extension Worker into the dispatch namespace
 pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc \
   --dispatch-namespace piccolo-extensions
 

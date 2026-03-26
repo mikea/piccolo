@@ -2,7 +2,7 @@
  * @piccolo/agent — public API
  *
  * Pure TypeScript AI agent loop library. No Workers-specific globals.
- * No gateway knowledge — depends only on: ai, zod.
+ * No gateway knowledge — depends only on: ai.
  *
  * Usage:
  *   import { Agent } from "@piccolo/agent";
@@ -30,6 +30,7 @@ export type {
   IAgentSession,
   IAgentTool,
   ImagePart,
+  JsonSchema7,
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,

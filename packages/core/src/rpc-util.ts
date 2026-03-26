@@ -13,6 +13,8 @@ import { RpcTarget } from "cloudflare:workers";
 
 export function stubAsRpc<T>(stub: DurableObjectStub): T {
   return new Proxy(stub, {
-    getPrototypeOf() { return RpcTarget.prototype; },
+    getPrototypeOf() {
+      return RpcTarget.prototype;
+    },
   }) as unknown as T;
 }

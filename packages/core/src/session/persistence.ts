@@ -28,6 +28,7 @@ import {
   updateSessionLeaf,
   upsertSession,
 } from "../db/schema.ts";
+
 /** Internal session summary used only by persistence.ts for D1 list queries. */
 interface SessionInfo {
   id: string;
@@ -39,6 +40,7 @@ interface SessionInfo {
   messageCount: number;
   firstMessage: string;
 }
+
 import { DEFAULT_MODEL_ID, walkToRoot } from "./context.ts";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -142,7 +144,7 @@ export async function commitSession(
     user_id: userId,
     created_at: now,
     updated_at: now,
-    name: options.name ?? null,
+    name: options.name ?? sessionId,
     cwd: options.cwd ?? null,
     model_id: options.modelId ?? DEFAULT_MODEL_ID,
     leaf_id: null,
@@ -162,7 +164,7 @@ export async function listSessions(userId: string, db: D1Database): Promise<Sess
   return rows.map((r) => ({
     id: r.id,
     userId: r.user_id,
-    ...(r.name !== null ? { name: r.name } : {}),
+    name: r.name ?? r.id,
     ...(r.cwd !== null ? { cwd: r.cwd } : {}),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -210,7 +212,7 @@ export async function forkSession(
     user_id: userId,
     created_at: now,
     updated_at: now,
-    name: null,
+    name: newSessionId,
     cwd: null,
     model_id: modelId,
     leaf_id: null,

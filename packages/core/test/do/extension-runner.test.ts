@@ -101,7 +101,7 @@ describe("initialize()", () => {
     await runner.initialize(ctx, createMockKv([]), createMockDispatchNamespace({}));
     expect(runner.getCommands()).toEqual([]);
     expect(runner.getSystemPromptAdditions()).toEqual([]);
-    expect(runner.getToolDescriptors()).toEqual([]);
+    expect(runner.getTools()).toEqual([]);
   });
 
   it("absent KV key → treated as empty registry", async () => {
@@ -139,7 +139,7 @@ describe("initialize()", () => {
     expect(runner.getSystemPromptAdditions()).toEqual([
       { section: "guidelines", content: "Be concise" },
     ]);
-    expect(runner.getToolDescriptors()).toHaveLength(1);
+    expect(runner.getTools()).toHaveLength(1);
   });
 
   it("multiple extensions: commands and additions from all are merged", async () => {
@@ -613,7 +613,7 @@ describe("createMockSession() — all methods reachable", () => {
     const s = createMockSession({ sessionId: "s1", userId: "u1" });
     expect(s.userId).toBe("u1");
     expect(await s.sessionId()).toBe("s1");
-    expect(typeof await s.getUpdatedAt()).toBe("number");
+    expect(typeof (await s.getUpdatedAt())).toBe("number");
     expect(await s.getName()).toBeUndefined();
     await expect(s.setName("X")).resolves.toBeUndefined();
     await expect(s.sendUserMessage("hi")).resolves.toBeUndefined();

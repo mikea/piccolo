@@ -1,6 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/core";
-import { z } from "zod";
+import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/core";
 
 // ── Hard ceiling on maxBytes regardless of what the LLM requests ──────────────
 const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB
@@ -53,6 +52,95 @@ interface FetchDetails {
   contentRange: string | null;
 }
 
+interface FetchParams {
+  action: "get" | "head";
+  url: string;
+  byteStart?: number;
+  byteEnd?: number;
+  maxBytes: number;
+}
+
+function parseFetchParams(params: Record<string, unknown>): FetchParams {
+  const actionRaw = params["action"];
+  const action = actionRaw === undefined ? "get" : actionRaw;
+  if (action !== "get" && action !== "head") {
+    throw new Error("Invalid input: action must be 'get' or 'head'");
+  }
+
+  const url = params["url"];
+  if (typeof url !== "string" || url.length === 0) {
+    throw new Error("Invalid input: url must be a non-empty string");
+  }
+
+  const maxBytesRaw = params["maxBytes"];
+  let maxBytes = 1_048_576;
+  if (maxBytesRaw !== undefined) {
+    if (!Number.isInteger(maxBytesRaw) || (maxBytesRaw as number) <= 0) {
+      throw new Error("Invalid input: maxBytes must be a positive integer");
+    }
+    maxBytes = maxBytesRaw as number;
+  }
+
+  const byteStartRaw = params["byteStart"];
+  if (
+    byteStartRaw !== undefined &&
+    (!Number.isInteger(byteStartRaw) || (byteStartRaw as number) < 0)
+  ) {
+    throw new Error("Invalid input: byteStart must be a non-negative integer");
+  }
+
+  const byteEndRaw = params["byteEnd"];
+  if (byteEndRaw !== undefined && (!Number.isInteger(byteEndRaw) || (byteEndRaw as number) < 0)) {
+    throw new Error("Invalid input: byteEnd must be a non-negative integer");
+  }
+
+  return {
+    action,
+    url,
+    ...(byteStartRaw !== undefined ? { byteStart: byteStartRaw as number } : {}),
+    ...(byteEndRaw !== undefined ? { byteEnd: byteEndRaw as number } : {}),
+    maxBytes,
+  };
+}
+
+const fetchParamsRpcSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    action: {
+      type: "string",
+      enum: ["get", "head"],
+      default: "get",
+      description: '"get" retrieves the resource body; "head" retrieves headers only (no body).',
+    },
+    url: {
+      type: "string",
+      format: "uri",
+      description: "Full HTTPS URL to request. Must begin with https://.",
+    },
+    byteStart: {
+      type: "integer",
+      minimum: 0,
+      description:
+        '"get" only. First byte of the range to fetch, inclusive (0-based). Sends a Range: bytes=byteStart-byteEnd header. Requires 206 from server.',
+    },
+    byteEnd: {
+      type: "integer",
+      minimum: 0,
+      description:
+        '"get" only. Last byte of the range to fetch, inclusive (0-based). If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.',
+    },
+    maxBytes: {
+      type: "integer",
+      minimum: 1,
+      default: 1_048_576,
+      description:
+        "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
+    },
+  },
+  required: ["url"],
+} as const;
+
 // ── ToolDescriptor ────────────────────────────────────────────────────────────
 
 const descriptor: ToolDescriptor = {
@@ -98,45 +186,12 @@ Errors:
     "Use maxBytes to cap the size of any single response chunk returned to the LLM.",
   ],
 
-  inputSchema: z.object({
-    action: z
-      .enum(["get", "head"])
-      .default("get")
-      .describe('"get" retrieves the resource body; "head" retrieves headers only (no body).'),
-    url: z.string().url().describe("Full HTTPS URL to request. Must begin with https://."),
-    byteStart: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        '"get" only. First byte of the range to fetch, inclusive (0-based). ' +
-          "Sends a Range: bytes=byteStart-byteEnd header. Requires 206 from server.",
-      ),
-    byteEnd: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        '"get" only. Last byte of the range to fetch, inclusive (0-based). ' +
-          "If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.",
-      ),
-    maxBytes: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .default(1_048_576)
-      .describe(
-        "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
-      ),
-  }),
+  inputSchema: fetchParamsRpcSchema,
 };
 
 // ── FetchTool ─────────────────────────────────────────────────────────────────
 
-export default class FetchTool extends WorkerEntrypoint implements ITool {
+export default class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
   readonly descriptor: ToolDescriptor = descriptor;
 
   // Required by Cloudflare Workers: WorkerEntrypoint must register at least one
@@ -146,38 +201,40 @@ export default class FetchTool extends WorkerEntrypoint implements ITool {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
+  async getTools(_ctx: ISession): Promise<ITool[]> {
+    return [this];
+  }
+
   async execute(
     _toolCallId: string,
-    params: {
-      action: "get" | "head";
-      url: string;
-      byteStart?: number;
-      byteEnd?: number;
-      maxBytes?: number;
-    },
+    params: unknown,
     _ctx: ISession,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    const url = new URL(params.url);
+    if (typeof params !== "object" || params === null || Array.isArray(params)) {
+      throw new Error("Invalid input: expected object params");
+    }
+    const parsed = parseFetchParams(params as Record<string, unknown>);
+
+    const url = new URL(parsed.url);
     validateScheme(url);
     validateNotSsrf(url);
 
-    const isHead = params.action === "head";
-    const isRanged = !isHead && (params.byteStart !== undefined || params.byteEnd !== undefined);
-    const effectiveMax = Math.min(params.maxBytes ?? 1_048_576, MAX_BYTES_HARD_CAP);
+    const isHead = parsed.action === "head";
+    const isRanged = !isHead && (parsed.byteStart !== undefined || parsed.byteEnd !== undefined);
+    const effectiveMax = Math.min(parsed.maxBytes, MAX_BYTES_HARD_CAP);
 
     // Build request headers — only Range is ever added (no LLM-controlled headers)
     const reqHeaders: Record<string, string> = {};
     let rangeRequested: string | null = null;
     if (isRanged) {
-      const start = params.byteStart ?? 0;
-      const end = params.byteEnd !== undefined ? String(params.byteEnd) : "";
+      const start = parsed.byteStart ?? 0;
+      const end = parsed.byteEnd !== undefined ? String(parsed.byteEnd) : "";
       rangeRequested = `bytes=${start}-${end}`;
-      // biome-ignore lint/complexity/useLiteralKeys: tsc noPropertyAccessFromIndexSignature requires bracket notation here
       reqHeaders["Range"] = rangeRequested;
     }
 
-    const response = await fetch(params.url, {
+    const response = await fetch(parsed.url, {
       method: isHead ? "HEAD" : "GET",
       headers: reqHeaders,
       signal: signal ?? null,
@@ -248,7 +305,7 @@ export default class FetchTool extends WorkerEntrypoint implements ITool {
     const text = parts.join("\n");
 
     const details: FetchDetails = {
-      url: params.url,
+      url: parsed.url,
       method: isHead ? "HEAD" : "GET",
       status: response.status,
       statusText: response.statusText,

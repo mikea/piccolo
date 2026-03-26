@@ -2,8 +2,8 @@
  * SessionSidebar.tsx — Left panel: session list, new chat button.
  */
 
-import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import type { ISession } from "@piccolo/core";
+import { type Component, createResource, createSignal, For, Show } from "solid-js";
 
 interface Props {
   sessions: ISession[];
@@ -20,7 +20,10 @@ export const SessionSidebar: Component<Props> = (props) => (
     <div style="padding:12px;border-bottom:1px solid #2a2a2a;">
       <button
         type="button"
-        onClick={props.onNewSession}
+        onClick={() => {
+          console.debug("[ui] new chat button clicked");
+          props.onNewSession();
+        }}
         style="width:100%;padding:8px 12px;background:#3d7eff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;"
       >
         + New Chat
@@ -66,7 +69,7 @@ const SessionItem: Component<ItemProps> = (props) => {
 
   const displayName = () => info()?.name ?? "New chat";
   const isActive = () => info()?.id === props.activeSessionId;
-  const bg = () => isActive() ? "#2a3a5a" : "transparent";
+  const bg = () => (isActive() ? "#2a3a5a" : "transparent");
 
   const handleDelete = async (e: MouseEvent) => {
     e.preventDefault();
@@ -119,19 +122,25 @@ const SessionItem: Component<ItemProps> = (props) => {
               />
             }
           >
-            <div
-              onClick={() => props.onSelect(i().id)}
-              onDblClick={() => { setEditValue(displayName()); setEditing(true); }}
-              style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-radius:4px;color:#e8e8e8;font-size:13px;cursor:pointer;"
-            >
-              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            <div style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-radius:4px;color:#e8e8e8;font-size:13px;">
+              <button
+                type="button"
+                onClick={() => props.onSelect(i().id)}
+                onDblClick={() => {
+                  setEditValue(displayName());
+                  setEditing(true);
+                }}
+                style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:none;border:none;color:#e8e8e8;text-align:left;cursor:pointer;padding:0;"
+              >
                 {displayName()}
-              </span>
+              </button>
               <button
                 type="button"
                 onClick={(e) => void handleDelete(e)}
                 style="flex-shrink:0;background:none;border:none;color:#666;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:3px;"
-              >×</button>
+              >
+                ×
+              </button>
             </div>
           </Show>
         </div>

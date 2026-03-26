@@ -14,8 +14,10 @@
  * packages/core extends these minimal types with the full piccolo surface.
  */
 
+import type { JSONSchema7 } from "@ai-sdk/provider";
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
-import type { ZodObject } from "zod";
+
+export type JsonSchema7 = JSONSchema7;
 
 export type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage };
 
@@ -51,14 +53,8 @@ export interface AgentToolDescriptor {
   /** Full description sent to the LLM in the system prompt. */
   description: string;
 
-  /**
-   * Zod schema for the tool's input parameters.
-   * Used for LLM function-calling schema generation and server-side validation.
-   * ZodObject<any> is required by Zod's own API — no safer type exists.
-   * Permitted per code.md §any Policy.
-   */
-  // biome-ignore lint/suspicious/noExplicitAny: Zod's own API requires ZodObject<any>
-  inputSchema: ZodObject<any>;
+  /** JSON Schema (draft-07 style) for the tool input parameters. */
+  inputSchema: JsonSchema7;
 }
 
 /**

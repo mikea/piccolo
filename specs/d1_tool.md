@@ -28,11 +28,7 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 ## `ToolDescriptor`
 
 ```typescript
-import { z } from "zod";
 import type { ToolDescriptor } from "piccolo-core";
-
-// Shared param type used across multiple actions
-const sqlParam = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 const descriptor: ToolDescriptor = {
   name: "d1",
@@ -62,82 +58,17 @@ Multiple statements in the sql action are executed as an atomic D1 batch.`,
     "d1 delete supports dryRun: true — use it to preview the row count before committing a destructive delete.",
   ],
 
-  inputSchema: z.discriminatedUnion("action", [
-
-    // ── schema ────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("schema"),
-      table: z.string().optional()
-        .describe("Show schema for this table only. Omit to list all tables with their schemas."),
-    }),
-
-    // ── select ────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("select"),
-      sql: z.string()
-        .describe("A SELECT statement with ? placeholders for parameters"),
-      params: z.array(sqlParam).default([])
-        .describe("Positional values bound to ? placeholders"),
-      limit: z.number().int().min(1).max(5000).default(100)
-        .describe("Maximum rows to return. Appended as LIMIT if not already present in sql."),
-    }),
-
-    // ── insert ────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("insert"),
-      table: z.string().describe("Table name"),
-      rows: z.array(z.record(sqlParam)).min(1)
-        .describe("Array of row objects to insert. Keys are column names."),
-      onConflict: z.enum(["error", "ignore", "replace"]).default("error")
-        .describe("Conflict resolution: error=raise, ignore=skip duplicate row, replace=upsert"),
-    }),
-
-    // ── update ────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("update"),
-      table: z.string().describe("Table name"),
-      set: z.record(sqlParam)
-        .describe("Columns and their new values"),
-      where: z.string()
-        .describe("WHERE clause without the WHERE keyword, e.g. \"id = ?\""),
-      params: z.array(sqlParam).default([])
-        .describe("Positional parameters for the WHERE clause"),
-    }),
-
-    // ── delete ────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("delete"),
-      table: z.string().describe("Table name"),
-      where: z.string()
-        .describe("WHERE clause without the WHERE keyword, e.g. \"status = ?\""),
-      params: z.array(sqlParam).default([])
-        .describe("Positional parameters for the WHERE clause"),
-      dryRun: z.boolean().default(false)
-        .describe("If true, return the matching row count without deleting"),
-    }),
-
-    // ── schema_change ─────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("schema_change"),
-      sql: z.string()
-        .describe("A DDL statement: CREATE TABLE, ALTER TABLE, DROP TABLE, CREATE INDEX, etc."),
-      confirm: z.boolean()
-        .describe("Must be explicitly set to true. Prevents accidental destructive schema changes."),
-    }),
-
-    // ── sql ───────────────────────────────────────────────────────────────────
-    z.object({
-      action: z.literal("sql"),
-      statements: z.array(z.object({
-        sql: z.string()
-          .describe("Any SQL statement: SELECT, INSERT, UPDATE, DELETE, DDL, PRAGMA, etc."),
-        params: z.array(sqlParam).default([])
-          .describe("Positional parameters"),
-      })).min(1).max(100)
-        .describe("One or more SQL statements. Executed as a D1 batch (atomic for write statements)."),
-    }),
-
-  ]),
+  inputSchema: {
+    oneOf: [
+      { type: "object", additionalProperties: false, properties: { action: { const: "schema" }, table: { type: "string" } }, required: ["action"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "select" }, sql: { type: "string" }, params: { type: "array", default: [], items: { type: ["string", "number", "boolean", "null"] } }, limit: { type: "integer", minimum: 1, maximum: 5000, default: 100 } }, required: ["action", "sql"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "insert" }, table: { type: "string" }, rows: { type: "array", minItems: 1, items: { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] } } }, onConflict: { type: "string", enum: ["error", "ignore", "replace"], default: "error" } }, required: ["action", "table", "rows"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "update" }, table: { type: "string" }, set: { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] } }, where: { type: "string" }, params: { type: "array", default: [], items: { type: ["string", "number", "boolean", "null"] } } }, required: ["action", "table", "set", "where"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "delete" }, table: { type: "string" }, where: { type: "string" }, params: { type: "array", default: [], items: { type: ["string", "number", "boolean", "null"] } }, dryRun: { type: "boolean", default: false } }, required: ["action", "table", "where"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "schema_change" }, sql: { type: "string" }, confirm: { type: "boolean" } }, required: ["action", "sql", "confirm"] },
+      { type: "object", additionalProperties: false, properties: { action: { const: "sql" }, statements: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: false, properties: { sql: { type: "string" }, params: { type: "array", default: [], items: { type: ["string", "number", "boolean", "null"] } } }, required: ["sql"] } } }, required: ["action", "statements"] },
+    ],
+  },
 };
 ```
 

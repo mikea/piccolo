@@ -4,7 +4,15 @@
  * Spec ref: specs/api.md §IPiccoloCore, §IUser, §ISession
  */
 
-import type { AgentEvent, ContextUsage, IPiccoloCore, ISession, ITurn, IUser, SessionStatus } from "@piccolo/core";
+import type {
+  AgentEvent,
+  ContextUsage,
+  IPiccoloCore,
+  ISession,
+  ITurn,
+  IUser,
+  SessionStatus,
+} from "@piccolo/core";
 import { vi } from "vitest";
 
 const DEFAULT_SESSION_ID = "test-session-id";
@@ -12,7 +20,11 @@ const DEFAULT_USER_ID = "test-user-id";
 const DEFAULT_MODEL = "test/model";
 
 function emptyStream(): ReadableStream<AgentEvent> {
-  return new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
+  return new ReadableStream<AgentEvent>({
+    start(c) {
+      c.close();
+    },
+  });
 }
 
 function emptyTurn(): ITurn {
@@ -51,7 +63,11 @@ export function createMockSession(
     appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     getEntries: vi.fn().mockResolvedValue([]),
     getHistory: vi.fn().mockResolvedValue([]),
-    getStatus: vi.fn().mockResolvedValue({ isStreaming: false, model: DEFAULT_MODEL, name: undefined } satisfies SessionStatus),
+    getStatus: vi.fn().mockResolvedValue({
+      isStreaming: false,
+      model: DEFAULT_MODEL,
+      name: undefined,
+    } satisfies SessionStatus),
     getContextUsage: vi.fn().mockResolvedValue({ inputTokens: 0 } satisfies ContextUsage),
     compact: vi.fn().mockResolvedValue(undefined),
     getSystemPrompt: vi.fn().mockResolvedValue(""),

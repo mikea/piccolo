@@ -13,8 +13,8 @@
 
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { AgentSessionDO } from "./agent-session-do.ts";
-import { stubAsRpc } from "./rpc-util.ts";
 import { getSession as dbGetSession } from "./db/schema.ts";
+import { stubAsRpc } from "./rpc-util.ts";
 import { listSessions as dbListSessions } from "./session/persistence.ts";
 import type { IPiccoloCore, ISession, IUser, NewSessionOptions } from "./types.ts";
 import { parseModels } from "./types-internal.ts";
@@ -33,16 +33,16 @@ class UserImpl extends RpcTarget implements IUser {
 
   async newSession(options?: NewSessionOptions): Promise<ISession> {
     const sessionId = crypto.randomUUID();
-    console.debug("[core] newSession userId=%s options=%o", this.#userId, options);
+    console.debug(`[core] newSession userId=${this.#userId} options=${JSON.stringify(options)}`);
     const stub = this.#getDoStub(sessionId);
     // Initialize the DO; ignore the returned ISession since the stub itself is the ISession.
     await stub._init(sessionId, this.#userId, options);
-    console.debug("[core] newSession done sessionId=%s", sessionId);
+    console.debug(`[core] newSession done sessionId=${sessionId}`);
     return stubAsRpc<ISession>(stub);
   }
 
   async getSession(sessionId: string): Promise<ISession> {
-    console.debug("[core] getSession sessionId=%s userId=%s", sessionId, this.#userId);
+    console.debug(`[core] getSession sessionId=${sessionId} userId=${this.#userId}`);
     const row = await dbGetSession(this.#env.SESSIONS_DB, sessionId);
     // row is null for sessions that haven't been prompted yet (lazy D1 commit).
     // Only enforce ownership when a row exists.
@@ -56,9 +56,9 @@ class UserImpl extends RpcTarget implements IUser {
   }
 
   async listSessions(): Promise<ISession[]> {
-    console.debug("[core] listSessions userId=%s", this.#userId);
+    console.debug(`[core] listSessions userId=${this.#userId}`);
     const infos = await dbListSessions(this.#userId, this.#env.SESSIONS_DB);
-    console.debug("[core] listSessions found %d sessions", infos.length);
+    console.debug(`[core] listSessions found ${infos.length} sessions`);
     return infos.map((info) => stubAsRpc<ISession>(this.#getDoStub(info.id)));
   }
 
@@ -83,7 +83,7 @@ export class PiccoloCore extends WorkerEntrypoint<Env> implements IPiccoloCore {
    * Spec ref: specs/api.md §IPiccoloCore.getUser
    */
   getUser(userId: string): IUser {
-    console.debug("[core] getUser userId=%s", userId);
+    console.debug(`[core] getUser userId=${userId}`);
     return new UserImpl(userId, this.env);
   }
 }

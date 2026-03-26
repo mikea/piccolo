@@ -19,5 +19,5 @@
       "gateway-types": ["../src/types.ts"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

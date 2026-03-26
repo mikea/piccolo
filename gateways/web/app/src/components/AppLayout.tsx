@@ -5,9 +5,9 @@
  * SessionLayout is rendered inline.
  */
 
+import type { ISession, IUser } from "@piccolo/core";
 import { useNavigate, useParams } from "@solidjs/router";
 import { type Component, createResource, onMount } from "solid-js";
-import type { ISession, IUser } from "@piccolo/core";
 import { SessionLayout } from "./SessionLayout.tsx";
 import { SessionSidebar } from "./SessionSidebar.tsx";
 
@@ -19,21 +19,21 @@ export const AppLayout: Component<Props> = (props) => {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
 
-  onMount(() => console.debug("[nav] AppLayout mounted, params.id=%s", params.id));
+  onMount(() => console.debug(`[nav] AppLayout mounted, params.id=${params.id}`));
 
   const [sessions, { refetch: refetchSessions }] = createResource(async () => {
     console.debug("[rpc] listSessions calling...");
-    const result = await props.user.listSessions() as ISession[];
-    console.debug("[rpc] listSessions →", result.length, "sessions");
+    const result = (await props.user.listSessions()) as ISession[];
+    console.debug(`[rpc] listSessions -> ${result.length} sessions`);
     return result;
   });
 
   const handleNewSession = async () => {
     console.debug("[rpc] newSession calling...");
     try {
-      const session = await props.user.newSession() as ISession;
+      const session = (await props.user.newSession()) as ISession;
       const id = await session.sessionId();
-      console.debug("[nav] newSession → navigating to /sessions/%s", id);
+      console.debug(`[nav] newSession -> navigating to /sessions/${id}`);
       refetchSessions();
       navigate(`/sessions/${id}`);
     } catch (err) {
@@ -42,7 +42,7 @@ export const AppLayout: Component<Props> = (props) => {
   };
 
   const handleSelectSession = (id: string) => {
-    console.debug("[nav] selectSession → navigating to /sessions/%s", id);
+    console.debug(`[nav] selectSession -> navigating to /sessions/${id}`);
     navigate(`/sessions/${id}`);
   };
 

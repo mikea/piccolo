@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { ToolDescriptorLike } from "../../src/extension-runner.ts";
 import { SystemPromptAssembler } from "../../src/system-prompt-assembler.ts";
+import type { ITool } from "../../src/types.ts";
 import type { SystemPromptAddition } from "../../src/types-internal.ts";
 
 const BASE = "You are a helpful assistant.";
@@ -15,13 +15,16 @@ const BASE = "You are a helpful assistant.";
 function makeTool(
   name: string,
   opts: { promptSnippet?: string; promptGuidelines?: string[] } = {},
-): ToolDescriptorLike {
+): ITool {
   return {
-    name,
-    label: name,
-    description: `${name} tool`,
-    inputSchema: {},
-    ...opts,
+    descriptor: {
+      name,
+      label: name,
+      description: `${name} tool`,
+      inputSchema: { type: "object" },
+      ...opts,
+    },
+    execute: async () => ({ content: [] }),
   };
 }
 

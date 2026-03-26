@@ -31,6 +31,42 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("extension worker interface", () => {
+  it("getTools returns the fetch tool descriptor", async () => {
+    const tool = makeTool();
+    const tools = await tool.getTools(ctx);
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.descriptor.name).toBe("fetch");
+  });
+
+  it("returned tool executes successfully", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        mockResponse({
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/plain" },
+          body: "hello",
+        }),
+      ),
+    );
+
+    const tool = makeTool();
+    const [registered] = await tool.getTools(ctx);
+    if (!registered) throw new Error("Expected fetch tool registration");
+    const result = await registered.execute(
+      "id-dispatch",
+      { action: "get", url: "https://example.com" },
+      ctx,
+    );
+
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("HTTP/200 OK");
+    expect(text).toContain("hello");
+  });
+});
+
 // ── Happy path ────────────────────────────────────────────────────────────────
 
 describe("GET — happy path", () => {

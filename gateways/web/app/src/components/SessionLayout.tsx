@@ -2,9 +2,9 @@
  * SessionLayout.tsx — Fetches a session by id and renders ChatView.
  */
 
+import type { ISession, IUser } from "@piccolo/core";
 import { useParams } from "@solidjs/router";
 import { type Component, createResource, createSignal, Show } from "solid-js";
-import type { ISession, IUser } from "@piccolo/core";
 import { ChatView } from "./ChatView.tsx";
 
 interface Props {
@@ -15,30 +15,26 @@ export const SessionLayout: Component<Props> = (props) => {
   const params = useParams<{ id: string }>();
   const user = props.user;
 
-  console.debug("[nav] SessionLayout mounted, params.id=%s", params.id);
+  console.debug(`[nav] SessionLayout mounted, params.id=${params.id}`);
 
-  const [ready, setReady] = createSignal(false);
-  let resolvedSession: ISession | null = null;
+  const [resolvedSession, setResolvedSession] = createSignal<ISession | null>(null);
 
   createResource(
     () => params.id,
     async (id) => {
-      console.debug("[rpc] getSession calling... id=%s", id);
+      console.debug(`[rpc] getSession calling... id=${id}`);
       try {
-        resolvedSession = await user.getSession(id) as ISession;
-        console.debug("[rpc] getSession done id=%s", id);
-        setReady(true);
+        setResolvedSession((await user.getSession(id)) as ISession);
+        console.debug(`[rpc] getSession done id=${id}`);
       } catch (err) {
-        console.error("[rpc] getSession error id=%s err=%o", id, err);
+        console.error(`[rpc] getSession error id=${id}`, err);
       }
     },
   );
 
   return (
     <div style="display:flex;flex-direction:column;height:100%;width:100%;">
-      <Show when={ready()}>
-        <ChatView session={resolvedSession!} />
-      </Show>
+      <Show when={resolvedSession()}>{(session) => <ChatView session={session()} />}</Show>
     </div>
   );
 };

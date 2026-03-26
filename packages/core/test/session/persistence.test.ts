@@ -130,6 +130,7 @@ describe("commitSession", () => {
     await commitSession(id, "user-1", {}, env.SESSIONS_DB);
     const row = await getSession(env.SESSIONS_DB, id);
     expect(row?.model_id).toBe("anthropic/claude-sonnet-4-5");
+    expect(row?.name).toBe(id);
   });
 
   it("is idempotent — second call with same sessionId is a no-op", async () => {
@@ -283,6 +284,7 @@ describe("listSessions", () => {
     const results = await listSessions(uid, env.SESSIONS_DB);
     const s = results.find((r) => r.id === sid);
     expect(s?.firstMessage).toBe("");
+    expect(s?.name).toBe(sid);
   });
 
   it("does not include sessions from other users", async () => {
@@ -351,6 +353,8 @@ describe("forkSession", () => {
       env.SESSIONS_DB,
     );
     expect(newSid).not.toBe(sid);
+    const newSession = await getSession(env.SESSIONS_DB, newSid);
+    expect(newSession?.name).toBe(newSid);
   });
 
   it("new session has the same number of entries as the forked path", async () => {

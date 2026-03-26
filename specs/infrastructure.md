@@ -136,7 +136,7 @@ No `piccolo-core` redeploy is required for any extension operation.
 |---|---|
 | `ai` | `streamText`, `generateText`, `tool`, `ModelMessage` |
 | `ai-gateway-provider` | CF AI Gateway adapter (`createAiGateway`, `createUnified`) |
-| `zod` | Tool input schema definitions |
+| JSON Schema (draft-07 style) | Tool input schema definitions |
 | `@cloudflare/workers-types` | Workers runtime TypeScript types |
 | `wrangler` | Build, dev, deploy |
 | `vitest` | Test runner |

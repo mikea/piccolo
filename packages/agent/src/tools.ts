@@ -11,7 +11,7 @@
  */
 
 import type { ToolSet } from "ai";
-import { tool } from "ai";
+import { jsonSchema, tool } from "ai";
 import type { IAgentSession, IAgentTool } from "./types.ts";
 
 /**
@@ -30,7 +30,7 @@ export function toAiSdkTools(tools: IAgentTool[], ctx: IAgentSession): ToolSet {
       t.descriptor.name,
       tool({
         description: t.descriptor.description,
-        inputSchema: t.descriptor.inputSchema,
+        inputSchema: jsonSchema(t.descriptor.inputSchema),
         execute: async (input, { toolCallId, abortSignal }) => {
           return t.execute(toolCallId, input, ctx, abortSignal);
         },

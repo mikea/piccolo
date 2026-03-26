@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
 import { toAiSdkTools } from "../src/tools.ts";
 import type { AgentToolResult, IAgentSession, IAgentTool } from "../src/types.ts";
 
@@ -16,7 +15,12 @@ function makeTool(
     descriptor: {
       name,
       description: `${name} description`,
-      inputSchema: z.object({ value: z.string() }),
+      inputSchema: {
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+        additionalProperties: false,
+      },
     },
     execute: vi.fn().mockResolvedValue(result),
   };

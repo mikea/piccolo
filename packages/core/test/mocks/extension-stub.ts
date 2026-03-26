@@ -21,29 +21,38 @@ import type {
   CompactEvent,
   ContextEvent,
   ContextResult,
-  IExtensionWorkerLike,
+  IExtensionWorker,
   InputEvent,
   InputResult,
   SessionStartEvent,
   ToolCallEvent,
   ToolCallResult,
-  ToolDescriptorLike,
   ToolResultEvent,
   ToolResultOverride,
-} from "../../src/extension-runner.ts";
-import type { ISession } from "../../src/types.ts";
-import type { CommandDescriptor, SystemPromptAddition } from "../../src/types-internal.ts";
+} from "../../src/extension-types.ts";
+import type { ICommand, ISession, ITool } from "../../src/types.ts";
+import type { SystemPromptAddition } from "../../src/types-internal.ts";
 
 // Re-export types for convenience in test files
-export type { CommandDescriptor, SystemPromptAddition } from "../../src/types-internal.ts";
+export type { SystemPromptAddition } from "../../src/types-internal.ts";
 
 export interface MockExtensionOptions {
   /** Extension name (informational, for debugging). */
   name: string;
   /** Tool descriptors returned by getTools(). Default: []. */
-  tools?: ToolDescriptorLike[];
+  tools?: Array<
+    | ITool
+    | {
+        name: string;
+        label: string;
+        description: string;
+        promptSnippet?: string;
+        promptGuidelines?: string[];
+        inputSchema: Record<string, unknown>;
+      }
+  >;
   /** Commands returned by getCommands(). Default: []. */
-  commands?: CommandDescriptor[];
+  commands?: ICommand[];
   /** System prompt additions returned by getSystemPromptAdditions(). Default: []. */
   systemPromptAdditions?: SystemPromptAddition[];
   /** Handler for onInput. Return undefined to behave as not-implemented. */
@@ -79,7 +88,28 @@ export interface MockExtensionOptions {
   };
 }
 
-export interface MockExtension extends IExtensionWorkerLike {
+function isToolInstance(
+  value:
+    | ITool
+    | {
+        name: string;
+        label: string;
+        description: string;
+        promptSnippet?: string;
+        promptGuidelines?: string[];
+        inputSchema: Record<string, unknown>;
+      },
+): value is ITool {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "descriptor" in value &&
+    "execute" in value &&
+    typeof (value as ITool).execute === "function"
+  );
+}
+
+export interface MockExtension extends IExtensionWorker {
   /** Access tracked calls for assertions. */
   readonly calls: NonNullable<MockExtensionOptions["calls"]>;
 }
@@ -101,12 +131,20 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
     throw new Error(`MockExtension(${options.name}) error`);
   }
 
+  const tools: ITool[] = (options.tools ?? []).map((tool) => {
+    if (isToolInstance(tool)) return tool;
+    return {
+      descriptor: tool,
+      execute: async () => ({ content: [] }),
+    } satisfies ITool;
+  });
+
   const stub: MockExtension = {
     calls,
 
-    async getTools() {
+    async getTools(_ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
-      return options.tools ?? [];
+      return tools;
     },
 
     async getCommands(_ctx: ISession) {
@@ -205,7 +243,7 @@ export function createMockKv(registry?: string[]): KVNamespace {
  * Returns pre-registered stubs by name.
  */
 export function createMockDispatchNamespace(
-  stubs: Record<string, IExtensionWorkerLike>,
+  stubs: Record<string, IExtensionWorker>,
 ): DispatchNamespace {
   return {
     get(name: string) {
@@ -224,7 +262,10 @@ export function createMockDispatchNamespace(
  * Tests can override specific methods as needed.
  */
 export function createMockSession(
-  overrides: Omit<Partial<ISession>, "sessionId" | "userId"> & { sessionId?: string; userId?: string } = {},
+  overrides: Omit<Partial<ISession>, "sessionId" | "userId"> & {
+    sessionId?: string;
+    userId?: string;
+  } = {},
 ): ISession {
   const { sessionId: sessionIdStr, userId: userIdStr, ...sessionOverrides } = overrides;
   const sessionId = sessionIdStr ?? "test-session-id";

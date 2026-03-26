@@ -186,7 +186,7 @@ Added at section `"context"` with `priority: 200` (after skills).
 
 ### Command registration
 
-`getCommands` returns one `CommandDescriptor` per template:
+`getCommands` returns one `ICommand` per template:
 
 ```typescript
 [
