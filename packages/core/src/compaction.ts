@@ -15,8 +15,9 @@
  * Spec ref: specs/core.md §Context Compaction
  */
 
-import type { Agent, ModelMessage } from "@piccolo/agent";
-import { agentCompact, splitForCompaction } from "@piccolo/agent";
+import type { ModelMessage } from "ai";
+import type { Agent } from "./agent.ts";
+import { agentCompact, splitForCompaction } from "./agent-compact.ts";
 import type { AnyEntry, CompactionEntry } from "./db/entry-types.ts";
 import { generateEntryId } from "./db/entry-types.ts";
 import type { BeforeCompactEvent, IExtensionRunner } from "./extension-types.ts";

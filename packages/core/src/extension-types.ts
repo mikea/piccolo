@@ -1,4 +1,4 @@
-import type { FinishReason, LanguageModelUsage, ModelMessage } from "@piccolo/agent";
+import type { FinishReason, LanguageModelUsage, ModelMessage } from "ai";
 import type { Attachment, ICommand, ISession, ITool, ToolResult } from "./types.ts";
 import type { SystemPromptAddition } from "./types-internal.ts";
 

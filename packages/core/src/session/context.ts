@@ -11,7 +11,7 @@
  * Spec ref: specs/core.md §Context Reconstruction
  */
 
-import type { ModelMessage } from "@piccolo/agent";
+import type { ModelMessage } from "ai";
 import type {
   AnyEntry,
   BranchSummaryEntry,

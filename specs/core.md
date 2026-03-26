@@ -1,8 +1,10 @@
 # `piccolo-core` — Specification
 
-`piccolo-core` is the central Cloudflare Worker of the piccolo system. It is the JSRPC hub that gateways and extensions connect to. It owns session state, orchestrates the agent loop, dispatches to extensions, assembles system prompts, and persists conversation history.
+`piccolo-core` is the central Cloudflare Worker of the piccolo system. It is the JSRPC hub that gateways and extensions connect to. It owns session state, contains the agent loop, dispatches to extensions, assembles system prompts, and persists conversation history.
 
 All public interfaces are defined in [api.md](api.md). This document specifies the internal implementation of those interfaces.
+
+The agent loop (`Agent` class, `AgentTurn`, `toAiSdkTools`, `agentCompact`) lives directly in `packages/core/src/` — there is no separate `packages/agent` library. The `ai` and `ai-gateway-provider` packages are used directly by piccolo-core.
 
 ---
 
@@ -228,6 +230,11 @@ The `IPiccoloCore` Worker handles incoming JSRPC calls from gateways. It does mi
 
 ```typescript
 class PiccoloCore extends WorkerEntrypoint<Env> {
+
+  async fetch(_request: Request): Promise<Response> {
+    // Minimal HTTP handler for health checks.
+    return new Response("OK", { status: 200 });
+  }
 
   async newSession(userId: string, options?: NewSessionOptions): Promise<ISession> {
     // 1. Generate sessionId = crypto.randomUUID()

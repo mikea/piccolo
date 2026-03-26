@@ -3,46 +3,43 @@
  *
  * Orchestrates multi-turn, tool-calling conversations via any LanguageModel
  * (from the ai SDK). Manages conversation state, tool execution,
- * steering/follow-up queues, and abort handling.
+ * steering queue, and abort handling.
  *
  * No Workers-specific globals. No gateway or session concepts.
  * Suitable for use inside Durable Objects or any async context.
  *
  * The caller (piccolo-core) is responsible for constructing the LanguageModel
  * (via createModel() from gateway.ts or a mock in tests).
+ *
+ * Spec ref: specs/core.md §Agent Loop
  */
 
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
-import { toAiSdkTools } from "./tools.ts";
-import type { AgentEvent, AgentOptions, AgentState, IAgentSession, IAgentTool } from "./types.ts";
+import { toAiSdkTools } from "./agent-tools.ts";
+import type { AgentEvent, AgentOptions, AgentState, AgentTurn, ISession, ITool } from "./types.ts";
 
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_STEERING_MODE = "one-at-a-time" as const;
-const DEFAULT_FOLLOW_UP_MODE = "one-at-a-time" as const;
 
 export class Agent {
   private readonly _maxSteps: number;
   private readonly _steeringMode: "one-at-a-time" | "all";
-  private readonly _followUpMode: "one-at-a-time" | "all";
 
   private _state: AgentState;
   private _steeringQueue: ModelMessage[] = [];
-  private _followUpQueue: ModelMessage[] = [];
-  private _abortController: AbortController | null = null;
-  private _listeners: Set<(event: AgentEvent) => void> = new Set();
+  private _currentTurn: AgentTurn | null = null;
+
   /**
    * Session context threaded into every tool execute() call.
    * piccolo-core sets this to the live ISession before each prompt().
-   * Typed as IAgentSession here; at runtime always a full ISession.
-   * Spec ref: specs/agent.md §Agent §Public Methods §setContext
+   * Spec ref: specs/core.md §Agent Loop §setContext
    */
-  private _ctx: IAgentSession = {};
+  private _ctx: ISession | null = null;
 
   constructor(options: AgentOptions) {
     this._maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     this._steeringMode = options.steeringMode ?? DEFAULT_STEERING_MODE;
-    this._followUpMode = options.followUpMode ?? DEFAULT_FOLLOW_UP_MODE;
 
     this._state = {
       model: options.model,
@@ -59,35 +56,22 @@ export class Agent {
     return this._state;
   }
 
-  // ─── Subscription ─────────────────────────────────────────────────────────
-
-  /**
-   * Subscribe to agent events. Returns an unsubscribe function.
-   */
-  subscribe(listener: (event: AgentEvent) => void): () => void {
-    this._listeners.add(listener);
-    return () => {
-      this._listeners.delete(listener);
-    };
-  }
-
   // ─── Synchronous state mutations ──────────────────────────────────────────
 
   setModel(model: LanguageModel): void {
     this._state = { ...this._state, model };
   }
 
-  setTools(tools: IAgentTool[]): void {
+  setTools(tools: ITool[]): void {
     this._state = { ...this._state, tools };
   }
 
   /**
    * Set the session context threaded into tool execute() calls.
    * piccolo-core calls this with the live ISession before each prompt().
-   * Typed as IAgentSession; at runtime always a full ISession.
-   * Spec ref: specs/agent.md §Agent §Public Methods §setContext
+   * Spec ref: specs/core.md §Agent Loop §setContext
    */
-  setContext(ctx: IAgentSession): void {
+  setContext(ctx: ISession): void {
     this._ctx = ctx;
   }
 
@@ -103,7 +87,7 @@ export class Agent {
     this._state = { ...this._state, messages };
   }
 
-  // ─── Steering / Follow-up queues ──────────────────────────────────────────
+  // ─── Steering queue ───────────────────────────────────────────────────────
 
   /**
    * Inject a message mid-turn (after the next tool batch, before the next LLM call).
@@ -111,14 +95,6 @@ export class Agent {
    */
   steer(message: ModelMessage): void {
     this._steeringQueue.push(message);
-  }
-
-  /**
-   * Queue a message to be sent when the current turn finishes naturally.
-   * Triggers agent.continue() after onFinish fires.
-   */
-  followUp(message: ModelMessage): void {
-    this._followUpQueue.push(message);
   }
 
   /**
@@ -130,47 +106,48 @@ export class Agent {
     return msgs;
   }
 
-  /**
-   * Return and clear all pending follow-up messages.
-   */
-  clearFollowUp(): ModelMessage[] {
-    const msgs = this._followUpQueue;
-    this._followUpQueue = [];
-    return msgs;
-  }
-
   // ─── Abort ────────────────────────────────────────────────────────────────
 
   /**
    * Abort the currently streaming turn immediately.
-   * The AI SDK propagates the signal to the model and to all tool execute() calls.
+   * Delegates to the current AgentTurn's abort(). No-op if idle.
    */
   abort(): void {
-    this._abortController?.abort();
+    this._currentTurn?.abort();
   }
 
-  // ─── Conversation ─────────────────────────────────────────────────────────
+  // ─── Turn lifecycle ───────────────────────────────────────────────────────
+
+  /**
+   * Return the active AgentTurn, or null if idle. Synchronous.
+   * Spec ref: specs/core.md §Agent Loop §getCurrentTurn
+   */
+  getCurrentTurn(): AgentTurn | null {
+    return this._currentTurn;
+  }
 
   /**
    * Start a new agent turn with user text (and optional images).
+   * Throws if a turn is already in progress (getCurrentTurn() !== null).
+   * Returns an AgentTurn synchronously — the stream starts filling immediately.
    */
-  async prompt(text: string, images?: ImagePart[]): Promise<void>;
+  prompt(text: string, images?: ImagePart[]): AgentTurn;
   /**
    * Start a new agent turn with pre-built messages (e.g. from the core after
    * rehydration or when forwarding structured content).
+   * Throws if a turn is already in progress.
    */
-  async prompt(messages: ModelMessage[]): Promise<void>;
-  async prompt(input: string | ModelMessage[], images?: ImagePart[]): Promise<void> {
+  prompt(messages: ModelMessage[]): AgentTurn;
+  prompt(input: string | ModelMessage[], images?: ImagePart[]): AgentTurn {
+    if (this._currentTurn !== null) {
+      throw new Error("A turn is already in progress. Call abort() first.");
+    }
+
     // Build user message(s) to append
     let newMessages: ModelMessage[];
     if (typeof input === "string") {
       if (images && images.length > 0) {
-        newMessages = [
-          {
-            role: "user",
-            content: [{ type: "text", text: input }, ...images],
-          },
-        ];
+        newMessages = [{ role: "user", content: [{ type: "text", text: input }, ...images] }];
       } else {
         newMessages = [{ role: "user", content: input }];
       }
@@ -178,27 +155,45 @@ export class Agent {
       newMessages = input;
     }
 
-    this._state.messages.push(...newMessages);
-    await this._runStream();
+    if (newMessages.length > 0) {
+      this._state.messages.push(...newMessages);
+    }
+
+    return this._startTurn();
   }
+
+  // ─── Internal ────────────────────────────────────────────────────────────
 
   /**
-   * Resume streaming without new user input.
-   * Called after onFinish when the follow-up queue is non-empty, or by the DO
-   * after compaction to continue with the updated message history.
+   * Create the AgentTurn, wire the ReadableStream, kick off _runStream async.
+   * Shared by prompt() — only entry point now (continue() is removed).
    */
-  async continue(): Promise<void> {
-    const followUp = this._dequeueFollowUp();
-    if (followUp.length > 0) {
-      this._state.messages.push(...followUp);
-    }
-    await this._runStream();
+  private _startTurn(): AgentTurn {
+    const ac = new AbortController();
+
+    let controller!: ReadableStreamDefaultController<AgentEvent>;
+    const stream = new ReadableStream<AgentEvent>({
+      start(c) {
+        controller = c;
+      },
+    });
+
+    const turn: AgentTurn = {
+      stream,
+      abort: () => ac.abort(),
+    };
+    this._currentTurn = turn;
+
+    // Kick off async — the stream fills via controller.enqueue()
+    void this._runStream(controller, ac.signal);
+
+    return turn;
   }
 
-  // ─── Internal streaming ───────────────────────────────────────────────────
-
-  private async _runStream(): Promise<void> {
-    this._abortController = new AbortController();
+  private async _runStream(
+    controller: ReadableStreamDefaultController<AgentEvent>,
+    signal: AbortSignal,
+  ): Promise<void> {
     // Reset streaming state; omit the error key to satisfy exactOptionalPropertyTypes.
     const { error: _discarded, ...stateWithoutError } = this._state;
     this._state = { ...stateWithoutError, isStreaming: true };
@@ -225,9 +220,17 @@ export class Agent {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    this._emit({ type: "agent_start" });
+    const emit = (event: AgentEvent) => {
+      controller.enqueue(event);
+    };
 
-    const toolSet = toAiSdkTools(this._state.tools, this._ctx);
+    emit({ type: "agent_start" });
+
+    const ctx = this._ctx;
+    if (ctx === null) {
+      throw new Error("Agent context not set. Call setContext() before prompt().");
+    }
+    const toolSet = toAiSdkTools(this._state.tools, ctx);
     let aborted = false;
     let finalUsage: LanguageModelUsage = {
       inputTokens: 0,
@@ -251,7 +254,7 @@ export class Agent {
         messages: this._state.messages,
         tools: toolSet,
         stopWhen: stepCountIs(this._maxSteps),
-        abortSignal: this._abortController.signal,
+        abortSignal: signal,
 
         prepareStep: ({ stepNumber, messages }) => {
           // After the first step, inject any pending steering messages.
@@ -266,13 +269,13 @@ export class Agent {
           console.debug("[agent] onChunk type=%s", chunk.type);
           switch (chunk.type) {
             case "text-delta":
-              this._emit({ type: "text_delta", delta: chunk.text });
+              emit({ type: "text_delta", delta: chunk.text });
               break;
             case "reasoning-delta":
-              this._emit({ type: "reasoning_delta", delta: chunk.text });
+              emit({ type: "reasoning_delta", delta: chunk.text });
               break;
             case "tool-call":
-              this._emit({
+              emit({
                 type: "tool_start",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
@@ -280,7 +283,7 @@ export class Agent {
               });
               break;
             case "tool-result":
-              this._emit({
+              emit({
                 type: "tool_end",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
@@ -297,7 +300,7 @@ export class Agent {
           for (const part of content) {
             if (part.type === "tool-error") {
               const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
-              this._emit({
+              emit({
                 type: "tool_end",
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
@@ -306,7 +309,7 @@ export class Agent {
               });
             }
           }
-          this._emit({
+          emit({
             type: "turn_end",
             stepNumber,
             finishReason: finishReason as FinishReason,
@@ -325,7 +328,7 @@ export class Agent {
           const message = error instanceof Error ? error.message : String(error);
           console.debug("[agent] onError message=%s", message);
           this._state = { ...this._state, error: message };
-          this._emit({ type: "error", message });
+          emit({ type: "error", message });
         },
 
         onAbort: () => {
@@ -344,20 +347,16 @@ export class Agent {
       console.debug("[agent] consumeStream catch: %s", message);
       if (!aborted) {
         this._state = { ...this._state, error: message };
-        this._emit({ type: "error", message });
+        emit({ type: "error", message });
       }
     } finally {
       console.debug("[agent] finally aborted=%s", aborted);
       this._state = { ...this._state, isStreaming: false };
       if (!aborted) {
-        this._emit({ type: "agent_end", totalUsage: finalUsage });
+        emit({ type: "agent_end", totalUsage: finalUsage });
       }
-      this._abortController = null;
-    }
-
-    // If not aborted and follow-up queue has items, trigger a continuation turn.
-    if (!aborted && this._followUpQueue.length > 0) {
-      await this.continue();
+      this._currentTurn = null;
+      controller.close();
     }
   }
 
@@ -372,25 +371,5 @@ export class Agent {
     // one-at-a-time
     const msg = this._steeringQueue.shift();
     return msg !== undefined ? [msg] : [];
-  }
-
-  private _dequeueFollowUp(): ModelMessage[] {
-    if (this._followUpMode === "all") {
-      const msgs = this._followUpQueue;
-      this._followUpQueue = [];
-      return msgs;
-    }
-    // one-at-a-time
-    const msg = this._followUpQueue.shift();
-    return msg !== undefined ? [msg] : [];
-  }
-
-  // ─── Event emission ───────────────────────────────────────────────────────
-
-  private _emit(event: AgentEvent): void {
-    console.debug("[agent] emit type=%s listeners=%d", event.type, this._listeners.size);
-    for (const listener of this._listeners) {
-      listener(event);
-    }
   }
 }

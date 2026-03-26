@@ -71,16 +71,6 @@ type AgentEvent =
 
 type JsonSchema7 = Record<string, unknown>;
 
-// Implementation layering note:
-//   AgentToolDescriptor (packages/agent) — name, description, inputSchema
-//   ToolDescriptor      (packages/core)  — extends AgentToolDescriptor; adds label, snippets
-//
-//   AgentToolResult     (packages/agent) — content, isError?
-//   ToolResult          (packages/core)  — extends AgentToolResult; adds details?
-//
-//   IAgentTool          (packages/agent) — descriptor: AgentToolDescriptor, execute()
-//   ITool               (packages/core)  — extends IAgentTool; adds getGatewayUI
-
 // ToolDescriptor — pure data, no logic.
 // Describes the tool to the LLM and to the piccolo core.
 // Placed as a static property on every ITool Worker class.
@@ -109,13 +99,10 @@ interface ToolDescriptor {
 }
 
 // ITool — the full interface every tool Worker must implement.
-// ToolDescriptor is the static, logic-free description portion.
-// ITool adds the execution contract on top of it.
+// No base IAgentTool type — all fields live directly here.
 // Tool Workers extend WorkerEntrypoint and implement ITool.
 // See tools.md for the complete authoring guide.
 interface ITool {
-  // Static property — the tool's pure description, no logic.
-  // The core reads this to register the tool with the agent.
   readonly descriptor: ToolDescriptor;
 
   // Called by the core when the LLM invokes this tool.
@@ -259,7 +246,7 @@ class IPiccoloCore extends WorkerEntrypoint {
 
 An `RpcTarget` stub returned by `IPiccoloCore.newSession()` and `IPiccoloCore.getSession()`. Represents one conversation session and exposes all per-session operations as instance methods — no `sessionId` parameter threading.
 
-`ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type. In `packages/agent`, the minimal subset needed by the agent loop is `IAgentSession` (see `agent.md`).
+`ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type.
 
 ```typescript
 interface ISession {
@@ -322,8 +309,8 @@ interface ISession {
 
   // Returns descriptors of all currently active tools.
   getActiveTools(): Promise<ToolDescriptor[]>;
-  // Accepts IAgentTool RpcTargets directly over JSRPC.
-  setActiveTools(tools: IAgentTool[]): Promise<void>;
+  // Accepts ITool RpcTargets directly over JSRPC.
+  setActiveTools(tools: ITool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────
 

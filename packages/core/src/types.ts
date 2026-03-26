@@ -1,50 +1,31 @@
 /**
- * Shared type stubs — piccolo-core public JSRPC API types.
+ * Shared type definitions — piccolo-core public JSRPC API types.
  *
  * Every type here mirrors the shape declared in specs/api.md §Shared Types
- * exactly. Each will be replaced with a full implementation as the relevant
- * milestone is completed. The field names, optionality, and comments must
- * remain in sync with specs/api.md at all times per AGENTS.md Rule 1.
+ * exactly. Field names, optionality, and comments must remain in sync with
+ * specs/api.md at all times per AGENTS.md Rule 1.
  *
  * Do NOT add logic here. This file is pure types.
  *
- * Layering:
- *   packages/agent   — minimal agent-loop types (AgentToolDescriptor, IAgentTool,
- *                       AgentToolResult, AgentEvent, IAgentSession, LanguageModel, …)
- *   packages/core    — extends those with the full piccolo surface:
- *                       ToolDescriptor extends AgentToolDescriptor (adds label, snippets)
- *                       ITool extends IAgentTool (adds getGatewayUI)
- *                       ToolResult extends AgentToolResult (adds details)
- *                       ISession extends IAgentSession (full per-session API)
- *                       AgentEvent re-exported (canonical definition in agent)
+ * All types that were previously split across @piccolo/agent and @piccolo/core
+ * are now defined here directly. There is a single type hierarchy with no
+ * intermediate base types:
+ *   ToolDescriptor  — name, description, inputSchema, label, snippets
+ *   ITool           — descriptor: ToolDescriptor, execute(), getGatewayUI?()
+ *   ToolResult      — content, isError?, details?
+ *   ISession        — full per-session API
+ *   AgentTurn       — active turn handle (stream + abort)
  */
 
-// ── Re-export agent types ────────────────────────────────────────────────────
-// packages/core consumers import from here; they don't need to depend on
-// @piccolo/agent directly.
+export type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
+// ── Re-export ai types used across packages ──────────────────────────────────
 export type {
-  AgentEvent,
-  AgentToolDescriptor,
-  AgentToolResult,
   FinishReason,
-  IAgentSession,
-  IAgentTool,
   ImagePart,
-  JsonSchema7,
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,
-} from "@piccolo/agent";
-
-// ── External dependencies ────────────────────────────────────────────────────
-import type {
-  AgentEvent,
-  AgentToolDescriptor,
-  AgentToolResult,
-  IAgentSession,
-  IAgentTool,
-  JsonSchema7,
-} from "@piccolo/agent";
+} from "ai";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +39,6 @@ export interface SessionRecord {
   cwd?: string;
 }
 
-// TODO(item-9): implement — placeholder only
 export interface NewSessionOptions {
   name?: string;
   modelId?: string;
@@ -74,32 +54,67 @@ export interface Attachment {
   size: number;
 }
 
+// ─── Agent Events ─────────────────────────────────────────────────────────────
+
+import type { JSONSchema7 } from "@ai-sdk/provider";
+import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
+
+/**
+ * Events streamed from the Agent during a turn.
+ * Maps directly from streamText callbacks — no gateway or session concerns.
+ * Spec ref: specs/api.md §Shared Types §AgentEvent
+ */
+export type AgentEvent =
+  | { type: "agent_start" }
+  | { type: "agent_end"; totalUsage: LanguageModelUsage }
+  | { type: "turn_start"; stepNumber: number }
+  | { type: "turn_end"; stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
+  | { type: "text_delta"; delta: string }
+  | { type: "reasoning_delta"; delta: string }
+  | { type: "tool_start"; toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool_end"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
+  | { type: "error"; message: string };
+
+// ─── AgentTurn — active turn handle ──────────────────────────────────────────
+
+/**
+ * A handle to the currently active agent turn.
+ * Returned synchronously by Agent.prompt().
+ * The stream is a single-consumer ReadableStream — tee() if two consumers needed.
+ * Spec ref: specs/core.md §Agent Loop §AgentTurn
+ */
+export interface AgentTurn {
+  /** The AgentEvent stream for this turn. */
+  readonly stream: ReadableStream<AgentEvent>;
+  /** Abort this turn immediately. No-op after the turn completes. */
+  abort(): void;
+}
+
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
-// ToolDescriptor extends AgentToolDescriptor with piccolo-core-specific fields
-// used by SystemPromptAssembler and gateway UIs.
-//
-// AgentToolDescriptor (in @piccolo/agent) carries:
-//   name, description, inputSchema
-//
-// ToolDescriptor adds:
-//   label, promptSnippet?, promptGuidelines?
-//
-// TODO(item-12): implement — placeholder only
-export interface ToolDescriptor extends AgentToolDescriptor {
-  // Human-readable display name shown in gateway UIs and logs.
+/**
+ * ToolDescriptor — pure data describing a tool to the LLM and piccolo-core.
+ * No intermediate AgentToolDescriptor base type — all fields live here directly.
+ * Spec ref: specs/api.md §Shared Types §ToolDescriptor
+ */
+export interface ToolDescriptor {
+  /** Identifier the LLM uses to call this tool. Snake_case, unique within a session. */
+  name: string;
+
+  /** Human-readable display name shown in gateway UIs and logs. */
   label: string;
 
-  // Optional one-line entry added to "Available tools" in the system prompt.
+  /** Full description sent to the LLM. Be precise and complete. */
+  description: string;
+
+  /** Optional one-line entry added to "Available tools" in the system prompt. */
   promptSnippet?: string;
 
-  // Optional bullets appended to "Guidelines" while this tool is active.
+  /** Optional bullets appended to "Guidelines" while this tool is active. */
   promptGuidelines?: string[];
 
-  // Inherits from AgentToolDescriptor:
-  //   name: string
-  //   description: string
-  //   inputSchema: JsonSchema7
+  /** JSON Schema (draft-07 style) for the tool input parameters. */
+  inputSchema: JSONSchema7;
 }
 
 export interface ICommand {
@@ -108,35 +123,33 @@ export interface ICommand {
   showInAutocomplete?: boolean;
 }
 
-// ToolResult extends AgentToolResult with the piccolo-core-specific `details` field.
-// AgentToolResult carries: content, isError?
-// ToolResult adds:         details? (stored in session entry, NOT sent to LLM)
-//
-// TODO(item-12): implement — placeholder only
-export interface ToolResult extends AgentToolResult {
-  // Arbitrary metadata stored in the session entry for gateway UI rendering.
-  // NOT sent to the LLM.
+/**
+ * ToolResult — returned by ITool.execute().
+ * No intermediate AgentToolResult base type.
+ * Spec ref: specs/api.md §Shared Types §ToolResult
+ */
+export interface ToolResult {
+  content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  >;
+  /** Arbitrary metadata stored in the session entry for gateway UI rendering. NOT sent to LLM. */
   details?: unknown;
-
-  // Inherits from AgentToolResult:
-  //   content: Array<{ type: "text"; text: string } | { type: "image"; ... }>
-  //   isError?: boolean
+  /** Prefer throwing from execute() over setting isError manually. */
+  isError?: boolean;
 }
 
-// ITool extends IAgentTool with the piccolo-core-specific getGatewayUI hook.
-// IAgentTool (in @piccolo/agent) carries:
-//   descriptor: AgentToolDescriptor
-//   execute(toolCallId, params, ctx, signal?): Promise<AgentToolResult>
-//
-// ITool adds:
-//   descriptor: ToolDescriptor  (narrower — adds label, snippets)
-//   execute(...): Promise<ToolResult>  (narrower — adds details)
-//   getGatewayUI?(gatewayId): Promise<ITextUI | undefined>
-//
-// TODO(item-12): implement — placeholder only
-export interface ITool extends IAgentTool {
+/**
+ * ITool — the full interface every tool Worker must implement.
+ * No intermediate IAgentTool base type.
+ * Spec ref: specs/api.md §Shared Types §ITool
+ */
+export interface ITool {
   readonly descriptor: ToolDescriptor;
 
+  /**
+   * Called by the core when the LLM invokes this tool.
+   * Throw to signal failure — the core sets isError: true automatically.
+   */
   execute(
     toolCallId: string,
     params: unknown,
@@ -144,54 +157,31 @@ export interface ITool extends IAgentTool {
     signal?: AbortSignal,
   ): Promise<ToolResult>;
 
-  getGatewayUI?(gatewayId: string): Promise<ITextUI | undefined>;
+  /** Optional. Called by a gateway before rendering a tool call or result. */
+  getGatewayUI?(gatewayId: GatewayId): Promise<ITextUI | undefined>;
 }
 
 // ─── Gateway UI ───────────────────────────────────────────────────────────────
 
-// Well-known gateway identifiers.
-// The branded union `"web" | "telegram" | (string & {})` provides IDE autocomplete
-// for the two built-in gateways while still accepting arbitrary extension gateway IDs.
 export type GatewayId = "web" | "telegram" | (string & {});
 
-// ITextUI — minimal shared interface implemented by tool Workers.
-// Returned by ITool.getGatewayUI("web") or getGatewayUI("telegram")
-// when the tool does not need gateway-specific rendering.
-// The gateway calls these to PULL rendering text from the tool;
-// the tool provides its own display strings.
-// Spec ref: specs/api.md §3
 export interface ITextUI {
-  // Return a status line to display while the tool is executing.
   getStatusText(): Promise<string>;
-  // Return the formatted result text once execute() completes.
   getResultText(output: unknown): Promise<string>;
-  // Return an error message when execute() throws.
   getErrorText(error: unknown): Promise<string>;
 }
 
-// IWebUI — Web UI Gateway rendering interface.
-// Returned by ITool.getGatewayUI("web").
-// Spec ref: specs/api.md §3
 export interface IWebUI extends ITextUI {
-  // Return a component descriptor for custom React rendering.
-  // componentId must be a stable string registered by the tool's extension Worker.
   getComponent(phase: "call" | "result"): Promise<WebComponentDescriptor | undefined>;
 }
 
-// Descriptor for a custom React component served at /components/{componentId}.js.
-// Spec ref: specs/api.md §3
 export interface WebComponentDescriptor {
-  componentId: string; // stable identifier, e.g. "r2-file-tree"
-  props: Record<string, unknown>; // serialisable props passed to the component
+  componentId: string;
+  props: Record<string, unknown>;
 }
 
 // ─── Gateway Callback ─────────────────────────────────────────────────────────
 
-// IGatewayCallback — Interactive prompts from core back to the gateway mid-turn.
-// Implemented by each gateway. An RpcTarget stub is passed into ISession.prompt()
-// so the core can call back for interactive input (select, confirm, input, notify).
-// Tools access the active callback via ITurn.getCallback() from ctx.getCurrentTurn().
-// Spec ref: specs/api.md §5
 export interface IGatewayCallback {
   requestSelect(title: string, options: string[], multiple?: boolean): Promise<string[] | null>;
   requestConfirm(title: string, message: string): Promise<boolean>;
@@ -201,29 +191,14 @@ export interface IGatewayCallback {
 
 // ─── ITurn — Active turn context ──────────────────────────────────────────────
 
-// ITurn — represents the currently active agent turn.
-// Owns the AgentEvent stream for the turn and the optional gateway callback.
-// Accessible from tool and extension context via ISession.getCurrentTurn().
-// Only available while a turn is in progress; undefined between turns.
-// The callback is a property of the turn (not the session) since it is
-// bound to a specific prompt() call and is ephemeral.
-// For refresh support, the active turn is also available via
-// ISession.getCurrentTurn(), which returns undefined between turns.
-// Spec ref: specs/api.md §2
 export interface ITurn {
-  // Return the ReadableStream<AgentEvent> for this turn.
-  // The stream emits all events for the turn in progress.
   getStream(): Promise<ReadableStream<AgentEvent>>;
-
-  // Return the gateway's IGatewayCallback stub for this turn (if any).
-  // Tools call this to request interactive input mid-turn.
   getCallback(): Promise<IGatewayCallback | undefined>;
 }
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
 
 export interface ContextUsage {
-  /** Total input tokens used in the last completed turn. */
   inputTokens: number;
 }
 
@@ -231,7 +206,6 @@ export interface CompactOptions {
   keepRecentTokens?: number; // default: 20_000
 }
 
-// Entry returned by ISession.getEntries()
 export interface CustomEntry {
   id: string;
   customType: string;
@@ -241,17 +215,6 @@ export interface CustomEntry {
 
 // ─── History ──────────────────────────────────────────────────────────────────
 
-// A single renderable entry in a session's conversation history.
-// Returned by ISession.getHistory() — the canonical server-side view of the
-// conversation. Gateways render this directly on load; no client-side state.
-//
-// Roles:
-//   "user"      — a message typed by the user
-//   "assistant" — text generated by the LLM (may still be streaming)
-//   "tool"      — a tool invocation with its result
-//   "error"     — an error that occurred during a turn
-//
-// Spec ref: specs/api.md §Shared Types
 export type HistoryEntry =
   | { type: "user"; id: string; content: string }
   | { type: "assistant"; id: string; content: string; isStreaming: boolean }
@@ -268,39 +231,19 @@ export type HistoryEntry =
 
 // ─── Session Status ───────────────────────────────────────────────────────────
 
-// Snapshot of session-level state. Returned by ISession.getStatus().
-// Gateways use this to render controls (e.g. disable send while streaming).
-// Spec ref: specs/api.md §Shared Types
 export interface SessionStatus {
-  isStreaming: boolean; // true while a prompt() turn is in progress
-  model: string; // current model ID
+  isStreaming: boolean;
+  model: string;
   name: string | undefined;
 }
 
 // ─── ISession — the unified session/context interface ────────────────────────
-//
-// Used as:
-//   - The RpcTarget stub returned by IPiccoloCore.newSession() / getSession() to gateways
-//   - The context object (ctx) passed to every IExtensionWorker handler call
-//   - The ctx parameter of ITool.execute()
-//
-// In packages/agent, the minimal subset IAgentSession is used so that the agent
-// loop has no knowledge of the full session surface.
-//
-// Implemented in packages/core by AgentSessionDO (extends DurableObject, implements ISession).
-// All code uses ISession — no code outside agent-session-do.ts references AgentSessionDO directly.
-//
-// Spec ref: specs/api.md §2
-export interface ISession extends IAgentSession {
+
+export interface ISession {
   // ─── Identity ───────────────────────────────────────────────────────────────
 
-  /** Stable session identifier (UUID v4). */
   sessionId(): Promise<string>;
-
-  /** Unix ms timestamp of the last update (used for sorting). */
   getUpdatedAt(): Promise<number>;
-
-  /** The user who owns this session. */
   readonly userId: string;
 
   // ─── Metadata ───────────────────────────────────────────────────────────────
@@ -310,37 +253,11 @@ export interface ISession extends IAgentSession {
 
   // ─── Conversation ────────────────────────────────────────────────────────────
 
-  /**
-   * Start a new agent turn. Returns an ITurn that owns the event stream for
-   * this turn. Callers consume ITurn.getStream() to receive AgentEvents.
-   * The callback is bound to the turn (not the session) and is ephemeral.
-   */
   prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ITurn>;
-
-  /**
-   * Inject a user-role message into the conversation (visible to the LLM).
-   * If a turn is active, delivered as a steer (mid-turn injection).
-   */
   sendUserMessage(content: string): Promise<void>;
-
-  /** Inject text mid-turn (after next tool batch, before next LLM call). */
   steer(text: string): Promise<void>;
-
-  /**
-   * Queue text to be sent when the current turn finishes naturally.
-   * Use this from onAgentEnd or background tasks to chain follow-on turns.
-   */
   followUp(text: string): Promise<void>;
-
-  /** Abort the current streaming turn immediately. */
   abort(): Promise<void>;
-
-  /**
-   * Return the active turn context (if a turn is in progress), or undefined if idle.
-   * Gateways call this after getHistory() to reconnect to an in-progress turn
-   * (e.g. after a page reload): call ITurn.getStream() on the result to receive
-   * the remaining AgentEvents. Use ITurn.getCallback() for interactive mid-turn prompts.
-   */
   getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────────
@@ -351,49 +268,23 @@ export interface ISession extends IAgentSession {
 
   // ─── Tools ───────────────────────────────────────────────────────────────────
 
-  /** Returns descriptors of all currently active tools. */
   getActiveTools(): Promise<ToolDescriptor[]>;
-  /** Set the active tools. Accepts IAgentTool RpcTargets directly over JSRPC. */
-  setActiveTools(tools: IAgentTool[]): Promise<void>;
+  setActiveTools(tools: ITool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────────
 
-  /** Appends an extension-defined message visible to the LLM. */
   appendCustomMessage(customType: string, content: string, display: boolean): Promise<void>;
-
-  /** Appends an opaque entry to the session log (NOT sent to LLM). */
   appendCustomEntry(customType: string, data?: unknown): Promise<void>;
-
-  /**
-   * Read back custom entries on the current branch.
-   * @param customType - If provided, filters to entries matching this type.
-   */
   getEntries(customType?: string): Promise<CustomEntry[]>;
 
   // ─── History & live subscription ─────────────────────────────────────────────
 
-  /**
-   * Return the full conversation history as renderable HistoryEntry items.
-   * Gateways call this on load (including after page reload) to reconstruct
-   * the visible chat. If a turn is currently streaming, the last entry will
-   * be an assistant entry with isStreaming: true and the text accumulated so far.
-   * Replaces client-side message state — the server is the single source of truth.
-   * Spec ref: specs/api.md §ISession
-   */
   getHistory(): Promise<HistoryEntry[]>;
-
-  /**
-   * Return a snapshot of session-level state (isStreaming, model, name).
-   * Gateways use this to render controls without holding local state.
-   * Spec ref: specs/api.md §ISession
-   */
   getStatus(): Promise<SessionStatus>;
 
   // ─── Context usage ────────────────────────────────────────────────────────────
 
   getContextUsage(): Promise<ContextUsage>;
-
-  /** Trigger context compaction immediately. */
   compact(options?: CompactOptions): Promise<void>;
 
   // ─── System prompt ────────────────────────────────────────────────────────────
@@ -402,14 +293,8 @@ export interface ISession extends IAgentSession {
 
   // ─── Session tree / branching ─────────────────────────────────────────────────
 
-  /** Set the active leaf to a prior entry. Next prompt branches from there. */
   branch(entryId: string): Promise<void>;
-
-  /**
-   * Fork this session from a given entry (or current leaf).
-   * Returns a new ISession stub for the forked session.
-   */
-  fork(fromEntryId?: string): Promise<string>; // returns new sessionId; caller fetches stub
+  fork(fromEntryId?: string): Promise<string>;
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -417,8 +302,7 @@ export interface ISession extends IAgentSession {
 }
 
 // ─── IUser — Per-user interface ───────────────────────────────────────────────
-//
-// Spec ref: specs/api.md §IUser
+
 export interface IUser {
   newSession(options?: NewSessionOptions): Promise<ISession>;
   getSession(sessionId: string): Promise<ISession>;
@@ -427,11 +311,35 @@ export interface IUser {
 }
 
 // ─── IPiccoloCore — WorkerEntrypoint interface ────────────────────────────────
-//
-// Spec ref: specs/api.md §1
+
 export interface IPiccoloCore {
   getUser(userId: string): IUser;
 }
 
-// Prevent unused import lint error — JsonSchema7 is referenced in ToolDescriptor docs.
-type _JsonSchemaRef = JsonSchema7;
+// ─── Agent State and Options ──────────────────────────────────────────────────
+
+/**
+ * Mutable runtime state of the Agent.
+ * Exposed as a readonly reference via agent.state.
+ * Spec ref: specs/core.md §Agent Loop §AgentState
+ */
+export interface AgentState {
+  model: LanguageModel;
+  systemPrompt: string;
+  tools: ITool[];
+  messages: ModelMessage[];
+  isStreaming: boolean;
+  error?: string;
+}
+
+/**
+ * Constructor options for the Agent class.
+ * Spec ref: specs/core.md §Agent Loop §AgentOptions
+ */
+export interface AgentOptions {
+  model: LanguageModel;
+  systemPrompt: string;
+  tools?: ITool[];
+  maxSteps?: number;
+  steeringMode?: "one-at-a-time" | "all";
+}

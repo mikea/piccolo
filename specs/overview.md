@@ -12,8 +12,7 @@ Piccolo is composed of the following independently deployed Cloudflare Workers:
 
 | Component | Kind | Description |
 |---|---|---|
-| `piccolo-agent` | npm package | Agent loop library used by piccolo-core |
-| `piccolo-core` | Worker + DOs | Agent session orchestration; the JSRPC hub |
+| `piccolo-core` | Worker + DOs | Agent session orchestration, agent loop, and JSRPC hub |
 | Web UI gateway | Worker + DO | Browser chat interface |
 | Telegram gateway | Worker + DO | Telegram bot interface |
 | Extensions | Workers (dispatch namespace) | Tools, event handlers, custom capabilities |
@@ -29,10 +28,7 @@ Cloudflare AI Gateway  ◄── all LLM calls routed here
   ▲
   │  (ai + ai-gateway-provider)
   │
-piccolo-agent
-  ▲
-  │
-piccolo-core   (depends on piccolo-agent)
+piccolo-core   (agent loop + session orchestration; uses ai + ai-gateway-provider directly)
   ▲
   │
 Extensions     (Workers in dispatch namespace; depend on piccolo-core via JSRPC)
@@ -60,23 +56,18 @@ The gateway provides:
 
 The `ai` and `ai-gateway-provider` packages are the client libraries used to call the gateway. They handle streaming, tool calling, multi-step loops, and message history.
 
-### `piccolo-agent` → [agent.md](agent.md)
-
-Agent loop layer. Provides:
-- An `Agent` class that orchestrates multi-turn LLM conversations via `streamText`
-- `ITool` interface (`ToolDescriptor` + `execute`) for defining tools as Workers
-- Steering (inject mid-turn) and follow-up (inject post-turn) message queues
-- `AgentEvent` stream for gateways and extensions to observe turn progress
-
 ### `piccolo-core` → [core.md](core.md)
 
-Session coordination layer. Provides:
+Agent loop and session coordination layer. Provides:
+- **Agent loop**: `Agent` class that orchestrates multi-turn LLM conversations via `streamText`, returning `AgentTurn` (a `ReadableStream<AgentEvent>` handle) from each `prompt()` call
+- **`ITool` / `ToolDescriptor`**: full tool interface used by extensions and the agent
+- **Steering queue**: mid-turn message injection via `prepareStep`
+- **`AgentEvent` stream**: events flow through `SessionTransformStream` for gateway consumption and DO side-effects
 - **Session persistence** backed by Cloudflare Durable Objects + D1
 - **Context compaction** (LLM-based summarisation when context window fills)
 - **Extension host**: loads extensions from the Workers for Platforms dispatch namespace, dispatches events via JSRPC
 - **System prompt assembly** from registered skills, agent context, and tool guidelines
 - **Model management**: active model stored per session, switchable at runtime
-- **Auto-retry** with exponential backoff for transient LLM errors
 
 Exposes `IPiccoloCore` and `ISession` as JSRPC surfaces. Gateways and extensions call it exclusively over JSRPC.
 
@@ -117,9 +108,9 @@ import type { ModelMessage } from "ai";
 
 All session storage, agent state, and extension event payloads use `ModelMessage[]`.
 
-### `AgentEvent` (from `piccolo-agent`)
+### `AgentEvent` (from `piccolo-core`)
 
-See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events stream from `AgentSessionDO` → `IPiccoloCore` → gateways and extensions.
+See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events stream from `Agent` → `SessionTransformStream` → gateways and extensions.
 
 ---
 
@@ -148,8 +139,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | Document | Contents |
 |---|---|
 | [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `AgentSessionDO`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
-| [core.md](core.md) | **piccolo-core implementation**: `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, retry, fork, listing |
-| [agent.md](agent.md) | `piccolo-agent`: AI SDK + CF AI Gateway, `Agent` class, steering/follow-up, compaction |
+| [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, fork, listing |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |
 | [d1_tool.md](d1_tool.md) | D1 tool (provided): schema, select, insert, update, delete, schema_change, sql |

@@ -11,14 +11,14 @@
  * Spec ref: specs/api.md — all public interfaces
  */
 
-// Re-export agent types that gateways may need
+// Re-export ai types that gateways/extensions may need directly
 export type {
   FinishReason,
-  IAgentSession,
+  ImagePart,
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,
-} from "@piccolo/agent";
+} from "ai";
 export type {
   AgentEndEvent,
   AgentStartEvent,
@@ -47,15 +47,13 @@ export type {
 } from "./extension-types.ts";
 export type {
   AgentEvent,
-  AgentToolDescriptor,
-  AgentToolResult,
+  AgentTurn,
   Attachment,
   CompactOptions,
   ContextUsage,
   CustomEntry,
   GatewayId,
   HistoryEntry,
-  IAgentTool,
   ICommand,
   IGatewayCallback,
   IPiccoloCore,

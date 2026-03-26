@@ -45,15 +45,13 @@ export { PiccoloCore as default } from "./piccolo-core.ts";
 export * from "./session/index.ts";
 export type {
   AgentEvent,
-  AgentToolDescriptor,
-  AgentToolResult,
+  AgentTurn,
   Attachment,
   CompactOptions,
   ContextUsage,
   CustomEntry,
   GatewayId,
   HistoryEntry,
-  IAgentTool,
   ICommand,
   IGatewayCallback,
   IPiccoloCore,

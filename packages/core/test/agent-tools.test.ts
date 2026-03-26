@@ -1,19 +1,26 @@
+/**
+ * Unit tests for agent-tools.ts (toAiSdkTools).
+ *
+ * Spec ref: specs/core.md §Agent Loop §toAiSdkTools
+ */
+
 import { describe, expect, it, vi } from "vitest";
-import { toAiSdkTools } from "../src/tools.ts";
-import type { AgentToolResult, IAgentSession, IAgentTool } from "../src/types.ts";
+import { toAiSdkTools } from "../src/agent-tools.ts";
+import type { ISession, ITool, ToolResult } from "../src/types.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** A minimal IAgentSession for tests — ISession extends this at runtime. */
-const mockSession: IAgentSession = {};
+/** Minimal ISession stub — only needed as a passthrough in execute(). */
+const mockSession = {} as ISession;
 
 function makeTool(
   name: string,
-  result: AgentToolResult = { content: [{ type: "text", text: "ok" }] },
-): IAgentTool {
+  result: ToolResult = { content: [{ type: "text", text: "ok" }] },
+): ITool {
   return {
     descriptor: {
       name,
+      label: name,
       description: `${name} description`,
       inputSchema: {
         type: "object",
@@ -62,8 +69,8 @@ describe("toAiSdkTools", () => {
   });
 
   it("uses descriptor.name as the record key", () => {
-    const tool = makeTool("my_tool");
-    const result = toAiSdkTools([tool], mockSession);
+    const t = makeTool("my_tool");
+    const result = toAiSdkTools([t], mockSession);
     expect(Object.keys(result)).toEqual(["my_tool"]);
   });
 
@@ -74,38 +81,32 @@ describe("toAiSdkTools", () => {
   });
 
   it("produced tool has description matching descriptor", () => {
-    const tool = makeTool("greet");
-    const sdkTools = toAiSdkTools([tool], mockSession);
-    const toolName = "greet";
-    const sdkTool = sdkTools[toolName];
+    const t = makeTool("greet");
+    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTool = sdkTools["greet"];
     expect(sdkTool).toBeDefined();
     expect(sdkTool?.description).toBe("greet description");
   });
 
-  it("execute() on the AI SDK tool calls IAgentTool.execute() with the session", async () => {
-    const tool = makeTool("echo", {
-      content: [{ type: "text", text: "echoed" }],
-    });
-    const sdkTools = toAiSdkTools([tool], mockSession);
-    const toolName = "echo";
-    const sdkTool = sdkTools[toolName];
+  it("execute() on the AI SDK tool calls ITool.execute() with the session", async () => {
+    const t = makeTool("echo", { content: [{ type: "text", text: "echoed" }] });
+    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTool = sdkTools["echo"];
     expect(sdkTool).toBeDefined();
 
-    // Call via the helper to avoid exactOptionalPropertyTypes issues with abortSignal
     // biome-ignore lint/suspicious/noExplicitAny: test-only cast for AI SDK internal type
     const result = await callExecute(sdkTool?.execute as any, { value: "test" }, "call_1");
     expect(result).toEqual({ content: [{ type: "text", text: "echoed" }] });
-    expect(tool.execute).toHaveBeenCalledWith("call_1", { value: "test" }, mockSession, undefined);
+    expect(t.execute).toHaveBeenCalledWith("call_1", { value: "test" }, mockSession, undefined);
   });
 
-  it("passes abortSignal through to IAgentTool.execute()", async () => {
-    const tool = makeTool("abort_tool");
-    const sdkTools = toAiSdkTools([tool], mockSession);
-    const toolName = "abort_tool";
-    const sdkTool = sdkTools[toolName];
+  it("passes abortSignal through to ITool.execute()", async () => {
+    const t = makeTool("abort_tool");
+    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTool = sdkTools["abort_tool"];
     const signal = new AbortController().signal;
     // biome-ignore lint/suspicious/noExplicitAny: test-only cast for AI SDK internal type
     await callExecuteWithSignal(sdkTool?.execute as any, { value: "x" }, "call_2", signal);
-    expect(tool.execute).toHaveBeenCalledWith("call_2", { value: "x" }, mockSession, signal);
+    expect(t.execute).toHaveBeenCalledWith("call_2", { value: "x" }, mockSession, signal);
   });
 });

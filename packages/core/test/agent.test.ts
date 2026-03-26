@@ -1,26 +1,41 @@
+/**
+ * Unit tests for Agent (packages/core/src/agent.ts).
+ *
+ * Tests run in a plain Node/Vitest environment — no Workers globals needed.
+ * Agent is a pure TypeScript class with no DO or JSRPC dependencies.
+ *
+ * Spec ref: specs/core.md §Agent Loop
+ */
+
 import type { LanguageModel, ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { Agent } from "../src/agent.ts";
-import type { AgentEvent, AgentToolResult, IAgentTool } from "../src/types.ts";
-import { createMockModel } from "./mock-gateway.ts";
+import type { AgentEvent, AgentTurn, ISession, ITool, ToolResult } from "../src/types.ts";
+import { createMockModel } from "./do/mock-model.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Minimal ISession stub — Agent only needs it to pass into tool execute(). */
+const mockSession = {} as ISession;
+
 function makeAgent(overrides: Partial<ConstructorParameters<typeof Agent>[0]> = {}) {
-  return new Agent({
+  const agent = new Agent({
     model: createMockModel({ response: "ok" }),
     systemPrompt: "You are helpful.",
     ...overrides,
   });
+  agent.setContext(mockSession);
+  return agent;
 }
 
 function makeTool(
   name: string,
-  result: AgentToolResult = { content: [{ type: "text", text: "tool result" }] },
-): IAgentTool {
+  result: ToolResult = { content: [{ type: "text", text: "tool result" }] },
+): ITool {
   return {
     descriptor: {
       name,
+      label: name,
       description: `${name} tool`,
       inputSchema: {
         type: "object",
@@ -32,64 +47,102 @@ function makeTool(
   };
 }
 
-function collectEvents(agent: Agent): AgentEvent[] {
+/** Drain a ReadableStream<AgentEvent> into an array. */
+async function drainStream(stream: ReadableStream<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
-  agent.subscribe((e) => events.push(e));
+  const reader = stream.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value !== undefined) events.push(value);
+  }
   return events;
 }
 
 // ─── Basic streaming ──────────────────────────────────────────────────────────
 
 describe("Agent — basic streaming", () => {
+  it("prompt() returns an AgentTurn with a ReadableStream", () => {
+    const agent = makeAgent();
+    const turn = agent.prompt("hi");
+    expect(turn).not.toBeNull();
+    expect(turn.stream).toBeInstanceOf(ReadableStream);
+    // drain to avoid unhandled stream
+    void drainStream(turn.stream);
+  });
+
   it("emits agent_start and agent_end events", async () => {
     const agent = makeAgent();
-    const events = collectEvents(agent);
-    await agent.prompt("hi");
+    const turn = agent.prompt("hi");
+    const events = await drainStream(turn.stream);
     expect(events.some((e) => e.type === "agent_start")).toBe(true);
     expect(events.some((e) => e.type === "agent_end")).toBe(true);
   });
 
   it("emits text_delta events that reconstruct the response", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "Hello world" }) });
-    const events = collectEvents(agent);
-    await agent.prompt("hi");
+    const turn = agent.prompt("hi");
+    const events = await drainStream(turn.stream);
     const deltas = events
       .filter((e) => e.type === "text_delta")
-      .map((e) => {
-        if (e.type === "text_delta") return e.delta;
-        return "";
-      });
+      .map((e) => (e.type === "text_delta" ? e.delta : ""));
     expect(deltas.join("")).toBe("Hello world");
   });
 
   it("emits turn_end event", async () => {
     const agent = makeAgent();
-    const events = collectEvents(agent);
-    await agent.prompt("hi");
+    const events = await drainStream(agent.prompt("hi").stream);
     expect(events.some((e) => e.type === "turn_end")).toBe(true);
   });
 
-  it("isStreaming is false after prompt resolves", async () => {
+  it("isStreaming is false after stream drains", async () => {
     const agent = makeAgent();
-    await agent.prompt("hi");
+    const turn = agent.prompt("hi");
+    expect(agent.state.isStreaming).toBe(true);
+    await drainStream(turn.stream);
     expect(agent.state.isStreaming).toBe(false);
   });
 
   it("appends user message and response messages to state", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "hello" }) });
     expect(agent.state.messages).toHaveLength(0);
-    await agent.prompt("hello");
-    // At minimum: user message + assistant response
+    await drainStream(agent.prompt("hello").stream);
     expect(agent.state.messages.length).toBeGreaterThanOrEqual(2);
     expect(agent.state.messages[0]).toMatchObject({ role: "user" });
   });
 
   it("accumulates messages across multiple turns", async () => {
     const agent = makeAgent();
-    await agent.prompt("first");
+    await drainStream(agent.prompt("first").stream);
     const afterFirst = agent.state.messages.length;
-    await agent.prompt("second");
+    await drainStream(agent.prompt("second").stream);
     expect(agent.state.messages.length).toBeGreaterThan(afterFirst);
+  });
+});
+
+// ─── getCurrentTurn ───────────────────────────────────────────────────────────
+
+describe("Agent — getCurrentTurn", () => {
+  it("getCurrentTurn() returns the AgentTurn while streaming", () => {
+    const agent = makeAgent();
+    const turn = agent.prompt("hi");
+    expect(agent.getCurrentTurn()).toBe(turn);
+    // drain to clean up
+    void drainStream(turn.stream);
+  });
+
+  it("getCurrentTurn() returns null after stream drains", async () => {
+    const agent = makeAgent();
+    const turn = agent.prompt("hi");
+    await drainStream(turn.stream);
+    expect(agent.getCurrentTurn()).toBeNull();
+  });
+
+  it("prompt() throws if a turn is already active", () => {
+    const agent = makeAgent();
+    const turn = agent.prompt("first");
+    expect(() => agent.prompt("second")).toThrow("turn is already in progress");
+    void drainStream(turn.stream);
   });
 });
 
@@ -98,20 +151,23 @@ describe("Agent — basic streaming", () => {
 describe("Agent — prompt overloads", () => {
   it("accepts string prompt", async () => {
     const agent = makeAgent();
-    await expect(agent.prompt("text")).resolves.toBeUndefined();
+    await drainStream(agent.prompt("text").stream);
     expect(agent.state.messages[0]).toMatchObject({ role: "user", content: "text" });
   });
 
   it("accepts ModelMessage array", async () => {
     const agent = makeAgent();
     const msgs: ModelMessage[] = [{ role: "user", content: "pre-built" }];
-    await expect(agent.prompt(msgs)).resolves.toBeUndefined();
+    await drainStream(agent.prompt(msgs).stream);
     expect(agent.state.messages[0]).toMatchObject({ role: "user", content: "pre-built" });
   });
 
   it("builds content array for text + images", async () => {
     const agent = makeAgent();
-    await agent.prompt("describe this", [{ type: "image", image: "https://example.com/img.png" }]);
+    await drainStream(
+      agent.prompt("describe this", [{ type: "image", image: "https://example.com/img.png" }])
+        .stream,
+    );
     const firstMsg = agent.state.messages[0];
     if (firstMsg && Array.isArray(firstMsg.content)) {
       expect(firstMsg.content[0]).toMatchObject({ type: "text", text: "describe this" });
@@ -140,14 +196,14 @@ describe("Agent — state mutations", () => {
 
   it("setTools updates tools", () => {
     const agent = makeAgent();
-    const tool = makeTool("my_tool");
-    agent.setTools([tool]);
+    const t = makeTool("my_tool");
+    agent.setTools([t]);
     expect(agent.state.tools).toHaveLength(1);
   });
 
   it("replaceMessages replaces conversation history", async () => {
     const agent = makeAgent();
-    await agent.prompt("original");
+    await drainStream(agent.prompt("original").stream);
     const replacement: ModelMessage[] = [{ role: "user", content: "replaced" }];
     agent.replaceMessages(replacement);
     expect(agent.state.messages).toEqual(replacement);
@@ -155,53 +211,39 @@ describe("Agent — state mutations", () => {
 
   it("appendMessages adds to existing history", async () => {
     const agent = makeAgent();
-    await agent.prompt("first");
+    await drainStream(agent.prompt("first").stream);
     const before = agent.state.messages.length;
     agent.appendMessages([{ role: "user", content: "appended" }]);
     expect(agent.state.messages.length).toBe(before + 1);
   });
 });
 
-// ─── Subscribe / unsubscribe ──────────────────────────────────────────────────
-
-describe("Agent — subscribe/unsubscribe", () => {
-  it("unsubscribe prevents further events", async () => {
-    const agent = makeAgent();
-    const events: AgentEvent[] = [];
-    const unsub = agent.subscribe((e) => events.push(e));
-    unsub();
-    await agent.prompt("test");
-    expect(events).toHaveLength(0);
-  });
-
-  it("multiple listeners each receive events", async () => {
-    const agent = makeAgent();
-    const a: AgentEvent[] = [];
-    const b: AgentEvent[] = [];
-    agent.subscribe((e) => a.push(e));
-    agent.subscribe((e) => b.push(e));
-    await agent.prompt("test");
-    expect(a.length).toBeGreaterThan(0);
-    expect(b.length).toBe(a.length);
-  });
-});
-
 // ─── Abort ────────────────────────────────────────────────────────────────────
 
 describe("Agent — abort", () => {
-  it("abort() stops streaming and suppresses agent_end", async () => {
-    // Use a long response so there's a streaming window to abort in
+  it("turn.abort() stops streaming and suppresses agent_end", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
-    const events: AgentEvent[] = [];
-    agent.subscribe((e) => events.push(e));
-
-    const promptPromise = agent.prompt("go");
-    agent.abort();
-    await promptPromise;
-
+    const turn = agent.prompt("go");
+    turn.abort();
+    const events = await drainStream(turn.stream);
     expect(agent.state.isStreaming).toBe(false);
-    // agent_end should NOT be emitted after abort
     expect(events.some((e) => e.type === "agent_end")).toBe(false);
+  });
+
+  it("agent.abort() delegates to current turn", async () => {
+    const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
+    const turn = agent.prompt("go");
+    agent.abort();
+    const events = await drainStream(turn.stream);
+    expect(events.some((e) => e.type === "agent_end")).toBe(false);
+  });
+
+  it("getCurrentTurn() is null after abort", async () => {
+    const agent = makeAgent();
+    const turn = agent.prompt("go");
+    turn.abort();
+    await drainStream(turn.stream);
+    expect(agent.getCurrentTurn()).toBeNull();
   });
 });
 
@@ -224,83 +266,33 @@ describe("Agent — steering queue", () => {
   });
 });
 
-// ─── Follow-up ────────────────────────────────────────────────────────────────
-
-describe("Agent — follow-up queue", () => {
-  it("followUp() adds to follow-up queue", () => {
-    const agent = makeAgent();
-    agent.followUp({ role: "user", content: "follow" });
-    expect(agent.clearFollowUp()).toHaveLength(1);
-  });
-
-  it("clearFollowUp() returns and empties the queue", () => {
-    const agent = makeAgent();
-    agent.followUp({ role: "user", content: "a" });
-    agent.followUp({ role: "user", content: "b" });
-    const cleared = agent.clearFollowUp();
-    expect(cleared).toHaveLength(2);
-    expect(agent.clearFollowUp()).toHaveLength(0);
-  });
-
-  it("follow-up triggers a second streaming turn", async () => {
-    let callCount = 0;
-    const { MockLanguageModelV3 } = await import("ai/test");
-    const baseModel = createMockModel({ response: "reply" });
-    // Wrap doStream to count calls
-    const trackingModel = new MockLanguageModelV3({
-      provider: "mock",
-      modelId: "tracking",
-      doStream: async (opts) => {
-        callCount++;
-        // biome-ignore lint/suspicious/noExplicitAny: delegating to base mock for stream
-        return (baseModel as any).doStream(opts);
-      },
-      doGenerate: async (opts) => {
-        // biome-ignore lint/suspicious/noExplicitAny: delegating to base mock for generate
-        return (baseModel as any).doGenerate(opts);
-      },
-    });
-
-    const agent = makeAgent({ model: trackingModel });
-    agent.followUp({ role: "user", content: "follow up question" });
-    await agent.prompt("initial");
-
-    // The follow-up should have triggered a second stream call
-    expect(callCount).toBeGreaterThanOrEqual(2);
-  });
-});
-
 // ─── Tool execution ───────────────────────────────────────────────────────────
 
 describe("Agent — tool execution", () => {
   it("emits tool_start and tool_end events for a tool call", async () => {
-    const tool = makeTool("my_tool");
+    const t = makeTool("my_tool");
     const agent = makeAgent({
       model: createMockModel({
         toolCalls: [{ name: "my_tool", input: { input: "test" } }],
         response: "done",
       }),
-      tools: [tool],
+      tools: [t],
     });
-    const events = collectEvents(agent);
-    await agent.prompt("use tool");
-
+    const events = await drainStream(agent.prompt("use tool").stream);
     expect(events.some((e) => e.type === "tool_start" && e.toolName === "my_tool")).toBe(true);
     expect(events.some((e) => e.type === "tool_end" && e.toolName === "my_tool")).toBe(true);
   });
 
   it("tool_end has isError: false for successful tool", async () => {
-    const tool = makeTool("ok_tool");
+    const t = makeTool("ok_tool");
     const agent = makeAgent({
       model: createMockModel({
         toolCalls: [{ name: "ok_tool", input: {} }],
         response: "finished",
       }),
-      tools: [tool],
+      tools: [t],
     });
-    const events = collectEvents(agent);
-    await agent.prompt("go");
-
+    const events = await drainStream(agent.prompt("go").stream);
     const toolEnd = events.find((e) => e.type === "tool_end");
     expect(toolEnd).toBeDefined();
     if (toolEnd?.type === "tool_end") {
@@ -313,7 +305,6 @@ describe("Agent — tool execution", () => {
 
 describe("Agent — error handling", () => {
   it("sets state.error and emits error event on model failure", async () => {
-    // Create a model that throws on doStream by using MockLanguageModelV3 directly
     const { MockLanguageModelV3 } = await import("ai/test");
     const failingModel: LanguageModel = new MockLanguageModelV3({
       provider: "mock",
@@ -327,8 +318,7 @@ describe("Agent — error handling", () => {
     });
 
     const agent = makeAgent({ model: failingModel });
-    const events = collectEvents(agent);
-    await agent.prompt("hi");
+    const events = await drainStream(agent.prompt("hi").stream);
 
     const errorEvent = events.find((e) => e.type === "error");
     expect(errorEvent).toBeDefined();

@@ -1,3 +1,9 @@
+/**
+ * Unit tests for agent-compact.ts.
+ *
+ * Spec ref: specs/core.md §Agent Loop §agentCompact
+ */
+
 import type { ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -5,8 +11,8 @@ import {
   SUMMARIZATION_SYSTEM_PROMPT,
   serializeConversation,
   splitForCompaction,
-} from "../src/compact.ts";
-import { createMockModel } from "./mock-gateway.ts";
+} from "../src/agent-compact.ts";
+import { createMockModel } from "./do/mock-model.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -148,7 +154,6 @@ describe("serializeConversation", () => {
 describe("agentCompact", () => {
   it("returns empty summary when nothing to summarise", async () => {
     const msgs: ModelMessage[] = [userMsg("hi")];
-    // A model that would fail if called — must NOT be called since nothing to summarise
     const { MockLanguageModelV3 } = await import("ai/test");
     const unusedModel = new MockLanguageModelV3({
       doGenerate: async () => {
@@ -177,5 +182,5 @@ describe("agentCompact", () => {
   });
 });
 
-// Suppress unused import warning — vi is used implicitly by vitest globals
+// Suppress unused import warning
 void vi;

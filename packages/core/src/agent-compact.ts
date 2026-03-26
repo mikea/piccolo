@@ -7,6 +7,8 @@
  * agentCompact() uses generateText (non-streaming) with the same LanguageModel
  * that is passed to the Agent, summarising older messages so they can be replaced
  * with a single compact summary entry.
+ *
+ * Spec ref: specs/core.md §Agent Loop §agentCompact
  */
 
 import type { LanguageModel, ModelMessage } from "ai";

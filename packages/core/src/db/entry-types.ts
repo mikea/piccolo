@@ -12,8 +12,7 @@
  * Spec ref: specs/core.md §Entry Types
  */
 
-import type { ModelMessage } from "@piccolo/agent";
-import type { UserContent } from "ai";
+import type { ModelMessage, UserContent } from "ai";
 
 // ─── Discriminant union ───────────────────────────────────────────────────────
 

@@ -5,10 +5,9 @@
  * itself is the RpcTarget returned to gateways and tools.
  *
  * One DO instance per session. This is where all live session logic runs:
- *   - Agent loop (via @piccolo/agent)
+ *   - Agent loop (agent.ts)
  *   - Persistence (D1 via session/persistence.ts)
  *   - Context compaction (compaction.ts)
- *   - Auto-retry (retry.ts)
  *   - Extension dispatch (ExtensionRunner)
  *   - System prompt assembly (SystemPromptAssembler)
  *
@@ -20,8 +19,8 @@
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
-import type { Agent, LanguageModel, ModelMessage } from "@piccolo/agent";
-import { Agent as AgentClass } from "@piccolo/agent";
+import type { LanguageModel, ModelMessage } from "ai";
+import { Agent } from "./agent.ts";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
 import type {
@@ -36,8 +35,7 @@ import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
-import { LoggingTransformStream } from "./logging-stream.ts";
-import { checkRetry } from "./retry.ts";
+import { asRpcTarget } from "./rpc-util.ts";
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
@@ -45,18 +43,20 @@ import {
   flushPendingEntries,
   forkSession,
 } from "./session/persistence.ts";
+import { SessionTransformStream } from "./session-transform.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import type {
   AgentEvent,
+  AgentTurn,
   Attachment,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
   HistoryEntry,
-  IAgentTool,
   IGatewayCallback,
   ISession,
+  ITool,
   ITurn,
   NewSessionOptions,
   SessionStatus,
@@ -89,7 +89,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #assembledSystemPrompt = "";
 
   // ─── Turn state ───────────────────────────────────────────────────────────
-  #abortController: AbortController | null = null;
   #currentTurn: TurnImpl | null = null;
   #followUpQueue: string[] = [];
   #lastInputTokens = 0;
@@ -117,10 +116,14 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async #initialize(): Promise<void> {
+    const t0 = Date.now();
+    console.debug("[session] initialize start");
+
     // 1. Read sessionId and modelId from DO storage
     const sessionId = (await this.ctx.storage.get<string>("sessionId")) ?? "";
     const storedModelId = await this.ctx.storage.get<string>("modelId");
     const storedName = await this.ctx.storage.get<string>("name");
+    console.debug(`[session:${sessionId}] initialize storage read done dt=${Date.now() - t0}ms`);
 
     this.#sessionId = sessionId;
     this.#modelId = storedModelId ?? defaultModelId(this.env.MODELS);
@@ -130,6 +133,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     if (sessionId !== "") {
       const db = this.env.SESSIONS_DB;
       const sessionRow = await getSession(db, sessionId);
+      console.debug(`[session:${sessionId}] initialize getSession done dt=${Date.now() - t0}ms`);
       if (sessionRow !== null) {
         this.#userId = sessionRow.user_id;
         this.#modelId = sessionRow.model_id;
@@ -139,6 +143,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         this.#updatedAt = sessionRow.updated_at;
 
         const rawRows = await getEntries(db, sessionId);
+        console.debug(
+          `[session:${sessionId}] initialize getEntries done entries=${rawRows.length} dt=${Date.now() - t0}ms`,
+        );
         const allEntries = rawRows.map(parseEntry);
         const context = buildSessionContext(allEntries, this.#leafId);
         this.#messages = context.messages;
@@ -151,12 +158,15 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
           }
         }
         this.#branchEntries = walkToRoot(allEntries, this.#leafId);
+        console.debug(
+          `[session:${sessionId}] initialize rehydrate done messages=${this.#messages.length} dt=${Date.now() - t0}ms`,
+        );
       }
     }
 
     // 3. Build agent
     const model = createModel(this.env, this.#modelId);
-    this.#agent = new AgentClass({ model, systemPrompt: "" });
+    this.#agent = new Agent({ model, systemPrompt: "" });
     this.#agent.replaceMessages(this.#messages);
 
     // 4. Set up extension runner and system prompt
@@ -169,6 +179,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.env.EXTENSIONS,
       this.#modelId,
     );
+    console.debug(`[session:${sessionId}] initialize extensionRunner done dt=${Date.now() - t0}ms`);
 
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
     const extensionTools = this.#extensionRunner.getTools();
@@ -179,6 +190,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     );
     this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
     this.#agent.setTools(extensionTools);
+
+    console.debug(`[session:${sessionId}] initialize done dt=${Date.now() - t0}ms`);
   }
 
   // ─── Test-only helpers ────────────────────────────────────────────────────
@@ -210,12 +223,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── ISession: Metadata ───────────────────────────────────────────────────
 
   async getName(): Promise<string | undefined> {
-    console.debug("[session] getName sessionId=%s →", this.#sessionId, this.#name);
+    console.debug(`[session:${this.#sessionId}] getName → ${this.#name}`);
     return this.#name;
   }
 
   async setName(name: string): Promise<void> {
-    console.debug("[session] setName sessionId=%s name=%s", this.#sessionId, name);
+    console.debug(`[session:${this.#sessionId}] setName name=${name}`);
     this.#name = name;
     await this.ctx.storage.put("name", name);
     const entry: SessionInfoEntry = {
@@ -245,7 +258,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     attachments?: Attachment[],
     callback?: IGatewayCallback,
   ): Promise<ITurn> {
-    console.debug("[session] prompt sessionId=%s text=%s", this.#sessionId, text.slice(0, 80));
+    console.debug(`[session:${this.#sessionId}] prompt text=${text.slice(0, 80)}`);
     if (this.#currentTurn !== null) {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
@@ -265,6 +278,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       });
       const turn = new TurnImpl(emptyStream, callback);
       this.#currentTurn = turn;
+      // emptyStream closes immediately — clear the turn right away
+      void Promise.resolve().then(() => {
+        this.#currentTurn = null;
+      });
       return turn;
     }
     const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
@@ -317,50 +334,22 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
 
     this.#messagesAtTurnStart = this.#agent.state.messages.length;
-    const abortController = new AbortController();
-    this.#abortController = abortController;
 
-    let controller!: ReadableStreamDefaultController<AgentEvent>;
-    const raw = new ReadableStream<AgentEvent>({
-      start: (c) => {
-        controller = c;
-      },
-    });
+    // Start the agent turn — returns AgentTurn synchronously
+    const agentTurn = this.#agent.prompt([userMessage]);
 
-    const unsub = this.#agent.subscribe((event: AgentEvent) => {
-      controller.enqueue(event);
-      // Track in-flight streaming content for getHistory().
-      this.#trackStreamingEvent(event);
-      if (event.type === "turn_end") {
-        this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
-      }
-      this.#extensionRunner.emit(event.type, event, extensionCtx).catch(() => {});
-      if (event.type === "agent_end") {
-        this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
-        this.#flushPromise = this.#handleAgentEnd(abortController.signal);
-        this.#flushPromise.catch((err) => {
-          console.error("AgentSessionDO: _handleAgentEnd error", err);
-        });
-        this.ctx.waitUntil(this.#flushPromise);
-      }
-    });
+    // Wire the SessionTransformStream: peeks at events for DO side-effects,
+    // forwards each event unchanged to the gateway.
+    const transform = new SessionTransformStream(
+      `session:${this.#sessionId}`,
+      (event) => this.#onTurnEvent(event, extensionCtx),
+      () => this.#onTurnClose(),
+    );
 
-    const runTurn = this.#agent
-      .prompt([userMessage])
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        controller.enqueue({ type: "error", message: msg });
-      })
-      .finally(() => {
-        unsub();
-        this.#abortController = null;
-        this.#currentTurn = null;
-        controller.close();
-      });
-    this.ctx.waitUntil(runTurn);
-
-    const stream = raw.pipeThrough(new LoggingTransformStream<AgentEvent>("[session:prompt]"));
-    const turn = new TurnImpl(stream, callback);
+    const outStream = agentTurn.stream.pipeThrough(transform);
+    const turn = new TurnImpl(outStream, callback);
+    // Assigned once — same RpcTarget instance for the duration of this logical turn
+    // (including any follow-up turns). Cleared in #onTurnClose() finally.
     this.#currentTurn = turn;
     return turn;
   }
@@ -378,7 +367,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async abort(): Promise<void> {
-    this.#abortController?.abort();
+    this.#agent.abort();
   }
 
   async getCurrentTurn(): Promise<ITurn | undefined> {
@@ -389,7 +378,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async getHistory(): Promise<HistoryEntry[]> {
     const entries: HistoryEntry[] = [];
-    const isStreaming = this.#abortController !== null;
+    const isStreaming = this.#agent.state.isStreaming;
 
     // Walk committed messages to build history entries.
     // #messages are the ModelMessage[] currently held in the agent (committed after agent_end).
@@ -490,7 +479,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async getStatus(): Promise<SessionStatus> {
     return {
-      isStreaming: this.#abortController !== null,
+      isStreaming: this.#agent.state.isStreaming,
       model: this.#modelId,
       name: this.#name,
     };
@@ -502,17 +491,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const stored = this.#modelId;
     const allowed = parseModels(this.env.MODELS);
     const result = allowed.includes(stored) ? stored : (allowed[0] ?? stored);
-    console.debug(
-      "[session] getModel sessionId=%s stored=%s → %s",
-      this.#sessionId,
-      stored,
-      result,
-    );
+    console.debug(`[session:${this.#sessionId}] getModel stored=${stored} → ${result}`);
     return result;
   }
 
   async setModel(modelId: string): Promise<void> {
-    console.debug("[session] setModel sessionId=%s modelId=%s", this.#sessionId, modelId);
+    console.debug(`[session:${this.#sessionId}] setModel modelId=${modelId}`);
     this.#modelId = modelId;
     this.#agent.setModel(createModel(this.env, modelId));
     const entry: ModelChangeEntry = {
@@ -537,7 +521,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async listModels(): Promise<string[]> {
     const models = parseModels(this.env.MODELS);
-    console.debug("[session] listModels sessionId=%s →", this.#sessionId, models);
+    console.debug(`[session:${this.#sessionId}] listModels → ${JSON.stringify(models)}`);
     return models;
   }
 
@@ -547,7 +531,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return this.#agent.state.tools.map((t) => t.descriptor as ToolDescriptor);
   }
 
-  async setActiveTools(tools: IAgentTool[]): Promise<void> {
+  async setActiveTools(tools: ITool[]): Promise<void> {
     this.#agent.setTools(tools);
   }
 
@@ -684,11 +668,22 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
-  /** Track in-flight streaming events for getHistory(). */
-  #trackStreamingEvent(event: AgentEvent): void {
+  /**
+   * Called by SessionTransformStream for every AgentEvent as it passes through.
+   * All event-driven side effects for the DO live here — no logic in the stream
+   * callbacks themselves.
+   *
+   * Handles:
+   *   1. In-flight history tracking (for getHistory() mid-turn)
+   *   2. Token count updates (for getContextUsage() and compaction threshold)
+   *   3. Extension dispatch (fire-and-forget)
+   *
+   * Spec ref: specs/core.md §AgentSessionDO §#onTurnEvent
+   */
+  #onTurnEvent(event: AgentEvent, extensionCtx: ISession): void {
+    // 1. In-flight history tracking
     switch (event.type) {
       case "agent_start":
-        // Reset streaming state for a new turn.
         this.#streamingAssistantText = "";
         this.#streamingToolCalls.clear();
         break;
@@ -702,20 +697,44 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         });
         break;
       case "tool_end":
-        // Tool finished — clear from streaming map (it will be in committed messages).
         this.#streamingToolCalls.delete(event.toolCallId);
         break;
       case "turn_end":
-        // Between turns: reset assistant text accumulator for the next turn.
+        // 2. Token count from per-step usage
+        this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
         this.#streamingAssistantText = "";
         break;
       case "agent_end":
+        // 2. Token count from total usage
+        this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
+        this.#streamingAssistantText = "";
+        this.#streamingToolCalls.clear();
+        break;
       case "error":
-        // Turn complete — clear all in-flight state.
         this.#streamingAssistantText = "";
         this.#streamingToolCalls.clear();
         break;
     }
+
+    // 3. Extension dispatch (fire-and-forget)
+    this.#extensionRunner.emit(event.type, event, extensionCtx).catch(() => {});
+  }
+
+  /**
+   * Called by SessionTransformStream's flush() when the Agent's stream closes.
+   * Schedules #handleAgentEnd() via ctx.waitUntil() and clears #currentTurn in
+   * the finally block — after all follow-up processing completes.
+   *
+   * Spec ref: specs/core.md §AgentSessionDO §#onTurnClose
+   */
+  #onTurnClose(): void {
+    this.#flushPromise = this.#handleAgentEnd().finally(() => {
+      this.#currentTurn = null;
+    });
+    this.#flushPromise.catch((err) => {
+      console.error(`[session:${this.#sessionId}] handleAgentEnd error`, err);
+    });
+    this.ctx.waitUntil(this.#flushPromise);
   }
 
   #appendEntry(entry: AnyEntry): void {
@@ -751,10 +770,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   #asSessionStub(): ISession {
-    // Pass the raw DurableObjectStub across dispatch RPC.
-    // Wrapping with stubAsRpc() here creates a nested Proxy that capnweb
-    // cannot duplicate correctly when used as an RPC argument.
-    return this.env.AGENT_SESSION.get(this.ctx.id) as unknown as ISession;
+    return asRpcTarget(this);
   }
 
   #requireLeafId(): string {
@@ -764,7 +780,34 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return this.#leafId;
   }
 
-  async #handleAgentEnd(signal: AbortSignal): Promise<void> {
+  async #handleAgentEnd(): Promise<void> {
+    await this.#persistNewMessages();
+
+    // Process follow-up queue: each follow-up starts a new agent turn.
+    // These are internal turns — no gateway consumer listens to them.
+    // The same extensionCtx is used so extensions receive follow-up events too.
+    const extensionCtx = this.#asSessionStub();
+    while (this.#followUpQueue.length > 0) {
+      const followUpText = this.#followUpQueue.shift()!;
+      this.#messagesAtTurnStart = this.#agent.state.messages.length;
+      const followUpTurn = this.#agent.prompt(followUpText);
+
+      // Consume follow-up stream through the same event processing pipeline.
+      // No gateway receives this stream — pipe to a discard WritableStream.
+      const followUpTransform = new SessionTransformStream(
+        `session:${this.#sessionId}:followup`,
+        (event) => this.#onTurnEvent(event, extensionCtx),
+        () => {}, // no nested close handler — persistence done below via await
+      );
+
+      await followUpTurn.stream.pipeThrough(followUpTransform).pipeTo(new WritableStream());
+
+      await this.#persistNewMessages();
+    }
+  }
+
+  /** Persist all new agent messages to D1 since the last flush point. */
+  async #persistNewMessages(): Promise<void> {
     const newMessages = this.#agent.state.messages.slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
       const entryId = generateEntryId();
@@ -780,6 +823,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.#leafId = entryId;
       this.#messageToEntryId.set(msg, entryId);
     }
+    // Advance the start index so the next call only picks up genuinely new messages
+    this.#messagesAtTurnStart = this.#agent.state.messages.length;
 
     if (this.#createdAt === 0 && this.#sessionId !== "") {
       const now = Date.now();
@@ -802,22 +847,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       );
       this.#pendingEntries = [];
       this.#updatedAt = Date.now();
-    }
-
-    if (this.#agent.state.error) {
-      await checkRetry(this.#agent.state.error, this.#agent, signal, async () => {
-        await this.#compact({});
-        if (this.#sessionId !== "" && this.#leafId !== null) {
-          await flushPendingEntries(
-            this.#pendingEntries,
-            this.#sessionId,
-            this.#leafId,
-            this.env.SESSIONS_DB,
-          );
-          this.#pendingEntries = [];
-        }
-        await this.#agent.continue();
-      });
     }
   }
 }
