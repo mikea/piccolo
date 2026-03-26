@@ -2,7 +2,7 @@
  * App.tsx — Root component with SolidJS Router setup.
  */
 
-import type { IUser } from "@piccolo/core";
+import type { IUser } from "@piccolo/api";
 import { Navigate, Route, Router } from "@solidjs/router";
 import type { Component } from "solid-js";
 import { AppLayout } from "./components/AppLayout.tsx";

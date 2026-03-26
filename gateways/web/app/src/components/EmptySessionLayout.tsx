@@ -2,7 +2,7 @@
  * EmptySessionLayout.tsx — Shown when no session is selected.
  */
 
-import type { ISession, IUser } from "@piccolo/core";
+import type { ISession, IUser } from "@piccolo/api";
 import { useNavigate } from "@solidjs/router";
 import { type Component, createResource } from "solid-js";
 import { SessionSidebar } from "./SessionSidebar.tsx";

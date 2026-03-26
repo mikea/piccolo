@@ -2,7 +2,7 @@
  * SessionLayout.tsx — Fetches a session by id and renders ChatView.
  */
 
-import type { ISession, IUser } from "@piccolo/core";
+import type { ISession, IUser } from "@piccolo/api";
 import { useParams } from "@solidjs/router";
 import { type Component, createResource, createSignal, Show } from "solid-js";
 import { ChatView } from "./ChatView.tsx";

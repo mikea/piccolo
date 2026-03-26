@@ -10,4 +10,4 @@
  */
 
 // Re-export HistoryEntry so components can import from one place.
-export type { HistoryEntry } from "@piccolo/core";
+export type { HistoryEntry } from "@piccolo/api";

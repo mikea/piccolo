@@ -2,7 +2,7 @@
  * SessionSidebar.tsx — Left panel: session list, new chat button.
  */
 
-import type { ISession } from "@piccolo/core";
+import type { ISession } from "@piccolo/api";
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
 
 interface Props {

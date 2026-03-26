@@ -16,7 +16,9 @@
     "paths": {
       // Import gateway types directly from the Worker source.
       // Vite resolves this at build time; no Worker runtime code is bundled.
-      "gateway-types": ["../src/types.ts"]
+      "gateway-types": ["../src/types.ts"],
+      // All piccolo contract types come from @piccolo/api.
+      "@piccolo/api": ["../../../packages/api/src/index.ts"]
     }
   },
   "include": ["src"]

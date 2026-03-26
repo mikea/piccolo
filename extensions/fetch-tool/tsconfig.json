@@ -3,11 +3,8 @@
   "compilerOptions": {
     "types": ["./src/worker-configuration.d.ts"],
     // Extensions depend on @piccolo/api, not @piccolo/core.
-    // @piccolo/api is a pure type library with no Workers Env bindings.
     "paths": {
-      "@piccolo/api": ["../../packages/api/src/index.ts"],
-      // Keep @piccolo/core redirect for any legacy imports
-      "@piccolo/core": ["../../packages/core/src/types-public.ts"]
+      "@piccolo/api": ["../../packages/api/src/index.ts"]
     },
     // skipLibCheck is required: test files use `cloudflare:test` ambient module which
     // is not a true ES module and triggers verbatimModuleSyntax violations.

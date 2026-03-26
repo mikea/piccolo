@@ -13,8 +13,8 @@
  * Spec ref: specs/api.md
  */
 
-export type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
 // ── Re-export ai types used in the public API ─────────────────────────────────
+export type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
 export type {
   FinishReason,
   ImagePart,
@@ -23,10 +23,12 @@ export type {
   ModelMessage,
 } from "ai";
 
-// ─── Shared data types ────────────────────────────────────────────────────────
+// ─── Imports for use below ───────────────────────────────────────────────────
 
 import type { JSONSchema7 } from "@ai-sdk/provider";
 import type { FinishReason, LanguageModelUsage, ModelMessage } from "ai";
+
+// ─── Shared data types ────────────────────────────────────────────────────────
 
 /**
  * File attachment passed to ISession.prompt().
@@ -64,6 +66,8 @@ export type AgentEvent =
   | { type: "tool_start"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool_end"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: "error"; message: string };
+
+// ─── Tool ─────────────────────────────────────────────────────────────────────
 
 /**
  * ToolDescriptor — pure data describing a tool to the LLM and piccolo-core.
@@ -336,25 +340,56 @@ export interface SystemPromptAddition {
   priority?: number;
 }
 
-// ─── Extension event types ────────────────────────────────────────────────────
+// ─── Extension events — single discriminated union ───────────────────────────
 
-export interface InputEvent {
-  text: string;
-  attachments: Attachment[];
-  source: "user";
-  commandName?: string;
-  commandArgs?: string;
-}
+/**
+ * ExtensionEvent — every event piccolo-core dispatches to extension Workers.
+ *
+ * Extends AgentEvent: all variants that flow through the agent stream
+ * (agent_start, agent_end, turn_start, turn_end, tool_start, tool_end,
+ * text_delta, reasoning_delta, error) are also valid ExtensionEvents and can
+ * be passed directly to IExtensionRunner.emit() without any mapping.
+ *
+ * Adds extension-only variants for lifecycle and interception events.
+ * Every variant carries a `type` field for discrimination.
+ *
+ * Spec ref: specs/api.md §8
+ */
+export type ExtensionEvent =
+  // ── All agent loop events (same type strings as AgentEvent) ───────────────
+  | AgentEvent
+  // ── Lifecycle (extension-only) ────────────────────────────────────────────
+  | { type: "session_start"; sessionId: string; userId: string; modelId: string }
+  | { type: "session_shutdown"; sessionId: string }
+  // ── Interception events (extension-only; have structured return values) ───
+  | {
+      type: "input";
+      text: string;
+      attachments: Attachment[];
+      source: "user";
+      commandName?: string;
+      commandArgs?: string;
+    }
+  | { type: "before_agent_start"; text: string; attachments: Attachment[]; systemPrompt: string }
+  | { type: "context"; messages: ModelMessage[] }
+  | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
+  | {
+      type: "tool_result";
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      output: unknown;
+      isError: boolean;
+    }
+  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number }
+  // ── Compact notification ──────────────────────────────────────────────────
+  | { type: "compact"; summary: string; keptMessageCount: number };
+
+// ─── Result types for interception events ────────────────────────────────────
 
 export interface InputResult {
   action: "handled" | "transform" | "continue";
   text?: string;
-}
-
-export interface BeforeAgentStartEvent {
-  text: string;
-  attachments: Attachment[];
-  systemPrompt: string;
 }
 
 export interface BeforeAgentStartResult {
@@ -362,18 +397,8 @@ export interface BeforeAgentStartResult {
   contextMessages?: ModelMessage[];
 }
 
-export interface ContextEvent {
-  messages: ModelMessage[];
-}
-
 export interface ContextResult {
   messages: ModelMessage[];
-}
-
-export interface ToolCallEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
 }
 
 export interface ToolCallResult {
@@ -381,102 +406,39 @@ export interface ToolCallResult {
   reason?: string;
 }
 
-export interface ToolResultEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-  output: unknown;
-  isError: boolean;
-}
-
 export type ToolResultOverride = Partial<ToolResult>;
-
-export interface BeforeCompactEvent {
-  messages: ModelMessage[];
-  keepRecentTokens: number;
-}
 
 export interface BeforeCompactResult {
   cancel?: boolean;
   summary?: string;
 }
 
-export interface SessionStartEvent {
-  sessionId: string;
-  userId: string;
-  modelId: string;
-}
-
-export interface SessionShutdownEvent {
-  sessionId: string;
-}
-
-export interface AgentStartEvent {
-  sessionId: string;
-}
-
-export interface AgentEndEvent {
-  sessionId: string;
-  messages: ModelMessage[];
-  totalUsage: LanguageModelUsage;
-}
-
-export interface TurnStartEvent {
-  stepNumber: number;
-}
-
-export interface TurnEndEvent {
-  stepNumber: number;
-  finishReason: FinishReason;
-  usage: LanguageModelUsage;
-}
-
-export interface ToolStartEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-}
-
-export interface ToolEndEvent {
-  toolCallId: string;
-  toolName: string;
-  output: unknown;
-  isError: boolean;
-}
-
-export interface CompactEvent {
-  summary: string;
-  keptMessageCount: number;
-}
-
 // ─── Extension interfaces ─────────────────────────────────────────────────────
 
 /**
  * IExtensionListener — event handler interface implemented by extensions.
+ *
+ * A single `onEvent` method receives any ExtensionEvent and the session context.
+ * Return void for fire-and-forget events. For interception events (input,
+ * before_agent_start, context, tool_call, tool_result, before_compact) the
+ * return type is the appropriate result union (see IExtensionRunner for how
+ * the core calls each extension and merges results).
+ *
  * Spec ref: specs/api.md §8
  */
 export interface IExtensionListener {
-  onSessionStart?(event: SessionStartEvent, ctx: ISession): Promise<void>;
-  onSessionShutdown?(event: SessionShutdownEvent, ctx: ISession): Promise<void>;
-  onBeforeAgentStart?(
-    event: BeforeAgentStartEvent,
+  onEvent?(
+    event: ExtensionEvent,
     ctx: ISession,
-  ): Promise<BeforeAgentStartResult | undefined>;
-  onAgentStart?(event: AgentStartEvent, ctx: ISession): Promise<void>;
-  onAgentEnd?(event: AgentEndEvent, ctx: ISession): Promise<void>;
-  onTurnStart?(event: TurnStartEvent, ctx: ISession): Promise<void>;
-  onTurnEnd?(event: TurnEndEvent, ctx: ISession): Promise<void>;
-  onToolStart?(event: ToolStartEvent, ctx: ISession): Promise<void>;
-  onToolEnd?(event: ToolEndEvent, ctx: ISession): Promise<void>;
-  onContext?(event: ContextEvent, ctx: ISession): Promise<ContextResult | undefined>;
-  onToolCall?(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult | undefined>;
-  onToolResult?(event: ToolResultEvent, ctx: ISession): Promise<ToolResultOverride | undefined>;
-  onInput?(event: InputEvent, ctx: ISession): Promise<InputResult | undefined>;
-  onBeforeCompact?(
-    event: BeforeCompactEvent,
-    ctx: ISession,
-  ): Promise<BeforeCompactResult | undefined>;
-  onCompact?(event: CompactEvent, ctx: ISession): Promise<void>;
+  ): Promise<
+    | InputResult
+    | BeforeAgentStartResult
+    | ContextResult
+    | ToolCallResult
+    | ToolResultOverride
+    | BeforeCompactResult
+    | undefined
+  >;
 }
 
 /**

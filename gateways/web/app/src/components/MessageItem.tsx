@@ -5,7 +5,7 @@
  * The server is the single source of truth for all chat state.
  */
 
-import type { HistoryEntry } from "@piccolo/core";
+import type { HistoryEntry } from "@piccolo/api";
 import { type Component, Match, Show, Switch } from "solid-js";
 
 interface Props {

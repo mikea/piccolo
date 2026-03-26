@@ -1,8 +1,9 @@
 /**
  * Configurable mock IExtensionWorker for ExtensionRunner unit tests.
  *
- * Pass options to control what each handler returns. Set `shouldThrow: true`
- * to make all handlers throw — useful for error-isolation tests.
+ * Pass options to control what onEvent returns for each event type.
+ * Set `shouldThrow: true` to make all handlers throw — useful for
+ * error-isolation tests.
  *
  * Usage:
  *   const ext = createMockExtension({
@@ -13,27 +14,34 @@
  * Spec ref: specs/api.md §8 IExtensionWorker
  */
 
-import type { ICommand, ISession, ITool, SystemPromptAddition } from "@piccolo/api";
 import type {
-  BeforeAgentStartEvent,
   BeforeAgentStartResult,
-  BeforeCompactEvent,
   BeforeCompactResult,
-  CompactEvent,
-  ContextEvent,
   ContextResult,
+  ExtensionEvent,
+  ICommand,
   IExtensionWorker,
-  InputEvent,
   InputResult,
-  SessionStartEvent,
-  ToolCallEvent,
+  ISession,
+  ITool,
+  SystemPromptAddition,
   ToolCallResult,
-  ToolResultEvent,
   ToolResultOverride,
-} from "../../src/extension-types.ts";
+} from "@piccolo/api";
 
 // Re-export for convenience in test files
 export type { SystemPromptAddition } from "@piccolo/api";
+
+// ── Narrow event types for handler callbacks ──────────────────────────────────
+
+type InputEv = Extract<ExtensionEvent, { type: "input" }>;
+type BeforeAgentStartEv = Extract<ExtensionEvent, { type: "before_agent_start" }>;
+type ContextEv = Extract<ExtensionEvent, { type: "context" }>;
+type ToolCallEv = Extract<ExtensionEvent, { type: "tool_call" }>;
+type ToolResultEv = Extract<ExtensionEvent, { type: "tool_result" }>;
+type BeforeCompactEv = Extract<ExtensionEvent, { type: "before_compact" }>;
+type CompactEv = Extract<ExtensionEvent, { type: "compact" }>;
+type SessionStartEv = Extract<ExtensionEvent, { type: "session_start" }>;
 
 export interface MockExtensionOptions {
   /** Extension name (informational, for debugging). */
@@ -54,36 +62,36 @@ export interface MockExtensionOptions {
   commands?: ICommand[];
   /** System prompt additions returned by getSystemPromptAdditions(). Default: []. */
   systemPromptAdditions?: SystemPromptAddition[];
-  /** Handler for onInput. Return undefined to behave as not-implemented. */
-  onInput?: (event: InputEvent) => InputResult | undefined;
-  /** Handler for onBeforeAgentStart. */
-  onBeforeAgentStart?: (event: BeforeAgentStartEvent) => BeforeAgentStartResult | undefined;
-  /** Handler for onContext. */
-  onContext?: (event: ContextEvent) => ContextResult | undefined;
-  /** Handler for onToolCall. */
-  onToolCall?: (event: ToolCallEvent) => ToolCallResult | undefined;
-  /** Handler for onToolResult. */
-  onToolResult?: (event: ToolResultEvent) => ToolResultOverride | undefined;
-  /** Handler for onBeforeCompact. */
-  onBeforeCompact?: (event: BeforeCompactEvent) => BeforeCompactResult | undefined;
-  /** Handler for onCompact (fire-and-forget). */
-  onCompact?: (event: CompactEvent) => void;
+  /** Handler for input events. Return undefined to behave as not-implemented. */
+  onInput?: (event: InputEv) => InputResult | undefined;
+  /** Handler for before_agent_start events. */
+  onBeforeAgentStart?: (event: BeforeAgentStartEv) => BeforeAgentStartResult | undefined;
+  /** Handler for context events. */
+  onContext?: (event: ContextEv) => ContextResult | undefined;
+  /** Handler for tool_call events. */
+  onToolCall?: (event: ToolCallEv) => ToolCallResult | undefined;
+  /** Handler for tool_result events. */
+  onToolResult?: (event: ToolResultEv) => ToolResultOverride | undefined;
+  /** Handler for before_compact events. */
+  onBeforeCompact?: (event: BeforeCompactEv) => BeforeCompactResult | undefined;
+  /** Handler for compact events (fire-and-forget). */
+  onCompact?: (event: CompactEv) => void;
   /**
-   * If true, all handler methods throw "MockExtension error" instead of
-   * executing their handlers. Used for error-isolation tests.
+   * If true, onEvent throws "MockExtension error" instead of executing handlers.
+   * Used for error-isolation tests.
    */
   shouldThrow?: boolean;
   /** Track calls made to the mock for assertion in tests. */
   calls?: {
-    onSessionStart: SessionStartEvent[];
-    onInput: InputEvent[];
-    onBeforeAgentStart: BeforeAgentStartEvent[];
-    onContext: ContextEvent[];
-    onToolCall: ToolCallEvent[];
-    onToolResult: ToolResultEvent[];
-    onBeforeCompact: BeforeCompactEvent[];
-    onCompact: CompactEvent[];
-    emit: Array<{ type: string; event: unknown }>;
+    onSessionStart: SessionStartEv[];
+    onInput: InputEv[];
+    onBeforeAgentStart: BeforeAgentStartEv[];
+    onContext: ContextEv[];
+    onToolCall: ToolCallEv[];
+    onToolResult: ToolResultEv[];
+    onBeforeCompact: BeforeCompactEv[];
+    onCompact: CompactEv[];
+    emit: ExtensionEvent[];
   };
 }
 
@@ -156,51 +164,49 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
       return options.systemPromptAdditions ?? [];
     },
 
-    async onSessionStart(event: SessionStartEvent, _ctx: ISession) {
+    async onEvent(event: ExtensionEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
-      calls.onSessionStart.push(event);
-    },
 
-    async onInput(event: InputEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onInput.push(event);
-      return options.onInput?.(event);
-    },
+      // Track all events
+      calls.emit.push(event);
 
-    async onBeforeAgentStart(event: BeforeAgentStartEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onBeforeAgentStart.push(event);
-      return options.onBeforeAgentStart?.(event);
-    },
+      switch (event.type) {
+        case "session_start":
+          calls.onSessionStart.push(event);
+          return undefined;
 
-    async onContext(event: ContextEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onContext.push(event);
-      return options.onContext?.(event);
-    },
+        case "input":
+          calls.onInput.push(event);
+          return options.onInput?.(event);
 
-    async onToolCall(event: ToolCallEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onToolCall.push(event);
-      return options.onToolCall?.(event);
-    },
+        case "before_agent_start":
+          calls.onBeforeAgentStart.push(event);
+          return options.onBeforeAgentStart?.(event);
 
-    async onToolResult(event: ToolResultEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onToolResult.push(event);
-      return options.onToolResult?.(event);
-    },
+        case "context":
+          calls.onContext.push(event);
+          return options.onContext?.(event);
 
-    async onBeforeCompact(event: BeforeCompactEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onBeforeCompact.push(event);
-      return options.onBeforeCompact?.(event);
-    },
+        case "tool_call":
+          calls.onToolCall.push(event);
+          return options.onToolCall?.(event);
 
-    async onCompact(event: CompactEvent, _ctx: ISession) {
-      if (options.shouldThrow) maybeThrow();
-      calls.onCompact.push(event);
-      options.onCompact?.(event);
+        case "tool_result":
+          calls.onToolResult.push(event);
+          return options.onToolResult?.(event);
+
+        case "before_compact":
+          calls.onBeforeCompact.push(event);
+          return options.onBeforeCompact?.(event);
+
+        case "compact":
+          calls.onCompact.push(event);
+          options.onCompact?.(event);
+          return undefined;
+
+        default:
+          return undefined;
+      }
     },
   };
 

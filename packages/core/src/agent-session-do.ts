@@ -22,11 +22,13 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import type {
   AgentEvent,
   Attachment,
+  BeforeAgentStartResult,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
   HistoryEntry,
   IGatewayCallback,
+  InputResult,
   ISession,
   ITool,
   ITurn,
@@ -265,10 +267,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const extensionCtx = this.#asSessionStub();
 
     // emitInput
-    const inputResult = await this.#extensionRunner.emitInput(
-      { text, attachments: attachments ?? [], source: "user" },
+    const inputResult = (await this.#extensionRunner.emit(
+      { type: "input", text, attachments: attachments ?? [], source: "user" },
       extensionCtx,
-    );
+    )) as InputResult;
     if (inputResult.action === "handled") {
       const emptyStream = new ReadableStream<AgentEvent>({
         start(c) {
@@ -315,14 +317,15 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#messageToEntryId.set(userMessage, userEntryId);
 
     // emitBeforeAgentStart
-    const beforeStart = await this.#extensionRunner.emitBeforeAgentStart(
+    const beforeStart = (await this.#extensionRunner.emit(
       {
+        type: "before_agent_start",
         text: effectiveText,
         attachments: attachments ?? [],
         systemPrompt: this.#assembledSystemPrompt,
       },
       extensionCtx,
-    );
+    )) as BeforeAgentStartResult;
     if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
       this.#agent.appendMessages(beforeStart.contextMessages);
     }
@@ -716,7 +719,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
 
     // 3. Extension dispatch (fire-and-forget)
-    this.#extensionRunner.emit(event.type, event, extensionCtx).catch(() => {});
+    // AgentEvent is a subset of ExtensionEvent — pass directly, no mapping needed.
+    this.#extensionRunner.emit(event, extensionCtx).catch(() => {});
   }
 
   /**

@@ -13,7 +13,7 @@
  * at component init — never pass it into SolidJS reactive primitives.
  */
 
-import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/core";
+import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/api";
 import { type Component, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
 import { ChatInput } from "./ChatInput.tsx";

@@ -5,7 +5,7 @@
  * — never pass it as a reactive source to SolidJS primitives.
  */
 
-import type { ISession } from "@piccolo/core";
+import type { ISession } from "@piccolo/api";
 import { type Component, createSignal, onMount } from "solid-js";
 import { ModelPicker } from "./ModelPicker.tsx";
 

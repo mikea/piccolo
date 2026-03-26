@@ -5,34 +5,68 @@
  * obtains a dispatch stub for each extension name, and collects tools, commands,
  * and system prompt additions.
  *
- * All emit methods run all registered extension stubs in parallel (Promise.all)
- * and apply spec-correct merge semantics. Every individual stub call is wrapped
- * in .catch(() => undefined) so a broken extension does not prevent others from
- * being called.
+ * Extensions implement IExtensionWorker.onEvent(). The ExtensionRunner handles
+ * all merge semantics internally, keyed on event.type.
+ *
+ * There is a single emit(event, ctx) method — the caller passes any ExtensionEvent
+ * (including AgentEvent variants) and receives the merged result for that event
+ * type. For fire-and-forget events the result is undefined.
  *
  * Spec refs:
  *   specs/core.md §ExtensionRunner
- *   specs/api.md  §8 (IExtensionWorker, event/result types)
+ *   specs/api.md  §8 (IExtensionWorker, ExtensionEvent)
  */
 
-import type { ICommand, ISession, ITool, SystemPromptAddition } from "@piccolo/api";
 import type {
-  BeforeAgentStartEvent,
   BeforeAgentStartResult,
-  BeforeCompactEvent,
   BeforeCompactResult,
-  ContextEvent,
   ContextResult,
-  IExtensionRunner,
+  ExtensionEvent,
+  ICommand,
   IExtensionWorker,
-  InputEvent,
   InputResult,
-  SessionStartEvent,
-  ToolCallEvent,
+  ISession,
+  ITool,
+  SystemPromptAddition,
   ToolCallResult,
-  ToolResultEvent,
   ToolResultOverride,
-} from "./extension-types.ts";
+} from "@piccolo/api";
+
+// ─── ExtensionEventResult ─────────────────────────────────────────────────────
+
+/**
+ * The union of all possible return values from emit().
+ * Callers narrow by knowing which event type they dispatched.
+ *
+ * For fire-and-forget events (agent_start, agent_end, turn_*, tool_*, compact,
+ * session_start, session_shutdown) the result is always undefined.
+ */
+export type ExtensionEventResult =
+  | InputResult
+  | BeforeAgentStartResult
+  | ContextResult
+  | ToolCallResult
+  | ToolResultOverride
+  | BeforeCompactResult
+  | undefined;
+
+// ─── IExtensionRunner ─────────────────────────────────────────────────────────
+
+/**
+ * IExtensionRunner — core-internal interface for dispatching to extensions.
+ * Implemented by ExtensionRunner. NOT part of the JSRPC API surface.
+ *
+ * A single emit() handles all event types. The merge semantics are
+ * determined by event.type inside the implementation.
+ */
+export interface IExtensionRunner {
+  emit(event: ExtensionEvent, ctx: ISession): Promise<ExtensionEventResult>;
+  getSystemPromptAdditions(): SystemPromptAddition[];
+  getCommands(): ICommand[];
+  getTools(): ITool[];
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
@@ -45,48 +79,17 @@ function formatError(error: unknown): string {
   }
 }
 
-// Re-export so callers can import everything from extension-runner.ts
-export type { SystemPromptAddition } from "@piccolo/api";
-export type {
-  AgentEndEvent,
-  AgentStartEvent,
-  BeforeAgentStartEvent,
-  BeforeAgentStartResult,
-  BeforeCompactEvent,
-  BeforeCompactResult,
-  CompactEvent,
-  ContextEvent,
-  ContextResult,
-  IExtensionListener,
-  IExtensionRunner,
-  IExtensionWorker,
-  InputEvent,
-  InputResult,
-  SessionShutdownEvent,
-  SessionStartEvent,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolEndEvent,
-  ToolResultEvent,
-  ToolResultOverride,
-  ToolStartEvent,
-  TurnEndEvent,
-  TurnStartEvent,
-} from "./extension-types.ts";
-
 // ─── parseCommand ─────────────────────────────────────────────────────────────
 
 /**
  * Parse a slash command from user input.
- *
- * Spec ref: specs/core.md §Command routing in emitInput
+ * Spec ref: specs/core.md §Command routing
  */
 export function parseCommand(
   text: string,
   commands: ICommand[],
 ): { commandName: string; commandArgs: string } | undefined {
   if (!text.startsWith("/")) return undefined;
-  // "/command arg1 arg2" → parts[0] = "/command", rest = ["arg1", "arg2"]
   const parts = text.split(/\s+/);
   const commandToken = parts[0];
   const cmd = commands.find((c) => `/${c.name}` === commandToken);
@@ -109,19 +112,11 @@ export class ExtensionRunner implements IExtensionRunner {
   #extensions: Array<{ name: string; worker: IExtensionWorker }> = [];
   #commands: ICommand[] = [];
   #systemPromptAdditions: SystemPromptAddition[] = [];
-  /**
-   * All tools provided directly by extension workers.
-   */
   #tools: ITool[] = [];
 
   /**
    * Load the extension registry and bootstrap all extensions for a session.
-   *
-   * 1. Read extensions:registry from CONFIG KV → string[]
-   * 2. For each name, obtain a dispatch stub via EXTENSIONS.get(name)
-   * 3. In parallel: call getTools(ctx), getCommands(ctx), getSystemPromptAdditions(ctx)
-   * 4. Wrap each tool in an ExtensionToolAdapter; store stubs and data
-   * 5. Fire onSessionStart on all stubs (fire-and-forget)
+   * Spec ref: specs/core.md §ExtensionRunner §initialize
    */
   async initialize(
     ctx: ISession,
@@ -131,7 +126,6 @@ export class ExtensionRunner implements IExtensionRunner {
   ): Promise<void> {
     console.debug("[extensions] initialize start");
 
-    // 1. Read registry
     let names: string[] = [];
     try {
       const raw = await kv.get("extensions:registry");
@@ -143,7 +137,6 @@ export class ExtensionRunner implements IExtensionRunner {
       }
     } catch (error) {
       console.warn(`[extensions] failed to parse extensions:registry error=${formatError(error)}`);
-      // Malformed KV value — proceed with empty list
       names = [];
     }
 
@@ -154,7 +147,6 @@ export class ExtensionRunner implements IExtensionRunner {
 
     console.debug(`[extensions] registry size=${names.length} names=${JSON.stringify(names)}`);
 
-    // 2. Bootstrap all extensions in parallel
     const results = await Promise.all(
       names.map(async (name) => {
         let worker: IExtensionWorker;
@@ -179,7 +171,6 @@ export class ExtensionRunner implements IExtensionRunner {
       }),
     );
 
-    // 3. Store workers and collected data
     for (const result of results) {
       if (result === null) continue;
       const { name, worker, tools, commands, additions } = result;
@@ -192,16 +183,15 @@ export class ExtensionRunner implements IExtensionRunner {
       );
     }
 
-    // 4. Fire onSessionStart (fire-and-forget)
-    const startEvent: SessionStartEvent = {
-      sessionId: await ctx.sessionId(),
-      userId: ctx.userId,
-      modelId: modelId ?? "",
-    };
-    await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onSessionStart", () => worker.onSessionStart?.(startEvent, ctx)),
-      ),
+    // Fire session_start
+    await this.emit(
+      {
+        type: "session_start",
+        sessionId: await ctx.sessionId(),
+        userId: ctx.userId,
+        modelId: modelId ?? "",
+      },
+      ctx,
     );
 
     console.debug(
@@ -263,144 +253,190 @@ export class ExtensionRunner implements IExtensionRunner {
     return this.#tools;
   }
 
-  // ─── Emit methods ─────────────────────────────────────────────────────────
+  // ─── emit ─────────────────────────────────────────────────────────────────
 
   /**
-   * Emit input event.
-   * First parses command from text, attaches commandName/commandArgs to event.
-   * Merge rule: first result with action !== "continue" wins; rest ignored.
+   * Dispatch an ExtensionEvent to all extensions and return the merged result.
+   *
+   * Merge semantics by event type:
+   *   input            — first non-continue InputResult wins; default { action: "continue" }
+   *   before_agent_start — contextMessages concatenated; last systemPrompt wins
+   *   context          — last non-void ContextResult wins
+   *   tool_call        — first block=true wins; default { block: false }
+   *   tool_result      — chained: each extension sees previous output
+   *   before_compact   — first cancel=true wins; else first summary wins; else {}
+   *   all others       — fire-and-forget (results discarded); returns undefined
+   *
+   * AgentEvent variants (agent_start, agent_end, turn_*, tool_*, error) are
+   * valid ExtensionEvents and fire-and-forget.
+   *
    * Spec ref: specs/core.md §Dispatch and merge rules
    */
-  async emitInput(event: InputEvent, ctx: ISession): Promise<InputResult> {
-    // Parse command before dispatch
+  async emit(event: ExtensionEvent, ctx: ISession): Promise<ExtensionEventResult> {
+    switch (event.type) {
+      case "input":
+        return this.#dispatchInput(event, ctx);
+      case "before_agent_start":
+        return this.#dispatchBeforeAgentStart(event, ctx);
+      case "context":
+        return this.#dispatchContext(event, ctx);
+      case "tool_call":
+        return this.#dispatchToolCall(event, ctx);
+      case "tool_result":
+        return this.#dispatchToolResult(event, ctx);
+      case "before_compact":
+        return this.#dispatchBeforeCompact(event, ctx);
+      default:
+        // Fire-and-forget: dispatch concurrently, discard results
+        await Promise.all(
+          this.#extensions.map(({ name, worker }) =>
+            this.#safeCall(name, event.type, () => worker.onEvent?.(event, ctx)),
+          ),
+        );
+        return undefined;
+    }
+  }
+
+  // ─── Interception dispatch ────────────────────────────────────────────────
+
+  /**
+   * input — first non-continue result wins.
+   * Command is parsed and attached before dispatch.
+   */
+  async #dispatchInput(
+    event: Extract<ExtensionEvent, { type: "input" }>,
+    ctx: ISession,
+  ): Promise<InputResult> {
     const parsed = parseCommand(event.text, this.#commands);
-    const enrichedEvent: InputEvent = parsed
+    const enrichedEvent: Extract<ExtensionEvent, { type: "input" }> = parsed
       ? { ...event, commandName: parsed.commandName, commandArgs: parsed.commandArgs }
       : event;
 
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onInput", () => worker.onInput?.(enrichedEvent, ctx)),
+        this.#safeCall(name, "input", () => worker.onEvent?.(enrichedEvent, ctx)),
       ),
     );
-    const winner = results.find((result): result is InputResult => {
-      return result !== undefined && result.action !== "continue";
-    });
+    const winner = results.find(
+      (r): r is InputResult =>
+        r !== undefined &&
+        r !== null &&
+        typeof r === "object" &&
+        "action" in r &&
+        (r as InputResult).action !== "continue",
+    );
     return winner ?? { action: "continue" };
   }
 
-  /**
-   * Emit before-agent-start event.
-   * Merge rule: all contextMessages concatenated; last non-undefined systemPrompt wins.
-   * Spec ref: specs/core.md §Dispatch and merge rules
-   */
-  async emitBeforeAgentStart(
-    event: BeforeAgentStartEvent,
+  /** before_agent_start — contextMessages concatenated; last systemPrompt wins. */
+  async #dispatchBeforeAgentStart(
+    event: Extract<ExtensionEvent, { type: "before_agent_start" }>,
     ctx: ISession,
   ): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onBeforeAgentStart", () => worker.onBeforeAgentStart?.(event, ctx)),
+        this.#safeCall(name, "before_agent_start", () => worker.onEvent?.(event, ctx)),
       ),
     );
-    const contextMessages = results.flatMap((r) => r?.contextMessages ?? []);
-    const lastSystemPrompt = results.filter((r) => r?.systemPrompt != null).at(-1)?.systemPrompt;
+    const typed = results.filter(
+      (r): r is BeforeAgentStartResult =>
+        r !== undefined &&
+        r !== null &&
+        typeof r === "object" &&
+        ("contextMessages" in r || "systemPrompt" in r),
+    );
+    const contextMessages = typed.flatMap((r) => r.contextMessages ?? []);
+    const lastSystemPrompt = typed.filter((r) => r.systemPrompt != null).at(-1)?.systemPrompt;
     const merged: BeforeAgentStartResult = { contextMessages };
     if (lastSystemPrompt != null) merged.systemPrompt = lastSystemPrompt;
     return merged;
   }
 
-  /**
-   * Emit context event (called before each LLM call).
-   * Merge rule: last extension that returns a non-void ContextResult wins.
-   * Spec ref: specs/core.md §Dispatch and merge rules
-   */
-  async emitContext(event: ContextEvent, ctx: ISession): Promise<ContextResult | undefined> {
+  /** context — last non-void ContextResult wins. */
+  async #dispatchContext(
+    event: Extract<ExtensionEvent, { type: "context" }>,
+    ctx: ISession,
+  ): Promise<ContextResult | undefined> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onContext", () => worker.onContext?.(event, ctx)),
+        this.#safeCall(name, "context", () => worker.onEvent?.(event, ctx)),
       ),
     );
-    // Last non-void result wins
-    const winning = [...results].reverse().find((result): result is ContextResult => {
-      return result !== undefined;
-    });
-    return winning;
+    return [...results]
+      .reverse()
+      .find(
+        (r): r is ContextResult =>
+          r !== undefined && r !== null && typeof r === "object" && "messages" in r,
+      );
   }
 
-  /**
-   * Emit tool-call event.
-   * Merge rule: first result with block === true wins; if none, call proceeds.
-   * Spec ref: specs/core.md §Dispatch and merge rules
-   */
-  async emitToolCall(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult> {
+  /** tool_call — first block=true wins; default { block: false }. */
+  async #dispatchToolCall(
+    event: Extract<ExtensionEvent, { type: "tool_call" }>,
+    ctx: ISession,
+  ): Promise<ToolCallResult> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onToolCall", () => worker.onToolCall?.(event, ctx)),
+        this.#safeCall(name, "tool_call", () => worker.onEvent?.(event, ctx)),
       ),
     );
-    return results.find((result) => result?.block === true) ?? { block: false };
+    const blocked = results.find(
+      (r): r is ToolCallResult =>
+        r !== undefined &&
+        r !== null &&
+        typeof r === "object" &&
+        "block" in r &&
+        Boolean((r as ToolCallResult).block),
+    );
+    return blocked ?? { block: false };
   }
 
-  /**
-   * Emit tool-result event.
-   * Merge rule: results chained — each handler sees the previous handler's output.
-   * Spec ref: specs/core.md §Dispatch and merge rules
-   */
-  async emitToolResult(
-    event: ToolResultEvent,
+  /** tool_result — chained: each extension sees previous output. */
+  async #dispatchToolResult(
+    event: Extract<ExtensionEvent, { type: "tool_result" }>,
     ctx: ISession,
   ): Promise<ToolResultOverride | undefined> {
     let current: ToolResultOverride | undefined;
     for (const { name, worker } of this.#extensions) {
-      const chainedEvent: ToolResultEvent = current ? { ...event, output: current } : event;
-      const result = await this.#safeCall(name, "onToolResult", () =>
-        worker.onToolResult?.(chainedEvent, ctx),
+      const chainedEvent: Extract<ExtensionEvent, { type: "tool_result" }> = current
+        ? { ...event, output: current }
+        : event;
+      const result = await this.#safeCall(name, "tool_result", () =>
+        worker.onEvent?.(chainedEvent, ctx),
       );
-      if (result != null) current = result;
+      if (
+        result != null &&
+        typeof result === "object" &&
+        !("block" in result) &&
+        !("action" in result) &&
+        !("messages" in result) &&
+        !("cancel" in result) &&
+        !("summary" in result)
+      ) {
+        current = result as ToolResultOverride;
+      }
     }
     return current;
   }
 
-  /**
-   * Emit before-compact event.
-   * Merge rule: first result with cancel === true wins;
-   *             or first result with a summary string wins.
-   * Spec ref: specs/core.md §Dispatch and merge rules
-   */
-  async emitBeforeCompact(event: BeforeCompactEvent, ctx: ISession): Promise<BeforeCompactResult> {
+  /** before_compact — first cancel=true wins; else first summary wins; else {}. */
+  async #dispatchBeforeCompact(
+    event: Extract<ExtensionEvent, { type: "before_compact" }>,
+    ctx: ISession,
+  ): Promise<BeforeCompactResult> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "onBeforeCompact", () => worker.onBeforeCompact?.(event, ctx)),
+        this.#safeCall(name, "before_compact", () => worker.onEvent?.(event, ctx)),
       ),
     );
-    const cancellation = results.find((result) => result?.cancel === true);
-    if (cancellation) return cancellation as BeforeCompactResult;
-    const withSummary = results.find((result) => result?.summary != null);
-    if (withSummary) return withSummary as BeforeCompactResult;
-    return {};
-  }
-
-  /**
-   * Fire-and-forget: emit any agent-loop event to all extensions concurrently.
-   * Results are discarded; errors are swallowed.
-   * Spec ref: specs/core.md §Dispatch and merge rules (fire-and-forget events)
-   */
-  // biome-ignore lint/suspicious/noExplicitAny: event payload varies by event type
-  async emit(eventType: string, event: any, ctx: ISession): Promise<void> {
-    await Promise.all(
-      this.#extensions.map(({ name, worker }) => {
-        const handler = (worker as Record<string, unknown>)[eventType];
-        if (typeof handler !== "function") return undefined;
-        return (handler as (e: unknown, c: unknown) => Promise<void>)
-          .call(worker, event, ctx)
-          .catch((error: unknown) => {
-            console.warn(
-              `[extensions] extension=${name} op=${eventType} failed error=${formatError(error)}`,
-            );
-            return undefined;
-          });
-      }),
+    const typed = results.filter(
+      (r): r is BeforeCompactResult =>
+        r !== undefined && r !== null && typeof r === "object" && ("cancel" in r || "summary" in r),
     );
+    const cancellation = typed.find((r) => r.cancel === true);
+    if (cancellation) return cancellation;
+    const withSummary = typed.find((r) => r.summary != null);
+    if (withSummary) return withSummary;
+    return {};
   }
 }

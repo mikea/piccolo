@@ -19,6 +19,16 @@
  * Spec ref: specs/core.md §ExtensionRunner
  */
 
+import type {
+  BeforeAgentStartResult,
+  BeforeCompactResult,
+  ContextResult,
+  ExtensionEvent,
+  InputResult,
+  ISession,
+  ToolCallResult,
+  ToolResultOverride,
+} from "@piccolo/api";
 import { describe, expect, it } from "vitest";
 import { ExtensionRunner, parseCommand } from "../../src/extension-runner.ts";
 import {
@@ -27,6 +37,57 @@ import {
   createMockKv,
   createMockSession,
 } from "../mocks/extension-stub.ts";
+
+// ─── Typed emit helpers ───────────────────────────────────────────────────────
+// Wrap runner.emit() with result casts so tests remain readable.
+
+async function emitInput(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "input" }>,
+  session: ISession,
+): Promise<InputResult> {
+  return (await runner.emit(event, session)) as InputResult;
+}
+
+async function emitBeforeAgentStart(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "before_agent_start" }>,
+  session: ISession,
+): Promise<BeforeAgentStartResult> {
+  return (await runner.emit(event, session)) as BeforeAgentStartResult;
+}
+
+async function emitContext(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "context" }>,
+  session: ISession,
+): Promise<ContextResult | undefined> {
+  return (await runner.emit(event, session)) as ContextResult | undefined;
+}
+
+async function emitToolCall(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "tool_call" }>,
+  session: ISession,
+): Promise<ToolCallResult> {
+  return (await runner.emit(event, session)) as ToolCallResult;
+}
+
+async function emitToolResult(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "tool_result" }>,
+  session: ISession,
+): Promise<ToolResultOverride | undefined> {
+  return (await runner.emit(event, session)) as ToolResultOverride | undefined;
+}
+
+async function emitBeforeCompact(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "before_compact" }>,
+  session: ISession,
+): Promise<BeforeCompactResult> {
+  return (await runner.emit(event, session)) as BeforeCompactResult;
+}
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -43,7 +104,7 @@ async function makeRunner(
 }
 
 function inputEvent(text: string) {
-  return { text, attachments: [], source: "user" as const };
+  return { type: "input" as const, text, attachments: [] as never[], source: "user" as const };
 }
 
 // ─── 1. parseCommand ──────────────────────────────────────────────────────────
@@ -207,7 +268,7 @@ describe("initialize()", () => {
 describe("emitInput()", () => {
   it("no extensions → { action: 'continue' }", async () => {
     const runner = await makeRunner({});
-    const result = await runner.emitInput(inputEvent("hello"), ctx);
+    const result = await emitInput(runner, inputEvent("hello"), ctx);
     expect(result).toEqual({ action: "continue" });
   });
 
@@ -215,7 +276,7 @@ describe("emitInput()", () => {
     const extA = createMockExtension({ name: "a", onInput: () => ({ action: "continue" }) });
     const extB = createMockExtension({ name: "b", onInput: () => ({ action: "continue" }) });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitInput(inputEvent("hello"), ctx);
+    const result = await emitInput(runner, inputEvent("hello"), ctx);
     expect(result.action).toBe("continue");
   });
 
@@ -226,7 +287,7 @@ describe("emitInput()", () => {
       onInput: () => ({ action: "transform", text: "x" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitInput(inputEvent("hello"), ctx);
+    const result = await emitInput(runner, inputEvent("hello"), ctx);
     expect(result.action).toBe("handled");
   });
 
@@ -237,7 +298,7 @@ describe("emitInput()", () => {
       onInput: () => ({ action: "transform" as const, text: "transformed!" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitInput(inputEvent("hello"), ctx);
+    const result = await emitInput(runner, inputEvent("hello"), ctx);
     expect(result.action).toBe("transform");
     expect(result.text).toBe("transformed!");
   });
@@ -246,7 +307,7 @@ describe("emitInput()", () => {
     const throwing = createMockExtension({ name: "bad", shouldThrow: true });
     const good = createMockExtension({ name: "good", onInput: () => ({ action: "handled" }) });
     const runner = await makeRunner({ bad: throwing, good });
-    const result = await runner.emitInput(inputEvent("hello"), ctx);
+    const result = await emitInput(runner, inputEvent("hello"), ctx);
     expect(result.action).toBe("handled");
   });
 
@@ -263,7 +324,7 @@ describe("emitInput()", () => {
     // Runner must be initialized with this extension's commands already loaded
     const runner = new ExtensionRunner();
     await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
-    const result = await runner.emitInput(inputEvent("/my-cmd extra args"), ctx);
+    const result = await emitInput(runner, inputEvent("/my-cmd extra args"), ctx);
     expect(result.action).toBe("handled");
   });
 
@@ -279,7 +340,7 @@ describe("emitInput()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
-    await runner.emitInput(inputEvent("/skill:test arg1 arg2"), ctx);
+    await emitInput(runner, inputEvent("/skill:test arg1 arg2"), ctx);
     expect(capturedArgs).toBe("arg1 arg2");
   });
 });
@@ -287,11 +348,16 @@ describe("emitInput()", () => {
 // ─── 4. emitBeforeAgentStart() ───────────────────────────────────────────────
 
 describe("emitBeforeAgentStart()", () => {
-  const baseEvent = { text: "hello", attachments: [], systemPrompt: "base" };
+  const baseEvent = {
+    type: "before_agent_start" as const,
+    text: "hello",
+    attachments: [] as never[],
+    systemPrompt: "base",
+  };
 
   it("no extensions → empty result", async () => {
     const runner = await makeRunner({});
-    const result = await runner.emitBeforeAgentStart(baseEvent, ctx);
+    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toEqual([]);
     expect(result.systemPrompt).toBeUndefined();
   });
@@ -304,7 +370,7 @@ describe("emitBeforeAgentStart()", () => {
       }),
     });
     const runner = await makeRunner({ a: ext });
-    const result = await runner.emitBeforeAgentStart(baseEvent, ctx);
+    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(1);
     expect(result.contextMessages?.[0]).toMatchObject({ content: "ctx msg" });
   });
@@ -323,7 +389,7 @@ describe("emitBeforeAgentStart()", () => {
       }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeAgentStart(baseEvent, ctx);
+    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(2);
   });
 
@@ -337,7 +403,7 @@ describe("emitBeforeAgentStart()", () => {
       onBeforeAgentStart: () => ({ systemPrompt: "prompt from B" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeAgentStart(baseEvent, ctx);
+    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
     expect(result.systemPrompt).toBe("prompt from B");
   });
 
@@ -353,7 +419,7 @@ describe("emitBeforeAgentStart()", () => {
       onBeforeAgentStart: () => ({ systemPrompt: "override" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeAgentStart(baseEvent, ctx);
+    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(1);
     expect(result.systemPrompt).toBe("override");
   });
@@ -362,17 +428,20 @@ describe("emitBeforeAgentStart()", () => {
 // ─── 5. emitContext() ────────────────────────────────────────────────────────
 
 describe("emitContext()", () => {
-  const contextEvent = { messages: [{ role: "user" as const, content: "hi" }] };
+  const contextEvent = {
+    type: "context" as const,
+    messages: [{ role: "user" as const, content: "hi" }],
+  };
 
   it("no extensions → undefined", async () => {
     const runner = await makeRunner({});
-    expect(await runner.emitContext(contextEvent, ctx)).toBeUndefined();
+    expect(await emitContext(runner, contextEvent, ctx)).toBeUndefined();
   });
 
   it("all extensions return void → undefined", async () => {
     const ext = createMockExtension({ name: "a", onContext: () => undefined });
     const runner = await makeRunner({ a: ext });
-    expect(await runner.emitContext(contextEvent, ctx)).toBeUndefined();
+    expect(await emitContext(runner, contextEvent, ctx)).toBeUndefined();
   });
 
   it("last extension returning a non-void ContextResult wins", async () => {
@@ -385,7 +454,7 @@ describe("emitContext()", () => {
       onContext: () => ({ messages: [{ role: "user", content: "from B" }] }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitContext(contextEvent, ctx);
+    const result = await emitContext(runner, contextEvent, ctx);
     expect(result?.messages[0]).toMatchObject({ content: "from B" });
   });
 
@@ -396,7 +465,7 @@ describe("emitContext()", () => {
     });
     const extB = createMockExtension({ name: "b", onContext: () => undefined });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitContext(contextEvent, ctx);
+    const result = await emitContext(runner, contextEvent, ctx);
     expect(result?.messages[0]).toMatchObject({ content: "from A" });
   });
 });
@@ -404,18 +473,23 @@ describe("emitContext()", () => {
 // ─── 6. emitToolCall() ───────────────────────────────────────────────────────
 
 describe("emitToolCall()", () => {
-  const toolCallEvent = { toolCallId: "tc-1", toolName: "r2", input: { action: "read" } };
+  const toolCallEvent = {
+    type: "tool_call" as const,
+    toolCallId: "tc-1",
+    toolName: "r2",
+    input: { action: "read" },
+  };
 
   it("no extensions → { block: false }", async () => {
     const runner = await makeRunner({});
-    expect(await runner.emitToolCall(toolCallEvent, ctx)).toEqual({ block: false });
+    expect(await emitToolCall(runner, toolCallEvent, ctx)).toEqual({ block: false });
   });
 
   it("all return { block: false } → { block: false }", async () => {
     const extA = createMockExtension({ name: "a", onToolCall: () => ({ block: false }) });
     const extB = createMockExtension({ name: "b", onToolCall: () => ({ block: false }) });
     const runner = await makeRunner({ a: extA, b: extB });
-    expect(await runner.emitToolCall(toolCallEvent, ctx)).toEqual({ block: false });
+    expect(await emitToolCall(runner, toolCallEvent, ctx)).toEqual({ block: false });
   });
 
   it("first extension blocks → { block: true } returned", async () => {
@@ -425,7 +499,7 @@ describe("emitToolCall()", () => {
     });
     const extB = createMockExtension({ name: "b", onToolCall: () => ({ block: false }) });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitToolCall(toolCallEvent, ctx);
+    const result = await emitToolCall(runner, toolCallEvent, ctx);
     expect(result.block).toBe(true);
     expect(result.reason).toBe("not allowed");
   });
@@ -437,7 +511,7 @@ describe("emitToolCall()", () => {
       onToolCall: () => ({ block: true, reason: "blocked by B" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitToolCall(toolCallEvent, ctx);
+    const result = await emitToolCall(runner, toolCallEvent, ctx);
     expect(result.block).toBe(true);
   });
 
@@ -448,7 +522,7 @@ describe("emitToolCall()", () => {
       onToolCall: () => ({ block: true }),
     });
     const runner = await makeRunner({ bad: throwing, blocker: blocking });
-    const result = await runner.emitToolCall(toolCallEvent, ctx);
+    const result = await emitToolCall(runner, toolCallEvent, ctx);
     expect(result.block).toBe(true);
   });
 });
@@ -457,6 +531,7 @@ describe("emitToolCall()", () => {
 
 describe("emitToolResult()", () => {
   const baseToolResultEvent = {
+    type: "tool_result" as const,
     toolCallId: "tc-1",
     toolName: "r2",
     input: {},
@@ -466,7 +541,7 @@ describe("emitToolResult()", () => {
 
   it("no extensions → undefined", async () => {
     const runner = await makeRunner({});
-    expect(await runner.emitToolResult(baseToolResultEvent, ctx)).toBeUndefined();
+    expect(await emitToolResult(runner, baseToolResultEvent, ctx)).toBeUndefined();
   });
 
   it("single extension overrides output → override returned", async () => {
@@ -475,7 +550,7 @@ describe("emitToolResult()", () => {
       onToolResult: () => ({ content: [{ type: "text", text: "overridden" }] }),
     });
     const runner = await makeRunner({ a: ext });
-    const result = await runner.emitToolResult(baseToolResultEvent, ctx);
+    const result = await emitToolResult(runner, baseToolResultEvent, ctx);
     expect(result).toBeDefined();
   });
 
@@ -493,7 +568,7 @@ describe("emitToolResult()", () => {
       },
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitToolResult(baseToolResultEvent, ctx);
+    const result = await emitToolResult(runner, baseToolResultEvent, ctx);
     // B received A's override as its input
     expect(receivedByB[0]).toMatchObject({ content: [{ type: "text", text: "from A" }] });
     // Final result is from B
@@ -507,38 +582,42 @@ describe("emitToolResult()", () => {
       onToolResult: () => ({ content: [{ type: "text", text: "good output" }] }),
     });
     const runner = await makeRunner({ bad: throwing, good });
-    const result = await runner.emitToolResult(baseToolResultEvent, ctx);
+    const result = await emitToolResult(runner, baseToolResultEvent, ctx);
     expect(result).toBeDefined();
   });
 
   it("all extensions return void → undefined", async () => {
     const ext = createMockExtension({ name: "a", onToolResult: () => undefined });
     const runner = await makeRunner({ a: ext });
-    expect(await runner.emitToolResult(baseToolResultEvent, ctx)).toBeUndefined();
+    expect(await emitToolResult(runner, baseToolResultEvent, ctx)).toBeUndefined();
   });
 });
 
 // ─── 8. emitBeforeCompact() ──────────────────────────────────────────────────
 
 describe("emitBeforeCompact()", () => {
-  const compactEvent = { messages: [], keepRecentTokens: 20_000 };
+  const compactEvent = {
+    type: "before_compact" as const,
+    messages: [] as never[],
+    keepRecentTokens: 20_000,
+  };
 
   it("no extensions → {}", async () => {
     const runner = await makeRunner({});
-    expect(await runner.emitBeforeCompact(compactEvent, ctx)).toEqual({});
+    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toEqual({});
   });
 
   it("all return void → {}", async () => {
     const ext = createMockExtension({ name: "a", onBeforeCompact: () => undefined });
     const runner = await makeRunner({ a: ext });
-    expect(await runner.emitBeforeCompact(compactEvent, ctx)).toEqual({});
+    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toEqual({});
   });
 
   it("first returns { cancel: true } → cancellation returned", async () => {
     const extA = createMockExtension({ name: "a", onBeforeCompact: () => ({ cancel: true }) });
     const extB = createMockExtension({ name: "b", onBeforeCompact: () => ({ summary: "x" }) });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeCompact(compactEvent, ctx);
+    const result = await emitBeforeCompact(runner, compactEvent, ctx);
     expect(result.cancel).toBe(true);
   });
 
@@ -549,7 +628,7 @@ describe("emitBeforeCompact()", () => {
       onBeforeCompact: () => ({ summary: "pre-built summary" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeCompact(compactEvent, ctx);
+    const result = await emitBeforeCompact(runner, compactEvent, ctx);
     expect(result.summary).toBe("pre-built summary");
   });
 
@@ -560,7 +639,7 @@ describe("emitBeforeCompact()", () => {
       onBeforeCompact: () => ({ summary: "ignored" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await runner.emitBeforeCompact(compactEvent, ctx);
+    const result = await emitBeforeCompact(runner, compactEvent, ctx);
     expect(result.cancel).toBe(true);
     expect(result.summary).toBeUndefined();
   });
@@ -571,36 +650,43 @@ describe("emitBeforeCompact()", () => {
 describe("emit()", () => {
   it("no extensions → resolves without error", async () => {
     const runner = await makeRunner({});
-    await expect(runner.emit("onAgentStart", { sessionId: "s" }, ctx)).resolves.toBeUndefined();
+    await expect(runner.emit({ type: "agent_start" }, ctx)).resolves.toBeUndefined();
   });
 
   it("all stubs called concurrently", async () => {
     const extA = createMockExtension({ name: "a" });
     const extB = createMockExtension({ name: "b" });
     const runner = await makeRunner({ a: extA, b: extB });
-    const event = { sessionId: "s" };
-    await runner.emit("onAgentStart", event, ctx);
-    // Both should have been notified (tracked via sessionStart)
-    // We check that onAgentEnd fire-and-forget calls would be handled too
+    await runner.emit({ type: "agent_start" }, ctx);
+    // Fire agent_end too
     const agentEndEvent = {
-      sessionId: "s",
-      messages: [],
-      totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      type: "agent_end" as const,
+      totalUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+      },
     };
-    await runner.emit("onAgentEnd", agentEndEvent, ctx);
+    await runner.emit(agentEndEvent, ctx);
     // No error thrown
   });
 
   it("throwing extension does not propagate error", async () => {
     const throwing = createMockExtension({ name: "bad", shouldThrow: true });
     const runner = await makeRunner({ bad: throwing });
-    await expect(runner.emit("onAgentStart", {}, ctx)).resolves.toBeUndefined();
+    await expect(runner.emit({ type: "agent_start" }, ctx)).resolves.toBeUndefined();
   });
 
   it("results are discarded", async () => {
     const ext = createMockExtension({ name: "a" });
     const runner = await makeRunner({ a: ext });
-    const result = await runner.emit("onAgentStart", {}, ctx);
+    const result = await runner.emit({ type: "agent_start" }, ctx);
     expect(result).toBeUndefined();
   });
 });

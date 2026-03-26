@@ -12,7 +12,7 @@ import type {
   ITurn,
   IUser,
   SessionStatus,
-} from "@piccolo/core";
+} from "@piccolo/api";
 import { vi } from "vitest";
 
 const DEFAULT_SESSION_ID = "test-session-id";

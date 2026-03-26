@@ -7,7 +7,7 @@
  * Spec ref: specs/web_gateway.md §Browser SPA
  */
 
-import type { IUser } from "@piccolo/core";
+import type { IUser } from "@piccolo/api";
 import { newWebSocketRpcSession } from "capnweb";
 import { render } from "solid-js/web";
 import type { IWebGateway } from "../../src/types.ts";

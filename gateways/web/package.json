@@ -14,7 +14,7 @@
     "types": "wrangler types src/worker-configuration.d.ts --config wrangler.template.jsonc"
   },
   "dependencies": {
-    "@piccolo/core": "workspace:*",
+    "@piccolo/api": "workspace:*",
     "capnweb": "^0.6.1"
   },
   "devDependencies": {

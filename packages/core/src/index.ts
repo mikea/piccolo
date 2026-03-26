@@ -11,20 +11,15 @@
 
 // All public JSRPC contract types from @piccolo/api
 export type {
-  AgentEndEvent,
   AgentEvent,
-  AgentStartEvent,
   Attachment,
-  BeforeAgentStartEvent,
   BeforeAgentStartResult,
-  BeforeCompactEvent,
   BeforeCompactResult,
-  CompactEvent,
   CompactOptions,
-  ContextEvent,
   ContextResult,
   ContextUsage,
   CustomEntry,
+  ExtensionEvent,
   FinishReason,
   GatewayId,
   HistoryEntry,
@@ -33,7 +28,6 @@ export type {
   IExtensionWorker,
   IGatewayCallback,
   ImagePart,
-  InputEvent,
   InputResult,
   IPiccoloCore,
   ISession,
@@ -47,25 +41,20 @@ export type {
   LanguageModelUsage,
   ModelMessage,
   NewSessionOptions,
-  SessionShutdownEvent,
-  SessionStartEvent,
   SessionStatus,
   SystemPromptAddition,
-  ToolCallEvent,
   ToolCallResult,
   ToolDescriptor,
-  ToolEndEvent,
   ToolResult,
-  ToolResultEvent,
   ToolResultOverride,
-  ToolStartEvent,
-  TurnEndEvent,
-  TurnStartEvent,
   WebComponentDescriptor,
 } from "@piccolo/api";
 // ── Durable Objects ───────────────────────────────────────────────────────────
 // AgentSessionDO — must be a named export for Wrangler DO registration
 export { AgentSessionDO } from "./agent-session-do.ts";
+// IExtensionRunner and ExtensionEventResult are core-internal (not in @piccolo/api)
+// but exported for callers that interact with the runner directly.
+export type { ExtensionEventResult, IExtensionRunner } from "./extension-runner.ts";
 // ── Worker entrypoint ─────────────────────────────────────────────────────────
 export { PiccoloCore as default } from "./piccolo-core.ts";
 // ── Public library API ────────────────────────────────────────────────────────

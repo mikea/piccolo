@@ -108,9 +108,9 @@ importers:
 
   gateways/web:
     dependencies:
-      '@piccolo/core':
+      '@piccolo/api':
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../packages/api
       capnweb:
         specifier: ^0.6.1
         version: 0.6.1
@@ -127,6 +127,9 @@ importers:
 
   gateways/web/app:
     dependencies:
+      '@piccolo/api':
+        specifier: workspace:*
+        version: link:../../../packages/api
       '@solidjs/router':
         specifier: ^0.16.1
         version: 0.16.1(solid-js@1.9.12)

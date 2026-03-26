@@ -7,7 +7,7 @@
  * Spec ref: specs/web_gateway.md §IWebGateway
  */
 
-import type { IPiccoloCore, IUser } from "@piccolo/core";
+import type { IPiccoloCore, IUser } from "@piccolo/api";
 import { RpcTarget } from "capnweb";
 import type { IWebGateway } from "./types.ts";
 

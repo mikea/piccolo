@@ -2,7 +2,7 @@
  * ModelPicker.tsx — Model selector dropdown.
  */
 
-import type { ISession } from "@piccolo/core";
+import type { ISession } from "@piccolo/api";
 import { type Component, createResource, createSignal, For } from "solid-js";
 
 interface Props {

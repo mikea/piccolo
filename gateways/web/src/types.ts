@@ -7,7 +7,7 @@
  * Spec ref: specs/web_gateway.md §IWebGateway
  */
 
-import type { IUser } from "@piccolo/core";
+import type { IUser } from "@piccolo/api";
 import type { RpcTarget } from "capnweb";
 
 export interface IWebGateway extends RpcTarget {

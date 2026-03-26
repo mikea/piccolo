@@ -5,7 +5,7 @@
  * SessionLayout is rendered inline.
  */
 
-import type { ISession, IUser } from "@piccolo/core";
+import type { ISession, IUser } from "@piccolo/api";
 import { useNavigate, useParams } from "@solidjs/router";
 import { type Component, createResource, onMount } from "solid-js";
 import { SessionLayout } from "./SessionLayout.tsx";

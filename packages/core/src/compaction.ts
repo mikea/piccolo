@@ -15,13 +15,13 @@
  * Spec ref: specs/core.md §Context Compaction
  */
 
-import type { ISession } from "@piccolo/api";
+import type { BeforeCompactResult, ExtensionEvent, ISession } from "@piccolo/api";
 import type { ModelMessage } from "ai";
 import type { Agent } from "./agent.ts";
 import { agentCompact, splitForCompaction } from "./agent-compact.ts";
 import type { AnyEntry, CompactionEntry } from "./db/entry-types.ts";
 import { generateEntryId } from "./db/entry-types.ts";
-import type { BeforeCompactEvent, IExtensionRunner } from "./extension-types.ts";
+import type { IExtensionRunner } from "./extension-runner.ts";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -62,11 +62,15 @@ export async function compact(
   const { agent } = state;
 
   // 1. Let extensions cancel or supply a pre-built summary
-  const beforeCompactEvent: BeforeCompactEvent = {
+  const beforeCompactEvent: Extract<ExtensionEvent, { type: "before_compact" }> = {
+    type: "before_compact",
     messages: agent.state.messages,
     keepRecentTokens,
   };
-  const extResult = await state.extensionRunner.emitBeforeCompact(beforeCompactEvent, ctx);
+  const extResult = (await state.extensionRunner.emit(
+    beforeCompactEvent,
+    ctx,
+  )) as BeforeCompactResult;
   if (extResult.cancel) return;
 
   let summary: string;
@@ -121,8 +125,7 @@ export async function compact(
 
   // 6. Notify extensions (fire-and-forget)
   await state.extensionRunner.emit(
-    "onCompact",
-    { summary, keptMessageCount: keptMessages.length },
+    { type: "compact", summary, keptMessageCount: keptMessages.length },
     ctx,
   );
 }

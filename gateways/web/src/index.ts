@@ -11,7 +11,7 @@
  * Spec ref: specs/web_gateway.md
  */
 
-import type { IPiccoloCore } from "@piccolo/core";
+import type { IPiccoloCore } from "@piccolo/api";
 import { newWorkersRpcResponse } from "capnweb";
 import { WebGatewayImpl } from "./web-gateway.ts";
 

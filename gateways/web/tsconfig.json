@@ -5,11 +5,9 @@
     // Run `pnpm --filter @piccolo/web-gateway types` to regenerate after changing
     // wrangler.template.jsonc or the compatibility date.
     "types": ["./src/worker-configuration.d.ts"],
-    // Redirect @piccolo/api to its index (pure type library, no Workers globals).
-    // Redirect @piccolo/core to its types-only export (no Env-dependent source pulled in).
+    // All piccolo contract types come from @piccolo/api (pure type library, no Workers globals).
     "paths": {
-      "@piccolo/api": ["../../packages/api/src/index.ts"],
-      "@piccolo/core": ["../../packages/core/src/types-public.ts"]
+      "@piccolo/api": ["../../packages/api/src/index.ts"]
     }
   },
   "include": ["src/**/*", "test/**/*"]
