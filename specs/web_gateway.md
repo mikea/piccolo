@@ -25,7 +25,7 @@ interface IWebGateway extends RpcTarget {
 
 Defined in `@piccolo/core` — see `specs/api.md §IUser` and `specs/api.md §ISession`.
 
-`prompt()` returns `ReadableStream<AgentEvent>` consumed directly by the browser.
+`prompt()` returns an `ITurn`; the browser calls `ITurn.getStream()` to consume the `ReadableStream<AgentEvent>` directly.
 
 ---
 
@@ -67,8 +67,8 @@ SolidJS + Vite. `IUser` stub passed as a prop through the component tree. No glo
 The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:
 
 1. Calls `ISession.getHistory()` on mount to reconstruct the visible conversation.
-2. Calls `ISession.subscribe()` immediately after to reconnect to any in-progress streaming turn (e.g. after a page reload mid-turn). The returned `ReadableStream<AgentEvent>` closes immediately if no turn is active.
+2. Calls `ISession.getCurrentTurn()` immediately after — if a turn is in progress (e.g. after a page reload mid-turn), calls `ITurn.getStream()` to consume the remaining `ReadableStream<AgentEvent>`. Returns `undefined` if no turn is active.
 3. Calls `ISession.getStatus()` to read `isStreaming` / `model` / `name` for UI controls.
-4. On user send: calls `ISession.prompt(text)` and reads the returned `ReadableStream<AgentEvent>` to update the UI incrementally.
+4. On user send: calls `ISession.prompt(text)`, then calls `ITurn.getStream()` on the returned `ITurn` and reads the `ReadableStream<AgentEvent>` to update the UI incrementally.
 
 This means reloading the page while a turn is streaming reconnects and displays the correct live state without any lost content.

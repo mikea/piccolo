@@ -160,7 +160,7 @@ type GatewayId = "web" | "telegram" | (string & {});
 // The gateway calls these methods to pull rendering text FROM the tool
 // (not to push text TO the tool). The tool provides its own display strings;
 // the gateway decides how and when to render them.
-interface ITextUI extends RpcTarget {
+interface ITextUI {
   // Return a line of status text to display while the tool is executing.
   getStatusText(): Promise<string>;
 
@@ -262,7 +262,7 @@ An `RpcTarget` stub returned by `IPiccoloCore.newSession()` and `IPiccoloCore.ge
 `ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type. In `packages/agent`, the minimal subset needed by the agent loop is `IAgentSession` (see `agent.md`).
 
 ```typescript
-class ISession extends RpcTarget {
+interface ISession {
 
   // ─── Identity ─────────────────────────────────────────────────────────────
 
@@ -282,12 +282,13 @@ class ISession extends RpcTarget {
 
   // ─── Conversation ─────────────────────────────────────────────────────────
 
-  // Start a new agent turn. Returns a stream of AgentEvents for this turn.
+  // Start a new agent turn. Returns an ITurn that owns the event stream for
+  // this turn. Callers consume ITurn.getStream() to receive AgentEvents.
   // callback is the gateway's IGatewayCallback stub (see api.md §5).
-  // It is stored on the session for the duration of the turn so tools can
-  // call requestSelect / requestConfirm / requestInput mid-turn via ctx.getCallback().
+  // It is stored on the turn for the duration of the prompt so tools can
+  // call requestSelect / requestConfirm / requestInput mid-turn via ITurn.getCallback().
   // Pass undefined (or omit) when no interactive callback is available.
-  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ReadableStream<AgentEvent>>;
+  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ITurn>;
 
   // Inject a user-role message into the conversation (visible to the LLM).
   // If a turn is active, delivered as a steer (mid-turn injection).
@@ -305,9 +306,10 @@ class ISession extends RpcTarget {
   // Abort the current streaming turn immediately.
   abort(): Promise<void>;
 
-  // Return the active turn context (if a turn is in progress).
-  // The callback for interactive mid-turn prompts is accessed via ITurn.getCallback().
-  // Returns undefined between turns.
+  // Return the active turn context (if a turn is in progress), or undefined if idle.
+  // Gateways call this after getHistory() to reconnect to an in-progress turn
+  // (e.g. after a page reload): call ITurn.getStream() on the result to receive
+  // the remaining AgentEvents. Use ITurn.getCallback() for interactive mid-turn prompts.
   getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────
@@ -345,14 +347,6 @@ class ISession extends RpcTarget {
   // Replaces client-side message state — the server is the single source of truth.
   getHistory(): Promise<HistoryEntry[]>;
 
-  // Subscribe to the currently active streaming turn (if any).
-  // Returns a ReadableStream<AgentEvent> that emits all remaining events for
-  // the turn that is in progress at the time of the call. If no turn is active
-  // the stream closes immediately (done: true on first read).
-  // Gateways call this after getHistory() to pick up live events on reconnect
-  // (e.g. after a page reload while a prompt() is still running).
-  subscribe(): Promise<ReadableStream<AgentEvent>>;
-
   // Return a snapshot of session-level state (isStreaming, model, name).
   // Gateways use this to render controls without holding local state.
   getStatus(): Promise<SessionStatus>;
@@ -383,9 +377,16 @@ class ISession extends RpcTarget {
 }
 
 // ITurn — active turn context accessible from tool/extension execute() calls.
+// Owns the AgentEvent stream for the turn and the optional gateway callback.
 // The callback is a property of the turn (not the session) since it is bound
 // to a specific prompt() invocation and is ephemeral.
-class ITurn extends RpcTarget {
+// For refresh support, the active turn is also available via
+// ISession.getCurrentTurn(), which returns undefined between turns.
+interface ITurn {
+  // Return the ReadableStream<AgentEvent> for this turn.
+  // The stream emits all events for the turn in progress.
+  getStream(): Promise<ReadableStream<AgentEvent>>;
+
   // Return the gateway's IGatewayCallback stub for this turn (if any).
   // Tools call this to request interactive input mid-turn (select, confirm, input).
   // Returns undefined if the gateway did not supply a callback for this turn.
@@ -463,7 +464,7 @@ Implemented by each gateway. An `RpcTarget` stub is passed into `ISession.prompt
 ```typescript
 import { RpcTarget } from "cloudflare:workers";
 
-class IGatewayCallback extends RpcTarget {
+interface IGatewayCallback {
 
   requestSelect(
     title: string,
@@ -496,14 +497,14 @@ import type { IUser } from "@piccolo/core";
 import { RpcTarget } from "capnweb";
 
 // Root interface. Browser connects via newWebSocketRpcSession<IWebGateway>(url).
-interface IWebGateway extends RpcTarget {
+interface IWebGateway {
   // Return the IUser stub for this connection's authenticated user.
   getUser(): IUser;
 }
 ```
 
 The browser calls `getUser()` once and then uses `IUser` and `ISession` directly.
-`ISession.prompt()` returns `ReadableStream<AgentEvent>` consumed by the browser.
+`ISession.prompt()` returns an `ITurn`; the browser calls `ITurn.getStream()` to consume the `ReadableStream<AgentEvent>`.
 
 ---
 

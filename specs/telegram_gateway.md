@@ -82,8 +82,8 @@ Handled `Update` types:
 
 | Update type | Action |
 |---|---|
-| `message` (text) | Resolve session, call `session.prompt(text)` |
-| `message` (photo/document) | Download, store to R2 as attachment, `session.prompt(caption, [attachment])` |
+| `message` (text) | Resolve session, call `session.prompt(text)`, consume via `ITurn.getStream()` |
+| `message` (photo/document) | Download, store to R2 as attachment, `session.prompt(caption, [attachment])`, consume via `ITurn.getStream()` |
 | `message` (/command) | Handle as gateway command (see below) |
 | `callback_query` | Route to active `ITelegramChatDO` for inline keyboard handling |
 | `edited_message` | Ignored |
@@ -103,7 +103,8 @@ On first message from chatId:
 On subsequent messages:
   { sessionId } = JSON.parse(await kv.get(`tg:chat:${chatId}`))
   session = await core.getSession(sessionId)
-  await session.prompt(text, attachments?)
+  const turn = await session.prompt(text, attachments?)
+  const stream = await turn.getStream()
 ```
 
 KV key: `tg:chat:{chatId}` → `{ sessionId: string; createdAt: number }`

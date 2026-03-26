@@ -84,8 +84,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Turn state ───────────────────────────────────────────────────────────
   #abortController: AbortController | null = null;
+  #currentTurn: TurnImpl | null = null;
   #followUpQueue: string[] = [];
-  #callback: IGatewayCallback | undefined = undefined;
   #lastInputTokens = 0;
   #messagesAtTurnStart = 0;
 
@@ -94,8 +94,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // the turn completes and commits to D1. Cleared on agent_end / error.
   #streamingAssistantText = "";
   #streamingToolCalls: Map<string, { toolName: string; input: unknown }> = new Map();
-  // Writers for active subscribe() streams. Events are fanned out here.
-  #liveSubscribers: Set<WritableStreamDefaultWriter<AgentEvent>> = new Set();
 
   // ─── Test helpers ─────────────────────────────────────────────────────────
   #modelOverridden = false;
@@ -229,9 +227,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     text: string,
     attachments?: Attachment[],
     callback?: IGatewayCallback,
-  ): Promise<ReadableStream<AgentEvent>> {
+  ): Promise<ITurn> {
     console.debug("[session] prompt sessionId=%s text=%s", this.#sessionId, text.slice(0, 80));
-    this.#callback = callback;
+    if (this.#currentTurn !== null) {
+      throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
+    }
     this.#agent.setContext(this);
 
     // emitInput
@@ -240,7 +240,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this,
     );
     if (inputResult.action === "handled") {
-      return new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
+      const emptyStream = new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
+      const turn = new TurnImpl(emptyStream, callback);
+      this.#currentTurn = turn;
+      return turn;
     }
     const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
 
@@ -277,19 +280,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       await this.#compact({});
     }
 
-    // Set up stream and abort. Use a single LoggingTransformStream so the
-    // returned readable is the direct output — no extra pipeThrough() wrapper
-    // which would lock the stream before capnweb can transfer it.
-    const logStream = new LoggingTransformStream<AgentEvent>("[session:prompt]");
-    const writer = logStream.writable.getWriter();
     this.#messagesAtTurnStart = this.#agent.state.messages.length;
     const abortController = new AbortController();
     this.#abortController = abortController;
 
+    let controller!: ReadableStreamDefaultController<AgentEvent>;
+    const raw = new ReadableStream<AgentEvent>({
+      start: (c) => { controller = c; },
+    });
+
     const unsub = this.#agent.subscribe((event: AgentEvent) => {
-      writer.write(event).catch(() => {});
-      // Fan out to all active subscribe() streams.
-      this.#fanOutToSubscribers(event);
+      controller.enqueue(event);
       // Track in-flight streaming content for getHistory().
       this.#trackStreamingEvent(event);
       if (event.type === "turn_end") {
@@ -309,16 +310,19 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       .prompt([userMessage])
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        writer.write({ type: "error", message: msg }).catch(() => {});
+        controller.enqueue({ type: "error", message: msg });
       })
       .finally(() => {
         unsub();
         this.#abortController = null;
-        this.#callback = undefined;
-        writer.close().catch(() => {});
+        this.#currentTurn = null;
+        controller.close();
       });
 
-    return logStream.readable;
+    const stream = raw.pipeThrough(new LoggingTransformStream<AgentEvent>("[session:prompt]"));
+    const turn = new TurnImpl(stream, callback);
+    this.#currentTurn = turn;
+    return turn;
   }
 
   async sendUserMessage(content: string): Promise<void> {
@@ -338,8 +342,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async getCurrentTurn(): Promise<ITurn | undefined> {
-    if (this.#callback === undefined && this.#abortController === null) return undefined;
-    return new TurnImpl(this.#callback);
+    return this.#currentTurn ?? undefined;
   }
 
   // ─── ISession: History & live subscription ────────────────────────────────
@@ -443,38 +446,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
 
     return entries;
-  }
-
-  async subscribe(): Promise<ReadableStream<AgentEvent>> {
-    if (this.#abortController === null) {
-      // No active turn — return an immediately-closed stream.
-      return new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
-    }
-    // Create a new TransformStream, register the writer for fan-out, and
-    // return the readable end wrapped with a logging stream.
-    const { readable, writable } = new TransformStream<AgentEvent, AgentEvent>();
-    const writer = writable.getWriter();
-    this.#liveSubscribers.add(writer);
-    const subscribers = this.#liveSubscribers;
-    // Cancel cleans up the fan-out registration.
-    const cancellable = new ReadableStream<AgentEvent>({
-      start(controller) {
-        const reader = readable.getReader();
-        function pump(): void {
-          reader.read().then(({ done, value }) => {
-            if (done) { controller.close(); return; }
-            controller.enqueue(value as AgentEvent);
-            pump();
-          }).catch((err: unknown) => { controller.error(err); });
-        }
-        pump();
-      },
-      cancel() {
-        subscribers.delete(writer);
-        writer.close().catch(() => {});
-      },
-    });
-    return cancellable.pipeThrough(new LoggingTransformStream("[session:subscribe]"));
   }
 
   async getStatus(): Promise<SessionStatus> {
@@ -657,23 +628,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
-  /** Fan out an event to all active subscribe() streams. */
-  #fanOutToSubscribers(event: AgentEvent): void {
-    for (const writer of this.#liveSubscribers) {
-      writer.write(event).catch(() => {
-        // If a subscriber's writer is closed/errored, remove it.
-        this.#liveSubscribers.delete(writer);
-      });
-    }
-    // Close and clear subscribers when the turn ends.
-    if (event.type === "agent_end" || event.type === "error") {
-      for (const writer of this.#liveSubscribers) {
-        writer.close().catch(() => {});
-      }
-      this.#liveSubscribers.clear();
-    }
-  }
-
   /** Track in-flight streaming events for getHistory(). */
   #trackStreamingEvent(event: AgentEvent): void {
     switch (event.type) {
@@ -789,12 +743,21 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 // ─── TurnImpl ─────────────────────────────────────────────────────────────────
 
 export class TurnImpl extends RpcTarget implements ITurn {
-  constructor(private readonly callback: IGatewayCallback | undefined) {
+  readonly #stream: ReadableStream<AgentEvent>;
+  readonly #callback: IGatewayCallback | undefined;
+
+  constructor(stream: ReadableStream<AgentEvent>, callback: IGatewayCallback | undefined) {
     super();
+    this.#stream = stream;
+    this.#callback = callback;
+  }
+
+  async getStream(): Promise<ReadableStream<AgentEvent>> {
+    return this.#stream;
   }
 
   async getCallback(): Promise<IGatewayCallback | undefined> {
-    return this.callback;
+    return this.#callback;
   }
 }
 

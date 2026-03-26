@@ -3,7 +3,7 @@
  *
  * Receives the ISession RPC stub as a prop from SessionLayout.
  * All conversation state is server-owned. On mount we call getHistory()
- * to reconstruct the visible chat, then subscribe() to reconnect to any
+ * to reconstruct the visible chat, then getCurrentTurn() to reconnect to any
  * active streaming turn (e.g. after a page reload mid-turn).
  *
  * No local "messages" store. No "isStreaming" signal.
@@ -45,10 +45,10 @@ export const ChatView: Component<Props> = (props) => {
 
   /**
    * Consume a ReadableStream<AgentEvent> and update entries reactively.
-   * Handles both prompt() streams and subscribe() reconnect streams.
+   * Handles both prompt() streams and getCurrentTurn() reconnect streams.
    *
    * `setStreaming` controls whether we call setIsStreaming(true/false).
-   * For subscribe() reconnects we only flip isStreaming if the stream is
+   * For getCurrentTurn() reconnects we only flip isStreaming if the stream is
    * actually live (i.e. we receive at least one event before done).
    */
   async function consumeStream(
@@ -56,15 +56,12 @@ export const ChatView: Component<Props> = (props) => {
     setStreaming = true,
   ): Promise<void> {
     console.debug("[stream] consumeStream start, setStreaming=%s", setStreaming);
-    const reader = stream.getReader();
     let streamingSet = false;
     let eventCount = 0;
     try {
-      while (!aborted) {
-        console.debug("[stream] reading... aborted=%s", aborted);
-        const { done, value: event } = await reader.read();
-        console.debug("[stream] read result: done=%s type=%s", done, event?.type ?? "—");
-        if (done) break;
+      for await (const event of stream) {
+        if (aborted) break;
+        console.debug("[stream] event: type=%s aborted=%s", event?.type ?? "—", aborted);
         eventCount++;
         if (setStreaming && !streamingSet) {
           setIsStreaming(true);
@@ -82,7 +79,6 @@ export const ChatView: Component<Props> = (props) => {
         setIsStreaming(false);
         console.debug("[ui] isStreaming → false (from stream)");
       }
-      reader.releaseLock();
     }
   }
 
@@ -174,14 +170,17 @@ export const ChatView: Component<Props> = (props) => {
         console.debug("[rpc] getHistory →", history.length, "entries");
         setEntries(history);
 
-        // Only subscribe if the server says a turn is currently streaming.
+        // Only reconnect if the server says a turn is currently streaming.
         if (status.isStreaming) {
-          console.debug("[rpc] subscribe calling... (turn is active)");
-          const stream = await session.subscribe();
-          console.debug("[rpc] subscribe returned stream");
-          void consumeStream(stream);
+          console.debug("[rpc] getCurrentTurn calling... (turn is active)");
+          const turn = await session.getCurrentTurn();
+          if (turn !== undefined) {
+            const stream = await turn.getStream();
+            console.debug("[rpc] getCurrentTurn returned stream");
+            void consumeStream(stream);
+          }
         } else {
-          console.debug("[rpc] no active turn, skipping subscribe()");
+          console.debug("[rpc] no active turn, skipping getCurrentTurn()");
         }
       } catch (err) {
         console.error("[rpc] init error:", err);
@@ -199,8 +198,9 @@ export const ChatView: Component<Props> = (props) => {
     setIsStreaming(true);
     console.debug("[ui] isStreaming → true");
     try {
-      const stream = await session.prompt(text);
-      console.debug("[rpc] prompt returned stream, type=%s", Object.prototype.toString.call(stream));
+      const turn = await session.prompt(text);
+      const stream = await turn.getStream();
+      console.debug("[rpc] prompt returned turn+stream, type=%s", Object.prototype.toString.call(stream));
       // Pass setStreaming=false — isStreaming is already true above.
       await consumeStream(stream, false);
       console.debug("[rpc] consumeStream finished");

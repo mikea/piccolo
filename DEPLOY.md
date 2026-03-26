@@ -267,7 +267,7 @@ Replace the registry value with the current list of extensions you want active.
 If this is your first extension, the value is just the fetch tool:
 
 ```bash
-pnpm wrangler kv key put --binding CONFIG \
+pnpm wrangler kv key put --remote --binding CONFIG \
   --config packages/core/wrangler.jsonc \
   extensions:registry '["ext-fetch-tool"]'
 ```

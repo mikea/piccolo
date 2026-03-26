@@ -44,7 +44,8 @@ const session: ISession = await core.newSession({ name: "My session" });
 const session: ISession = await core.getSession(storedSessionId);
 
 // All per-session operations are on the ISession stub
-const stream = await session.prompt("Hello", attachments);
+const turn = await session.prompt("Hello", attachments);
+const stream = await turn.getStream();
 await session.setModel("anthropic/claude-sonnet-4-5");
 await session.abort();
 ```

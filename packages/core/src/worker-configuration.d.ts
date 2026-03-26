@@ -13,6 +13,7 @@ declare namespace Cloudflare {
 		EXTENSIONS: DispatchNamespace;
 		CF_ACCOUNT_ID: "<CF_ACCOUNT_ID>";
 		CF_AI_GATEWAY_NAME: "piccolo";
+		CF_AI_GATEWAY_TOKEN: string;
 		AGENT_NAME: "Piccolo";
 		MODELS: string;
 		/** Token count at which context compaction is triggered. Default: 100000. */

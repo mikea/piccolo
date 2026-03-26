@@ -14,7 +14,8 @@ Gateway Worker
   - Authenticates user
   - Resolves sessionId (cookie / KV lookup)
   - session = await env.CORE.getSession(sessionId)
-  - stream  = await session.prompt(text, attachments?)
+  - turn    = await session.prompt(text, attachments?)
+  - stream  = await turn.getStream()
         │
         ▼
 IPiccoloCore.getSession() → ISession stub

@@ -33,6 +33,7 @@ export type {
   IGatewayCallback,
   IPiccoloCore,
   ISession,
+  ITurn,
   IUser,
   ITextUI,
   ITool,

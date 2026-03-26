@@ -56,6 +56,19 @@ async function drainStream(stream: ReadableStream<AgentEvent>): Promise<AgentEve
 }
 
 /**
+ * Call prompt() and return the ReadableStream<AgentEvent> from the resulting ITurn.
+ * Convenience wrapper so tests read: await drainStream(await promptStream(instance, text)).
+ */
+async function promptStream(
+  instance: AgentSessionDO,
+  text: string,
+  attachments?: import("../../src/types.ts").Attachment[],
+): Promise<ReadableStream<AgentEvent>> {
+  const turn = await instance.prompt(text, attachments);
+  return turn.getStream();
+}
+
+/**
  * Run a single prompt inside a DO, injecting a mock model.
  * Awaits waitForFlush() so D1 writes are complete before returning.
  */
@@ -68,8 +81,8 @@ async function runPrompt(
   return await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
     await instance._init(sessionId, "user-1");
-    const stream = await instance.prompt(text);
-    const events = await drainStream(stream);
+    const turn = await instance.prompt(text);
+    const events = await drainStream(await turn.getStream());
     await instance.waitForFlush();
     return events;
   });
@@ -105,8 +118,7 @@ describe("AgentSessionDO — prompt() pipeline", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "should not appear" }));
       await instance._init(sid, "user-1");
-      const stream = await instance.prompt("test input that produces output");
-      const ev = await drainStream(stream);
+      const ev = await drainStream(await promptStream(instance, "test input that produces output"));
       await instance.waitForFlush();
       return ev;
     });
@@ -186,11 +198,11 @@ describe("AgentSessionDO — D1 persistence", () => {
       await instance._init(sid, "user-1");
 
       instance._setModelForTest(createMockModel({ response: "turn one" }));
-      await drainStream(await instance.prompt("question one"));
+      await drainStream(await promptStream(instance, "question one"));
       await instance.waitForFlush();
 
       instance._setModelForTest(createMockModel({ response: "turn two" }));
-      await drainStream(await instance.prompt("question two"));
+      await drainStream(await promptStream(instance, "question two"));
       await instance.waitForFlush();
     });
 
@@ -284,9 +296,9 @@ describe("AgentSessionDO — abort", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "long response text here" }));
       await instance._init(sid, "user-1");
-      const stream = await instance.prompt("go");
+      const turn = await instance.prompt("go");
       await instance.abort();
-      const ev = await drainStream(stream);
+      const ev = await drainStream(await turn.getStream());
       return ev;
     });
 
@@ -304,8 +316,7 @@ describe("AgentSessionDO — steer and followUp", () => {
       instance._setModelForTest(createMockModel({ response: "reply" }));
       await instance._init(sid, "user-1");
       await instance.steer("steer message");
-      const stream = await instance.prompt("hi");
-      await drainStream(stream);
+      await drainStream(await promptStream(instance, "hi"));
       await instance.waitForFlush();
     });
   });
@@ -363,7 +374,7 @@ describe("AgentSessionDO — branch", () => {
     const stub = getStub(sid);
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "response two" }));
-      await drainStream(await instance.prompt("turn two"));
+      await drainStream(await promptStream(instance, "turn two"));
       await instance.waitForFlush();
     });
 
@@ -421,8 +432,7 @@ describe("AgentSessionDO — tool events", () => {
         }),
       );
       await instance._init(sid, "user-1");
-      const stream = await instance.prompt("use a tool");
-      const ev = await drainStream(stream);
+      const ev = await drainStream(await promptStream(instance, "use a tool"));
       await instance.waitForFlush();
       return ev;
     });
@@ -500,8 +510,7 @@ describe("AgentSessionDO — context overflow retry", () => {
     // Now trigger a context overflow error — the retry path runs compact() + continue()
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ contextOverflow: true }));
-      const stream = await instance.prompt("overflow me");
-      const ev = await drainStream(stream);
+      const ev = await drainStream(await promptStream(instance, "overflow me"));
       await instance.waitForFlush();
       return ev;
     });
@@ -531,8 +540,7 @@ describe("AgentSessionDO — getCurrentTurn and TurnImpl", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "hi" }));
       await instance._init(sid, "user-1");
-      const stream = await instance.prompt("hello");
-      return drainStream(stream);
+      return drainStream(await promptStream(instance, "hello"));
     });
     expect(events.some((e) => e.type === "agent_end")).toBe(true);
   });
@@ -546,10 +554,9 @@ describe("AgentSessionDO — estimateTokens with non-text content", () => {
       instance._setModelForTest(createMockModel({ response: "ok" }));
       await instance._init(sid, "user-1");
       // Pass an attachment (file part) — hits the else branch in estimateTokens
-      const stream = await instance.prompt("describe this", [
+      await drainStream(await promptStream(instance, "describe this", [
         { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
-      ]);
-      await drainStream(stream);
+      ]));
       await instance.waitForFlush();
     });
     const usage = await runInDurableObject(stub, (instance: AgentSessionDO) =>
@@ -587,13 +594,13 @@ describe("AgentSessionDO — TurnImpl.getCallback", () => {
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "hi" }));
       await instance._init(sid, "user-1");
-      const stream = await instance.prompt("hello");
+      const promptTurn = await instance.prompt("hello");
       // getCurrentTurn is only valid while streaming
       const turn = await instance.getCurrentTurn();
       if (turn) {
         callbackResult = await turn.getCallback();
       }
-      await drainStream(stream);
+      await drainStream(await promptTurn.getStream());
     });
     // No callback was passed to prompt(), so getCallback() returns undefined
     expect(callbackResult).toBeUndefined();
@@ -608,8 +615,7 @@ describe("AgentSessionDO — _init idempotency", () => {
       instance._setModelForTest(createMockModel({ response: "hello" }));
       await instance._init(sid, "user-1");
       await instance._init(sid, "user-2"); // second call ignored
-      const stream = await instance.prompt("hi");
-      await drainStream(stream);
+      await drainStream(await promptStream(instance, "hi"));
       await instance.waitForFlush();
     });
     const row = await getSession(env.SESSIONS_DB, sid);
@@ -679,10 +685,10 @@ describe("AgentSessionDO — getHistory", () => {
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       await instance._init(sid, "user-1");
       instance._setModelForTest(createMockModel({ response: "reply one" }));
-      await drainStream(await instance.prompt("question one"));
+      await drainStream(await promptStream(instance, "question one"));
       await instance.waitForFlush();
       instance._setModelForTest(createMockModel({ response: "reply two" }));
-      await drainStream(await instance.prompt("question two"));
+      await drainStream(await promptStream(instance, "question two"));
       await instance.waitForFlush();
     });
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
@@ -695,45 +701,40 @@ describe("AgentSessionDO — getHistory", () => {
   });
 });
 
-describe("AgentSessionDO — subscribe", () => {
-  it("subscribe() returns an immediately-closed stream when idle", async () => {
+describe("AgentSessionDO — getCurrentTurn reconnect", () => {
+  it("getCurrentTurn() returns undefined when idle", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
     await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
-    const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
-      const stream = await instance.subscribe();
-      return drainStream(stream);
-    });
-    expect(events).toHaveLength(0);
+    const turn = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getCurrentTurn(),
+    );
+    expect(turn).toBeUndefined();
   });
 
-  it("subscribe() during an active turn receives the remaining events", async () => {
+  it("getCurrentTurn() during an active turn returns the same ITurn as prompt()", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
 
-    const [promptEvents, subscribeEvents] = await runInDurableObject(
-      stub,
-      async (instance: AgentSessionDO) => {
-        instance._setModelForTest(createMockModel({ response: "hello from subscribe" }));
-        await instance._init(sid, "user-1");
+    const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "hello from reconnect" }));
+      await instance._init(sid, "user-1");
 
-        // Start prompt (returns stream immediately — agent runs async).
-        const promptStream = await instance.prompt("go");
-        // Subscribe to the same turn.
-        const subscribeStream = await instance.subscribe();
+      // Start prompt — getTurn() should now return an ITurn.
+      const promptTurn = await instance.prompt("go");
+      const reconnectTurn = await instance.getCurrentTurn();
+      expect(reconnectTurn).toBeDefined();
 
-        // Drain both concurrently.
-        const [pEvents, sEvents] = await Promise.all([
-          drainStream(promptStream),
-          drainStream(subscribeStream),
-        ]);
-        await instance.waitForFlush();
-        return [pEvents, sEvents] as [AgentEvent[], AgentEvent[]];
-      },
-    );
+      // Both refer to the same underlying stream — drain via the reconnect turn.
+      // (The prompt turn's stream is already the same object; drain via reconnect stream.)
+      const stream = await reconnectTurn!.getStream();
+      const ev = await drainStream(stream);
+      await instance.waitForFlush();
+      // Suppress unused warning — promptTurn was used to trigger turn creation.
+      void promptTurn;
+      return ev;
+    });
 
-    // Both streams should contain agent events.
-    expect(promptEvents.some((e) => e.type === "agent_end")).toBe(true);
-    expect(subscribeEvents.some((e) => e.type === "agent_end")).toBe(true);
+    expect(events.some((e) => e.type === "agent_end")).toBe(true);
   });
 });

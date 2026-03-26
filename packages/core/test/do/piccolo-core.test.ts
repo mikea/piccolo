@@ -45,7 +45,8 @@ async function runPromptViaDoInstance(
   const stub = env.AGENT_SESSION.get(env.AGENT_SESSION.idFromName(sessionId));
   await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
-    const stream = await instance.prompt(text);
+    const turn = await instance.prompt(text);
+    const stream = await turn.getStream();
     const reader = stream.getReader();
     while (true) {
       const { done } = await reader.read();
