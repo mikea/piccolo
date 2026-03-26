@@ -15,6 +15,7 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { IPiccoloCore, ISession, IUser, NewSessionOptions } from "@piccolo/api";
 import type { AgentSessionDO } from "./agent-session-do.ts";
 import { getSession as dbGetSession } from "./db/schema.ts";
+import { asRpcStub } from "./rpc-util.ts";
 import { listSessions as dbListSessions } from "./session/persistence.ts";
 import { parseModels } from "./types-internal.ts";
 
@@ -37,7 +38,7 @@ class UserImpl extends RpcTarget implements IUser {
     // Initialize the DO; ignore the returned ISession since the stub itself is the ISession.
     await stub._init(sessionId, this.#userId, options);
     console.debug(`[core] newSession done sessionId=${sessionId}`);
-    return asRpcTarget<ISession>(stub);
+    return asRpcStub(stub).getSession();
   }
 
   async getSession(sessionId: string): Promise<ISession> {
@@ -51,14 +52,14 @@ class UserImpl extends RpcTarget implements IUser {
     // This handles the case where the DO is cold and was never _init'd
     // (e.g. loading a session URL directly before the first prompt).
     await stub._init(sessionId, this.#userId);
-    return asRpcTarget<ISession>(stub);
+    return asRpcStub(stub).getSession();
   }
 
   async listSessions(): Promise<ISession[]> {
     console.debug(`[core] listSessions userId=${this.#userId}`);
     const infos = await dbListSessions(this.#userId, this.#env.SESSIONS_DB);
     console.debug(`[core] listSessions found ${infos.length} sessions`);
-    return infos.map((info) => asRpcTarget<ISession>(this.#getDoStub(info.id)));
+    return Promise.all(infos.map(async (info) => asRpcStub(this.#getDoStub(info.id)).getSession()));
   }
 
   async listModels(): Promise<string[]> {

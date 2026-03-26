@@ -31,7 +31,6 @@ import type {
 } from "@piccolo/api";
 import { describe, expect, it } from "vitest";
 import { ExtensionRunner, parseCommand } from "../../src/extension-runner.ts";
-import { asRpcTarget } from "../../src/rpc-util.ts";
 import {
   createMockDispatchNamespace,
   createMockExtension,
@@ -100,8 +99,7 @@ async function makeRunner(
 ): Promise<ExtensionRunner> {
   const names = registryNames ?? Object.keys(stubs);
   const runner = new ExtensionRunner();
-  // In tests ctx and ctxStub are the same mock — no RPC boundary.
-  await runner.initialize(ctx, ctx, createMockKv(names), createMockDispatchNamespace(stubs));
+  await runner.initialize(ctx, createMockKv(names), createMockDispatchNamespace(stubs));
   return runner;
 }
 
@@ -161,7 +159,7 @@ describe("parseCommand()", () => {
 describe("initialize()", () => {
   it("empty registry → no stubs, empty commands and additions", async () => {
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, ctx, createMockKv([]), createMockDispatchNamespace({}));
+    await runner.initialize(ctx, createMockKv([]), createMockDispatchNamespace({}));
     expect(runner.getCommands()).toEqual([]);
     expect(runner.getSystemPromptAdditions()).toEqual([]);
     expect(runner.getTools()).toEqual([]);
@@ -170,7 +168,7 @@ describe("initialize()", () => {
   it("absent KV key → treated as empty registry", async () => {
     const runner = new ExtensionRunner();
     // No registry key set
-    await runner.initialize(ctx, ctx, createMockKv(undefined), createMockDispatchNamespace({}));
+    await runner.initialize(ctx, createMockKv(undefined), createMockDispatchNamespace({}));
     expect(runner.getCommands()).toEqual([]);
   });
 
@@ -179,7 +177,7 @@ describe("initialize()", () => {
     const kv = createMockKv(undefined);
     // Manually override with invalid JSON
     await kv.put("extensions:registry", "not-json");
-    await runner.initialize(ctx, ctx, kv, createMockDispatchNamespace({}));
+    await runner.initialize(ctx, kv, createMockDispatchNamespace({}));
     expect(runner.getCommands()).toEqual([]);
   });
 
@@ -242,7 +240,6 @@ describe("initialize()", () => {
     const runner = new ExtensionRunner();
     await runner.initialize(
       ctx,
-      ctx,
       createMockKv(["bad", "good"]),
       createMockDispatchNamespace({ bad: throwing, good }),
     );
@@ -258,7 +255,6 @@ describe("initialize()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(
-      ctx,
       ctx,
       createMockKv(["bad", "good"]),
       createMockDispatchNamespace({ bad: throwing, good }),
@@ -327,7 +323,7 @@ describe("emitInput()", () => {
     });
     // Runner must be initialized with this extension's commands already loaded
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
+    await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
     const result = await emitInput(runner, inputEvent("/my-cmd extra args"), ctx);
     expect(result.action).toBe("handled");
   });
@@ -343,7 +339,7 @@ describe("emitInput()", () => {
       },
     });
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
+    await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
     await emitInput(runner, inputEvent("/skill:test arg1 arg2"), ctx);
     expect(capturedArgs).toBe("arg1 arg2");
   });
@@ -727,50 +723,17 @@ describe("createMockSession() — all methods reachable", () => {
   });
 });
 
-// ─── Proxy stub identity methods ──────────────────────────────────────────────
-// Regression test: sessionId() and userId() must work when called through
-// the asRpcTarget() Proxy. Previously, calling them on the Proxy would invoke
-// the method with `this` = Proxy, causing a private-field brand-check failure.
-// The fix is that initialize() reads identity from the real `ctx` (not the
-// Proxy), and the Proxy is only passed to remote extension workers as ctxStub.
+// ─── initialize() identity propagation ────────────────────────────────────────
+// Verify that initialize() fires session_start with the correct sessionId and
+// userId read from the single ctx argument (now a SessionTarget RpcTarget —
+// no separate local/stub split needed).
 
-describe("asRpcTarget stub — sessionId() and userId() do not throw", () => {
-  it("sessionId() and userId() resolve correctly through the Proxy", async () => {
-    const session = createMockSession({ sessionId: "test-sid", userId: "test-uid" });
-    const stub = asRpcTarget<ISession>(session);
-
-    // These must not throw "Cannot read private member" or "(this) is not a function"
-    await expect(stub.sessionId()).resolves.toBe("test-sid");
-    await expect(stub.userId()).resolves.toBe("test-uid");
-  });
-
-  it("initialize() fires session_start with correct sessionId and userId from real ctx", async () => {
-    const capturedEvents: Array<{ sessionId: string; userId: string }> = [];
-    const ext = createMockExtension({
-      name: "a",
-      calls: {
-        onSessionStart: [],
-        onInput: [],
-        onBeforeAgentStart: [],
-        onContext: [],
-        onToolCall: [],
-        onToolResult: [],
-        onBeforeCompact: [],
-        onCompact: [],
-        emit: [],
-      },
-    });
-    // Manually capture session_start from calls after initialize
+describe("initialize() — session_start identity propagation", () => {
+  it("fires session_start with correct sessionId and userId from ctx", async () => {
+    const ext = createMockExtension({ name: "a" });
     const session = createMockSession({ sessionId: "real-sid", userId: "real-uid" });
-    const stub = asRpcTarget<ISession>(session);
     const runner = new ExtensionRunner();
-    // ctx = real session (for identity reads), ctxStub = Proxy (for remote workers)
-    await runner.initialize(
-      session,
-      stub,
-      createMockKv(["a"]),
-      createMockDispatchNamespace({ a: ext }),
-    );
+    await runner.initialize(session, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
     const startEvents = ext.calls.onSessionStart;
     expect(startEvents).toHaveLength(1);
     expect(startEvents[0]?.sessionId).toBe("real-sid");

@@ -24,7 +24,10 @@ export const SessionLayout: Component<Props> = (props) => {
     async (id) => {
       console.debug(`[rpc] getSession calling... id=${id}`);
       try {
-        setResolvedSession((await user.getSession(id)) as ISession);
+        const nextSession = (await user.getSession(id)) as ISession;
+        // Cap'n Web stubs are callable proxies; wrap in a setter thunk so
+        // Solid stores the value instead of treating it as an updater function.
+        setResolvedSession(() => nextSession);
         console.debug(`[rpc] getSession done id=${id}`);
       } catch (err) {
         console.error(`[rpc] getSession error id=${id}`, err);

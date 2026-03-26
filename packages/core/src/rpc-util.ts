@@ -1,18 +1,15 @@
 /**
- * rpc-util.ts — Temporary workaround for returning DurableObjectStub as RpcTarget.
+ * rpc-util.ts — Helper for calling methods on a DurableObjectStub via JSRPC.
  *
- * DurableObjectStub cannot be serialized as an RPC return value directly.
- * Trick suggested by the capnweb author: wrap the stub in a Proxy whose
- * prototype is RpcTarget.prototype — the RPC system then treats it as a
- * capability.
- *
- * TODO: Remove once capnweb supports DurableObjectStub natively.
+ * DurableObjectStub cannot be returned as an RPC value directly.
+ * Wrapping it in a Proxy whose prototype is RpcTarget.prototype makes the
+ * JSRPC system treat it as a serialisable capability.  Only works with
+ * DurableObjectStub — the Proxy trick is specific to that type.
  */
 
 import { RpcTarget } from "cloudflare:workers";
 
-// biome-ignore lint/suspicious/noExplicitAny: Proxy trick requires any — see JSDoc
-export function asRpcTarget<T>(stub: any): T {
+export function asRpcStub<T extends Rpc.DurableObjectBranded>(stub: DurableObjectStub<T>): T {
   return new Proxy(stub, {
     getPrototypeOf() {
       return RpcTarget.prototype;

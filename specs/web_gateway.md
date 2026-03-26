@@ -62,6 +62,8 @@ export default {
 
 SolidJS + Vite. `IUser` stub passed as a prop through the component tree. No global store. Components call `IUser`/`ISession` methods directly via JSRPC.
 
+Cap'n Web stubs are callable `Proxy(function)` values. When storing an `IUser`/`ISession` stub in a Solid signal, setters must wrap the stub in a thunk (for example, `setSession(() => stub)`) so Solid stores the value instead of invoking it as a functional updater.
+
 Static assets are served from `gateways/web/app/static` (configured as Vite `publicDir`), and `index.html` links `/favicon.ico` as the site icon.
 
 ### Routes and empty-session view

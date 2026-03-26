@@ -1,4 +1,4 @@
-import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/api";
 
 // ── Hard ceiling on maxBytes regardless of what the LLM requests ──────────────
@@ -191,7 +191,7 @@ Errors:
 
 // ── FetchTool ─────────────────────────────────────────────────────────────────
 
-export default class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
+export class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
   readonly descriptor: ToolDescriptor = descriptor;
 
   // Required by Cloudflare Workers: WorkerEntrypoint must register at least one
@@ -201,8 +201,12 @@ export default class FetchTool extends WorkerEntrypoint implements IExtensionWor
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  async getTools(_ctx: ISession): Promise<ITool[]> {
-    return [new Proxy(this, { getPrototypeOf: () => RpcTarget.prototype })];
+  async getTools(_session: ISession): Promise<ITool[]> {
+    // Use the loopback service binding stub so the JSRPC system receives a
+    // proper Fetcher/stub rather than `this` (WorkerEntrypoint cannot be used
+    // as a JSRPC target directly — ctx.exports provides the correct stub).
+    // Requires the enable_ctx_exports compatibility flag.
+    return [this.ctx.exports.FetchTool as unknown as ITool];
   }
 
   async execute(
@@ -323,3 +327,5 @@ export default class FetchTool extends WorkerEntrypoint implements IExtensionWor
     };
   }
 }
+
+export default FetchTool;

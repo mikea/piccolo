@@ -52,7 +52,7 @@ import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
-import { asRpcTarget } from "./rpc-util.ts";
+
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
@@ -64,6 +64,110 @@ import { SessionTransformStream } from "./session-transform.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { defaultModelId, parseModels } from "./types-internal.ts";
+
+// ─── SessionTarget ────────────────────────────────────────────────────────────
+
+/**
+ * The JSRPC-serialisable RpcTarget for a session.
+ *
+ * `DurableObject` instances cannot be used as `this` in JSRPC calls — capnpweb
+ * requires a proper `RpcTarget` subclass. This class holds a reference to the
+ * owning `AgentSessionDO` and delegates every `ISession` method to it.
+ *
+ * One instance is created per `AgentSessionDO` and cached in
+ * `AgentSessionDO.ctx` so that the same `RpcTarget` identity is reused
+ * for every extension call and compaction context throughout the DO's lifetime.
+ */
+export class SessionTarget extends RpcTarget implements ISession {
+  readonly #do: AgentSessionDO;
+
+  constructor(do_: AgentSessionDO) {
+    super();
+    this.#do = do_;
+  }
+
+  sessionId(): Promise<string> {
+    return this.#do.sessionId();
+  }
+  getUpdatedAt(): Promise<number> {
+    return this.#do.getUpdatedAt();
+  }
+  userId(): Promise<string> {
+    return this.#do.userId();
+  }
+  getName(): Promise<string | undefined> {
+    return this.#do.getName();
+  }
+  setName(name: string): Promise<void> {
+    return this.#do.setName(name);
+  }
+  prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ITurn> {
+    return this.#do.prompt(text, attachments, callback);
+  }
+  sendUserMessage(content: string): Promise<void> {
+    return this.#do.sendUserMessage(content);
+  }
+  steer(text: string): Promise<void> {
+    return this.#do.steer(text);
+  }
+  followUp(text: string): Promise<void> {
+    return this.#do.followUp(text);
+  }
+  abort(): Promise<void> {
+    return this.#do.abort();
+  }
+  getCurrentTurn(): Promise<ITurn | undefined> {
+    return this.#do.getCurrentTurn();
+  }
+  getModel(): Promise<string> {
+    return this.#do.getModel();
+  }
+  setModel(modelId: string): Promise<void> {
+    return this.#do.setModel(modelId);
+  }
+  listModels(): Promise<string[]> {
+    return this.#do.listModels();
+  }
+  getActiveTools(): Promise<ToolDescriptor[]> {
+    return this.#do.getActiveTools();
+  }
+  setActiveTools(tools: ITool[]): Promise<void> {
+    return this.#do.setActiveTools(tools);
+  }
+  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void> {
+    return this.#do.appendCustomMessage(customType, content, display);
+  }
+  appendCustomEntry(customType: string, data?: unknown): Promise<void> {
+    return this.#do.appendCustomEntry(customType, data);
+  }
+  getEntries(customType?: string): Promise<CustomEntryType[]> {
+    return this.#do.getEntries(customType);
+  }
+  getHistory(): Promise<HistoryEntry[]> {
+    return this.#do.getHistory();
+  }
+  getStatus(): Promise<SessionStatus> {
+    return this.#do.getStatus();
+  }
+  getContextUsage(): Promise<ContextUsage> {
+    return this.#do.getContextUsage();
+  }
+  compact(options?: CompactOptions): Promise<void> {
+    return this.#do.compact(options);
+  }
+  getSystemPrompt(): Promise<string> {
+    return this.#do.getSystemPrompt();
+  }
+  branch(entryId: string): Promise<void> {
+    return this.#do.branch(entryId);
+  }
+  fork(fromEntryId?: string): Promise<string> {
+    return this.#do.fork(fromEntryId);
+  }
+  delete(): Promise<void> {
+    return this.#do.delete();
+  }
+}
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
@@ -88,9 +192,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #extensionRunner!: ExtensionRunner;
   #assembler!: SystemPromptAssembler;
   #assembledSystemPrompt = "";
-  // The RPC-serialisable Proxy stub for this DO. Created once and reused for
+  // The JSRPC-serialisable RpcTarget for this DO. Created once and reused for
   // every emit() call so extension workers always receive the same capability.
-  #sessionStub!: ISession;
+  // DurableObject instances cannot be used as `this` in JSRPC calls — a proper
+  // RpcTarget subclass (SessionTarget) is required.
+  // Private to keep the public surface clean; accessed externally via getSession().
+  #rpcCtx!: SessionTarget;
 
   // ─── Turn state ───────────────────────────────────────────────────────────
   #currentTurn: TurnImpl | null = null;
@@ -174,10 +281,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 4. Set up extension runner and system prompt
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
-    this.#sessionStub = this.#asSessionStub();
+    this.#rpcCtx = new SessionTarget(this);
     await this.#extensionRunner.initialize(
-      this,
-      this.#sessionStub,
+      this.#rpcCtx,
       this.env.CONFIG,
       this.env.EXTENSIONS,
       this.#modelId,
@@ -270,12 +376,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
     this.#agent.setContext(this);
-    const extensionCtx = this.#sessionStub;
+    const ctx = this.#rpcCtx;
 
     // emitInput
     const inputResult = (await this.#extensionRunner.emit(
       { type: "input", text, attachments: attachments ?? [], source: "user" },
-      extensionCtx,
+      ctx,
     )) as InputResult;
     if (inputResult.action === "handled") {
       const emptyStream = new ReadableStream<AgentEvent>({
@@ -330,7 +436,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         attachments: attachments ?? [],
         systemPrompt: this.#assembledSystemPrompt,
       },
-      extensionCtx,
+      ctx,
     )) as BeforeAgentStartResult;
     if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
       this.#agent.appendMessages(beforeStart.contextMessages);
@@ -350,7 +456,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // forwards each event unchanged to the gateway.
     const transform = new SessionTransformStream(
       `session:${this.#sessionId}`,
-      (event) => this.#onTurnEvent(event, extensionCtx),
+      (event) => this.#onTurnEvent(event, ctx),
       () => this.#onTurnClose(),
     );
 
@@ -655,6 +761,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     await this.#initSession(sessionId, userId, options);
   }
 
+  /**
+   * Return the JSRPC-serialisable `SessionTarget` (`RpcTarget`) for this DO.
+   *
+   * Not part of `ISession` — called by `piccolo-core` after obtaining the DO
+   * stub via `asRpcStub()`, so that gateways always receive a proper `RpcTarget`
+   * rather than the `DurableObject` instance directly.
+   */
+  getSession(): SessionTarget {
+    return this.#rpcCtx;
+  }
+
   async #initSession(
     sessionId: string,
     userId: string,
@@ -774,12 +891,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       pendingEntries: this.#pendingEntries,
       lastInputTokens: this.#lastInputTokens,
     };
-    await compact(compactionState, this.#sessionStub, options);
+    await compact(compactionState, this.#rpcCtx, options);
     this.#leafId = compactionState.leafId;
-  }
-
-  #asSessionStub(): ISession {
-    return asRpcTarget(this);
   }
 
   #requireLeafId(): string {
@@ -794,8 +907,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
     // Process follow-up queue: each follow-up starts a new agent turn.
     // These are internal turns — no gateway consumer listens to them.
-    // The same extensionCtx is used so extensions receive follow-up events too.
-    const extensionCtx = this.#sessionStub;
+    // The same ctx is used so extensions receive follow-up events too.
+    const ctx = this.#rpcCtx;
     while (this.#followUpQueue.length > 0) {
       const followUpText = this.#followUpQueue.shift() ?? "";
       this.#messagesAtTurnStart = this.#agent.state.messages.length;
@@ -805,7 +918,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       // No gateway receives this stream — pipe to a discard WritableStream.
       const followUpTransform = new SessionTransformStream(
         `session:${this.#sessionId}:followup`,
-        (event) => this.#onTurnEvent(event, extensionCtx),
+        (event) => this.#onTurnEvent(event, ctx),
         () => {}, // no nested close handler — persistence done below via await
       );
 
