@@ -33,7 +33,6 @@ import type {
   ITool,
   ITurn,
   NewSessionOptions,
-  SessionStatus,
   ToolDescriptor,
 } from "@piccolo/api";
 import type { LanguageModel, ModelMessage } from "ai";
@@ -145,9 +144,6 @@ export class SessionTarget extends RpcTarget implements ISession {
   }
   getHistory(): Promise<HistoryEntry[]> {
     return this.#do.getHistory();
-  }
-  getStatus(): Promise<SessionStatus> {
-    return this.#do.getStatus();
   }
   getContextUsage(): Promise<ContextUsage> {
     return this.#do.getContextUsage();
@@ -390,9 +386,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         },
       });
       const turn = new TurnImpl(emptyStream, callback);
+      console.debug(`[session:${this.#sessionId}] #currentTurn null → turn (handled-input)`);
       this.#currentTurn = turn;
       // emptyStream closes immediately — clear the turn right away
       void Promise.resolve().then(() => {
+        console.debug(`[session:${this.#sessionId}] #currentTurn turn → null (handled-input)`);
         this.#currentTurn = null;
       });
       return turn;
@@ -464,6 +462,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const turn = new TurnImpl(outStream, callback);
     // Assigned once — same RpcTarget instance for the duration of this logical turn
     // (including any follow-up turns). Cleared in #onTurnClose() finally.
+    console.debug(`[session:${this.#sessionId}] #currentTurn null → turn`);
     this.#currentTurn = turn;
     return turn;
   }
@@ -589,14 +588,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
 
     return entries;
-  }
-
-  async getStatus(): Promise<SessionStatus> {
-    return {
-      isStreaming: this.#agent.state.isStreaming,
-      model: this.#modelId,
-      name: this.#name,
-    };
   }
 
   // ─── ISession: Model management ───────────────────────────────────────────
@@ -855,6 +846,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    */
   #onTurnClose(): void {
     this.#flushPromise = this.#handleAgentEnd().finally(() => {
+      console.debug(`[session:${this.#sessionId}] #currentTurn turn → null`);
       this.#currentTurn = null;
     });
     this.#flushPromise.catch((err) => {

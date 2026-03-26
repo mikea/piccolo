@@ -226,14 +226,6 @@ export type HistoryEntry =
     }
   | { type: "error"; id: string; message: string };
 
-// ─── Session Status ───────────────────────────────────────────────────────────
-
-export interface SessionStatus {
-  isStreaming: boolean;
-  model: string;
-  name: string | undefined;
-}
-
 // ─── ISession ────────────────────────────────────────────────────────────────
 
 /**
@@ -283,7 +275,6 @@ export interface ISession {
   // ─── History & live subscription ─────────────────────────────────────────────
 
   getHistory(): Promise<HistoryEntry[]>;
-  getStatus(): Promise<SessionStatus>;
 
   // ─── Context usage ────────────────────────────────────────────────────────────
 

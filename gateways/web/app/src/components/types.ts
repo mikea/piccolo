@@ -1,8 +1,8 @@
 /**
  * types.ts — UI-specific type aliases for the web SPA.
  *
- * The canonical conversation types (HistoryEntry, SessionStatus, etc.) come
- * from @piccolo/core and are used directly. This file contains only types that
+ * The canonical conversation types (HistoryEntry, etc.) come
+ * from @piccolo/api and are used directly. This file contains only types that
  * are specific to the SPA's own component props and state — NOT duplicates of
  * server-side types.
  *

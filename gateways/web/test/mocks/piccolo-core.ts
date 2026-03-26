@@ -4,15 +4,7 @@
  * Spec ref: specs/api.md §IPiccoloCore, §IUser, §ISession
  */
 
-import type {
-  AgentEvent,
-  ContextUsage,
-  IPiccoloCore,
-  ISession,
-  ITurn,
-  IUser,
-  SessionStatus,
-} from "@piccolo/api";
+import type { AgentEvent, ContextUsage, IPiccoloCore, ISession, ITurn, IUser } from "@piccolo/api";
 import { vi } from "vitest";
 
 const DEFAULT_SESSION_ID = "test-session-id";
@@ -63,11 +55,6 @@ export function createMockSession(
     appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     getEntries: vi.fn().mockResolvedValue([]),
     getHistory: vi.fn().mockResolvedValue([]),
-    getStatus: vi.fn().mockResolvedValue({
-      isStreaming: false,
-      model: DEFAULT_MODEL,
-      name: undefined,
-    } satisfies SessionStatus),
     getContextUsage: vi.fn().mockResolvedValue({ inputTokens: 0 } satisfies ContextUsage),
     compact: vi.fn().mockResolvedValue(undefined),
     getSystemPrompt: vi.fn().mockResolvedValue(""),

@@ -195,15 +195,6 @@ type HistoryEntry =
   | { type: "tool";      id: string; toolName: string; input: unknown; output: unknown; isError: boolean; isStreaming: boolean }
   | { type: "error";     id: string; message: string };
 
-// ─── Session Status ───────────────────────────────────────────────────────────
-
-// Snapshot of session-level state. Returned by ISession.getStatus().
-// Gateways use this to render controls (e.g. disable send while streaming).
-interface SessionStatus {
-  isStreaming: boolean;   // true while a prompt() turn is in progress
-  model: string;          // current model ID
-  name: string | undefined;
-}
 ```
 
 ---
@@ -299,6 +290,8 @@ interface ISession {
   // Gateways call this after getHistory() to reconnect to an in-progress turn
   // (e.g. after a page reload): call ITurn.getStream() on the result to receive
   // the remaining AgentEvents. Use ITurn.getCallback() for interactive mid-turn prompts.
+  // A non-undefined return value also means a turn is currently streaming —
+  // gateways should use this check instead of a separate isStreaming flag.
   getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────
@@ -335,10 +328,6 @@ interface ISession {
   // be an assistant entry with isStreaming: true and the text accumulated so far.
   // Replaces client-side message state — the server is the single source of truth.
   getHistory(): Promise<HistoryEntry[]>;
-
-  // Return a snapshot of session-level state (isStreaming, model, name).
-  // Gateways use this to render controls without holding local state.
-  getStatus(): Promise<SessionStatus>;
 
   // ─── Context usage ───────────────────────────────────────────────────────
 

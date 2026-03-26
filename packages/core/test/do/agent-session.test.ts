@@ -631,29 +631,33 @@ describe("AgentSessionDO — _init idempotency", () => {
   });
 });
 
-describe("AgentSessionDO — getStatus", () => {
-  it("getStatus() returns isStreaming: false when idle", async () => {
+describe("AgentSessionDO — individual getters", () => {
+  it("getCurrentTurn() returns undefined when idle", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
     await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
-    const status = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getStatus(),
+    const turn = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getCurrentTurn(),
     );
-    expect(status.isStreaming).toBe(false);
-    expect(typeof status.model).toBe("string");
-    expect(status.model.length).toBeGreaterThan(0);
-    expect(status.name).toBe(sid);
+    expect(turn).toBeUndefined();
   });
 
-  it("getStatus() returns the session name after setName()", async () => {
+  it("getModel() returns a non-empty model string when idle", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
+    const model = await runInDurableObject(stub, (instance: AgentSessionDO) => instance.getModel());
+    expect(typeof model).toBe("string");
+    expect(model.length).toBeGreaterThan(0);
+  });
+
+  it("getName() returns the session name after setName()", async () => {
     const sid = uniqueId();
     await runPrompt(sid, "hi", "hello");
     const stub = getStub(sid);
     await runInDurableObject(stub, (instance: AgentSessionDO) => instance.setName("My Chat"));
-    const status = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getStatus(),
-    );
-    expect(status.name).toBe("My Chat");
+    const name = await runInDurableObject(stub, (instance: AgentSessionDO) => instance.getName());
+    expect(name).toBe("My Chat");
   });
 });
 

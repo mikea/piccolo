@@ -41,7 +41,6 @@ export type {
   LanguageModelUsage,
   ModelMessage,
   NewSessionOptions,
-  SessionStatus,
   SystemPromptAddition,
   ToolCallResult,
   ToolDescriptor,

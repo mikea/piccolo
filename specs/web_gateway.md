@@ -76,9 +76,8 @@ Static assets are served from `gateways/web/app/static` (configured as Vite `pub
 
 The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:
 
-1. Calls `ISession.getHistory()` on mount to reconstruct the visible conversation.
-2. Calls `ISession.getCurrentTurn()` immediately after — if a turn is in progress (e.g. after a page reload mid-turn), calls `ITurn.getStream()` to consume the remaining `ReadableStream<AgentEvent>`. Returns `undefined` if no turn is active.
-3. Calls `ISession.getStatus()` to read `isStreaming` / `model` / `name` for UI controls.
-4. On user send: calls `ISession.prompt(text)`, then calls `ITurn.getStream()` on the returned `ITurn` and reads the `ReadableStream<AgentEvent>` to update the UI incrementally.
+1. Calls `ISession.getHistory()`, `ISession.getModel()`, `ISession.getName()`, and `ISession.getCurrentTurn()` in parallel on mount.
+2. If `getCurrentTurn()` returns a turn (non-undefined), a turn is in progress — calls `ITurn.getStream()` to consume the remaining `ReadableStream<AgentEvent>`. The undefined/non-undefined result replaces any separate `isStreaming` flag.
+3. On user send: calls `ISession.prompt(text)`, then calls `ITurn.getStream()` on the returned `ITurn` and reads the `ReadableStream<AgentEvent>` to update the UI incrementally.
 
 This means reloading the page while a turn is streaming reconnects and displays the correct live state without any lost content.

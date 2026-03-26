@@ -2,12 +2,11 @@
  * ChatView.tsx — Main chat panel for an active session.
  *
  * Receives the ISession RPC stub as a prop from SessionLayout.
- * All conversation state is server-owned. On mount we call getHistory()
- * to reconstruct the visible chat, then getCurrentTurn() to reconnect to any
- * active streaming turn (e.g. after a page reload mid-turn).
+ * All conversation state is server-owned. On mount we call getHistory() and
+ * getCurrentTurn() in parallel. A non-undefined getCurrentTurn() result means
+ * a turn is in progress (replaces any separate getStatus()/isStreaming check).
  *
- * No local "messages" store. No "isStreaming" signal.
- * The server is the single source of truth — the UI just displays it.
+ * No local "messages" store. The server is the single source of truth.
  *
  * IMPORTANT: ISession is an RpcStub Proxy. Capture it as a plain variable
  * at component init — never pass it into SolidJS reactive primitives.
@@ -30,7 +29,7 @@ export const ChatView: Component<Props> = (props) => {
   const session = props.session;
 
   const [entries, setEntries] = createStore<HistoryEntry[]>([]);
-  // isStreaming is derived from whether we're actively consuming a stream.
+  // isStreaming tracks whether we're actively consuming a stream (client-side only, for UI controls).
   const [isStreaming, setIsStreaming] = createSignal(false);
 
   let aborted = false;
@@ -164,24 +163,19 @@ export const ChatView: Component<Props> = (props) => {
   onMount(() => {
     void (async () => {
       try {
-        // Load status and history in parallel.
-        console.debug("[rpc] getStatus + getHistory calling...");
-        const [status, history] = await Promise.all([session.getStatus(), session.getHistory()]);
-        console.debug("[rpc] getStatus →", JSON.stringify(status));
+        // Load history and active turn in parallel.
+        console.debug("[rpc] getHistory + getCurrentTurn calling...");
+        const [history, turn] = await Promise.all([session.getHistory(), session.getCurrentTurn()]);
         console.debug("[rpc] getHistory →", history.length, "entries");
         setEntries(history);
 
-        // Only reconnect if the server says a turn is currently streaming.
-        if (status.isStreaming) {
-          console.debug("[rpc] getCurrentTurn calling... (turn is active)");
-          const turn = await session.getCurrentTurn();
-          if (turn !== undefined) {
-            const stream = await turn.getStream();
-            console.debug("[rpc] getCurrentTurn returned stream");
-            void consumeStream(stream);
-          }
+        // getCurrentTurn() returns undefined when idle — non-undefined means streaming.
+        if (turn !== undefined) {
+          console.debug("[rpc] getCurrentTurn → active turn, reconnecting stream");
+          const stream = await turn.getStream();
+          void consumeStream(stream);
         } else {
-          console.debug("[rpc] no active turn, skipping getCurrentTurn()");
+          console.debug("[rpc] getCurrentTurn → no active turn");
         }
       } catch (err) {
         console.error("[rpc] init error:", err);
