@@ -15,7 +15,6 @@ import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { IPiccoloCore, ISession, IUser, NewSessionOptions } from "@piccolo/api";
 import type { AgentSessionDO } from "./agent-session-do.ts";
 import { getSession as dbGetSession } from "./db/schema.ts";
-import { asRpcTarget } from "./rpc-util.ts";
 import { listSessions as dbListSessions } from "./session/persistence.ts";
 import { parseModels } from "./types-internal.ts";
 

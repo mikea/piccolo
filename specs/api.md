@@ -262,7 +262,7 @@ interface ISession {
   getUpdatedAt(): Promise<number>;
 
   // The user who owns this session.
-  readonly userId: string;
+  userId(): Promise<string>;
 
   // ─── Metadata ─────────────────────────────────────────────────────────────
 

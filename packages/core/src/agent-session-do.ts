@@ -88,6 +88,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #extensionRunner!: ExtensionRunner;
   #assembler!: SystemPromptAssembler;
   #assembledSystemPrompt = "";
+  // The RPC-serialisable Proxy stub for this DO. Created once and reused for
+  // every emit() call so extension workers always receive the same capability.
+  #sessionStub!: ISession;
 
   // ─── Turn state ───────────────────────────────────────────────────────────
   #currentTurn: TurnImpl | null = null;
@@ -106,8 +109,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #flushPromise: Promise<void> | null = null;
 
   // ─── Initialisation ───────────────────────────────────────────────────────
-
-  readonly userId: string = ""; // ISession requires this; updated after #initialize
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -173,9 +174,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 4. Set up extension runner and system prompt
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
-    const extensionCtx = this.#asSessionStub();
+    this.#sessionStub = this.#asSessionStub();
     await this.#extensionRunner.initialize(
-      extensionCtx,
+      this,
+      this.#sessionStub,
       this.env.CONFIG,
       this.env.EXTENSIONS,
       this.#modelId,
@@ -215,6 +217,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async sessionId(): Promise<string> {
     return this.#sessionId;
+  }
+
+  async userId(): Promise<string> {
+    return this.#userId;
   }
 
   async getUpdatedAt(): Promise<number> {
@@ -264,7 +270,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
     this.#agent.setContext(this);
-    const extensionCtx = this.#asSessionStub();
+    const extensionCtx = this.#sessionStub;
 
     // emitInput
     const inputResult = (await this.#extensionRunner.emit(
@@ -768,7 +774,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       pendingEntries: this.#pendingEntries,
       lastInputTokens: this.#lastInputTokens,
     };
-    await compact(compactionState, this.#asSessionStub(), options);
+    await compact(compactionState, this.#sessionStub, options);
     this.#leafId = compactionState.leafId;
   }
 
@@ -789,7 +795,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // Process follow-up queue: each follow-up starts a new agent turn.
     // These are internal turns — no gateway consumer listens to them.
     // The same extensionCtx is used so extensions receive follow-up events too.
-    const extensionCtx = this.#asSessionStub();
+    const extensionCtx = this.#sessionStub;
     while (this.#followUpQueue.length > 0) {
       const followUpText = this.#followUpQueue.shift() ?? "";
       this.#messagesAtTurnStart = this.#agent.state.messages.length;

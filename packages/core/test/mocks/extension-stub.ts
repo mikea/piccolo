@@ -277,8 +277,8 @@ export function createMockSession(
   const userId = userIdStr ?? "test-user-id";
 
   return {
-    userId,
     sessionId: async () => sessionId,
+    userId: async () => userId,
     getUpdatedAt: async () => 0,
     getName: async () => undefined,
     setName: async () => {},

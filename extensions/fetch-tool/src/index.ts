@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/api";
 
 // ── Hard ceiling on maxBytes regardless of what the LLM requests ──────────────
@@ -202,7 +202,7 @@ export default class FetchTool extends WorkerEntrypoint implements IExtensionWor
   }
 
   async getTools(_ctx: ISession): Promise<ITool[]> {
-    return [this];
+    return [new Proxy(this, { getPrototypeOf: () => RpcTarget.prototype })];
   }
 
   async execute(

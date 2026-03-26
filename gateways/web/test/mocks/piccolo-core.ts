@@ -43,8 +43,8 @@ export function createMockSession(
   const userId = options.userId ?? DEFAULT_USER_ID;
 
   return {
-    userId,
     sessionId: vi.fn().mockResolvedValue(sessionId),
+    userId: vi.fn().mockResolvedValue(userId),
     getUpdatedAt: vi.fn().mockResolvedValue(0),
     getName: vi.fn().mockResolvedValue(undefined),
     setName: vi.fn().mockResolvedValue(undefined),

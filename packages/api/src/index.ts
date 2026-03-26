@@ -247,7 +247,7 @@ export interface ISession {
 
   sessionId(): Promise<string>;
   getUpdatedAt(): Promise<number>;
-  readonly userId: string;
+  userId(): Promise<string>;
 
   // ─── Metadata ───────────────────────────────────────────────────────────────
 

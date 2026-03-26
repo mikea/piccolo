@@ -116,10 +116,19 @@ export class ExtensionRunner implements IExtensionRunner {
 
   /**
    * Load the extension registry and bootstrap all extensions for a session.
+   *
+   * Two session references are required:
+   *   ctx     — the real local session object (AgentSessionDO `this`). Used only
+   *             to read sessionId()/userId() without going through the RPC Proxy,
+   *             which would fail on private-field brand checks.
+   *   ctxStub — the RPC-serialisable Proxy stub. Passed to remote extension
+   *             workers so they can call back into the session over JSRPC.
+   *
    * Spec ref: specs/core.md §ExtensionRunner §initialize
    */
   async initialize(
     ctx: ISession,
+    ctxStub: ISession,
     kv: KVNamespace,
     extensions: DispatchNamespace,
     modelId?: string,
@@ -159,11 +168,12 @@ export class ExtensionRunner implements IExtensionRunner {
           return null;
         }
 
+        // Pass ctxStub to remote workers — they receive it as an RPC capability.
         const [tools, commands, additions] = await Promise.all([
-          this.#safeCall(name, "getTools", () => worker.getTools?.(ctx)),
-          this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
+          this.#safeCall(name, "getTools", () => worker.getTools?.(ctxStub)),
+          this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctxStub)),
           this.#safeCall(name, "getSystemPromptAdditions", () =>
-            worker.getSystemPromptAdditions?.(ctx),
+            worker.getSystemPromptAdditions?.(ctxStub),
           ),
         ]);
 
@@ -183,15 +193,16 @@ export class ExtensionRunner implements IExtensionRunner {
       );
     }
 
-    // Fire session_start
+    // Read identity from the real local ctx (not the Proxy) to avoid private-field errors.
+    // Fire session_start with ctxStub so extensions can call back into the session.
     await this.emit(
       {
         type: "session_start",
         sessionId: await ctx.sessionId(),
-        userId: ctx.userId,
+        userId: await ctx.userId(),
         modelId: modelId ?? "",
       },
-      ctx,
+      ctxStub,
     );
 
     console.debug(

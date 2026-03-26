@@ -470,15 +470,23 @@ Manages dispatch to all installed extension Workers.
 
 ```typescript
 class ExtensionRunner {
-  async initialize(ctx: SessionImpl): Promise<void> {
+  async initialize(ctx: SessionImpl, ctxStub: ISession, kv: KVNamespace, extensions: DispatchNamespace, modelId?: string): Promise<void> {
+    // Two session references are required:
+    //   ctx     — the real local session object. Used only to read sessionId()/userId()
+    //             without going through the RPC Proxy, which would fail on private-field
+    //             brand checks.
+    //   ctxStub — the RPC-serialisable Proxy stub. Passed to remote extension workers
+    //             so they can call back into the session over JSRPC.
+    //
     // Logs start/end and per-extension bootstrap failures at [extensions] scope.
     // 1. Read extensions:registry from CONFIG KV → string[]
     // 2. For each name:
     //    worker = env.EXTENSIONS.get(name)
-    //    tools = await worker.getTools(ctx)
-    //    commands = await worker.getCommands(ctx)  // store for onInput routing
-    //    sysPromptAdditions = await worker.getSystemPromptAdditions(ctx)
+    //    tools = await worker.getTools(ctxStub)
+    //    commands = await worker.getCommands(ctxStub)  // store for onInput routing
+    //    sysPromptAdditions = await worker.getSystemPromptAdditions(ctxStub)
     // 3. Store tools directly as ITool[], plus commands and sysPromptAdditions
+    // 4. Fire session_start using identity from ctx (not ctxStub), pass ctxStub to extensions
   }
 }
 ```
