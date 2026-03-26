@@ -10,7 +10,7 @@
 
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
-import type { ISession, IUser } from "@piccolo/api";
+import type { ISession, ISessionListener, IUser, SessionEvent } from "@piccolo/api";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
 import { PiccoloCore } from "../../src/piccolo-core.ts";
@@ -45,6 +45,17 @@ async function runPromptViaDoInstance(
   const stub = env.AGENT_SESSION.get(env.AGENT_SESSION.idFromName(sessionId));
   await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
+    const flushed = new Promise<void>((resolve) => {
+      const listener: ISessionListener = {
+        onEvent(event: SessionEvent) {
+          if (event.type === "turn_flushed") {
+            instance.removeListener(listener);
+            resolve();
+          }
+        },
+      };
+      instance.addListener(listener);
+    });
     const turn = await instance.prompt(text);
     const stream = await turn.getStream();
     const reader = stream.getReader();
@@ -52,7 +63,7 @@ async function runPromptViaDoInstance(
       const { done } = await reader.read();
       if (done) break;
     }
-    await instance.waitForFlush();
+    await flushed;
   });
 }
 

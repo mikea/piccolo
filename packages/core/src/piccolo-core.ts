@@ -46,7 +46,10 @@ class UserImpl extends RpcTarget implements IUser {
     const row = await dbGetSession(this.#env.SESSIONS_DB, sessionId);
     // row is null for sessions that haven't been prompted yet (lazy D1 commit).
     // Only enforce ownership when a row exists.
-    if (row !== null && row.user_id !== this.#userId) throw new Error("Forbidden");
+    if (row !== null && row.user_id !== this.#userId) {
+      console.debug("[core] user id mismatch", this.#userId, JSON.stringify(row));
+      throw new Error("Forbidden");
+    }
     const stub = this.#getDoStub(sessionId);
     // Ensure the DO is initialized — _init is idempotent so safe to call always.
     // This handles the case where the DO is cold and was never _init'd

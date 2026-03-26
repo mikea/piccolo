@@ -9,14 +9,14 @@
  *   1. Get a DO stub: env.AGENT_SESSION.idFromName(uniqueId)
  *   2. Inside runInDurableObject(), call _setModelForTest(mockModel) to bypass
  *      the real AI Gateway, then call newSession() + prompt().
- *   3. Call waitForFlush() before querying D1 to ensure writes are complete.
+ *   3. Use waitForEvent(instance, e => e.type === "turn_flushed") to wait for D1 writes.
  *
  * Spec ref: specs/core.md §AgentSessionDO
  */
 
 import { env, runInDurableObject } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
-import type { AgentEvent, Attachment } from "@piccolo/api";
+import type { AgentEvent, Attachment, ISessionListener, SessionEvent } from "@piccolo/api";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
 import { parseEntry } from "../../src/db/entry-types.ts";
@@ -69,8 +69,29 @@ async function promptStream(
 }
 
 /**
+ * Resolves when the next SessionEvent matching predicate fires on instance.
+ * The listener removes itself after the predicate matches.
+ */
+function waitForEvent(
+  instance: AgentSessionDO,
+  predicate: (event: SessionEvent) => boolean,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const listener: ISessionListener = {
+      onEvent(event: SessionEvent) {
+        if (predicate(event)) {
+          instance.removeListener(listener);
+          resolve();
+        }
+      },
+    };
+    instance.addListener(listener);
+  });
+}
+
+/**
  * Run a single prompt inside a DO, injecting a mock model.
- * Awaits waitForFlush() so D1 writes are complete before returning.
+ * Awaits turn_flushed so D1 writes are complete before returning.
  */
 async function runPrompt(
   sessionId: string,
@@ -81,9 +102,10 @@ async function runPrompt(
   return await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
     await instance._init(sessionId, "user-1");
+    const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
     const turn = await instance.prompt(text);
     const events = await drainStream(await turn.getStream());
-    await instance.waitForFlush();
+    await flushed;
     return events;
   });
 }
@@ -119,7 +141,6 @@ describe("AgentSessionDO — prompt() pipeline", () => {
       instance._setModelForTest(createMockModel({ response: "should not appear" }));
       await instance._init(sid, "user-1");
       const ev = await drainStream(await promptStream(instance, "test input that produces output"));
-      await instance.waitForFlush();
       return ev;
     });
     // With a valid mock model, the stream is NOT empty — this confirms the
@@ -198,12 +219,14 @@ describe("AgentSessionDO — D1 persistence", () => {
       await instance._init(sid, "user-1");
 
       instance._setModelForTest(createMockModel({ response: "turn one" }));
+      const flushed1 = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "question one"));
-      await instance.waitForFlush();
+      await flushed1;
 
       instance._setModelForTest(createMockModel({ response: "turn two" }));
+      const flushed2 = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "question two"));
-      await instance.waitForFlush();
+      await flushed2;
     });
 
     const rawRows = await getEntries(env.SESSIONS_DB, sid);
@@ -320,8 +343,9 @@ describe("AgentSessionDO — steer and followUp", () => {
       instance._setModelForTest(createMockModel({ response: "reply" }));
       await instance._init(sid, "user-1");
       await instance.steer("steer message");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "hi"));
-      await instance.waitForFlush();
+      await flushed;
     });
   });
 
@@ -378,8 +402,9 @@ describe("AgentSessionDO — branch", () => {
     const stub = getStub(sid);
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "response two" }));
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "turn two"));
-      await instance.waitForFlush();
+      await flushed;
     });
 
     // Branch back to leaf after turn 1 — confirm no throw
@@ -437,8 +462,9 @@ describe("AgentSessionDO — tool events", () => {
         }),
       );
       await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const ev = await drainStream(await promptStream(instance, "use a tool"));
-      await instance.waitForFlush();
+      await flushed;
       return ev;
     });
 
@@ -492,7 +518,6 @@ describe("AgentSessionDO — cold-start with model_change history", () => {
     const stub = getStub(sid);
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       await instance.setModel("openai/gpt-4o");
-      await instance.waitForFlush();
     });
 
     // Simulate cold start by getting a fresh DO reference and calling a method
@@ -515,8 +540,9 @@ describe("AgentSessionDO — context overflow retry", () => {
     // Now trigger a context overflow error — the retry path runs compact() + continue()
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ contextOverflow: true }));
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const ev = await drainStream(await promptStream(instance, "overflow me"));
-      await instance.waitForFlush();
+      await flushed;
       return ev;
     });
 
@@ -559,12 +585,13 @@ describe("AgentSessionDO — estimateTokens with non-text content", () => {
       instance._setModelForTest(createMockModel({ response: "ok" }));
       await instance._init(sid, "user-1");
       // Pass an attachment (file part) — hits the else branch in estimateTokens
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(
         await promptStream(instance, "describe this", [
           { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
         ]),
       );
-      await instance.waitForFlush();
+      await flushed;
     });
     const usage = await runInDurableObject(stub, (instance: AgentSessionDO) =>
       instance.getContextUsage(),
@@ -622,8 +649,9 @@ describe("AgentSessionDO — _init idempotency", () => {
       instance._setModelForTest(createMockModel({ response: "hello" }));
       await instance._init(sid, "user-1");
       await instance._init(sid, "user-2"); // second call ignored
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "hi"));
-      await instance.waitForFlush();
+      await flushed;
     });
     const row = await getSession(env.SESSIONS_DB, sid);
     // userId should still be user-1 (second newSession was no-op)
@@ -696,11 +724,13 @@ describe("AgentSessionDO — getHistory", () => {
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       await instance._init(sid, "user-1");
       instance._setModelForTest(createMockModel({ response: "reply one" }));
+      const flushed1 = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "question one"));
-      await instance.waitForFlush();
+      await flushed1;
       instance._setModelForTest(createMockModel({ response: "reply two" }));
+      const flushed2 = waitForEvent(instance, (e) => e.type === "turn_flushed");
       await drainStream(await promptStream(instance, "question two"));
-      await instance.waitForFlush();
+      await flushed2;
     });
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
       instance.getHistory(),
@@ -738,9 +768,10 @@ describe("AgentSessionDO — getCurrentTurn reconnect", () => {
 
       // Both refer to the same underlying stream — drain via the reconnect turn.
       // (The prompt turn's stream is already the same object; drain via reconnect stream.)
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const stream = await reconnectTurn.getStream();
       const ev = await drainStream(stream);
-      await instance.waitForFlush();
+      await flushed;
       // Suppress unused warning — promptTurn was used to trigger turn creation.
       void promptTurn;
       return ev;

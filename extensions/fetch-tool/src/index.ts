@@ -1,5 +1,6 @@
-import { WorkerEntrypoint } from "cloudflare:workers";
+import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/api";
+import * as z from "zod";
 
 // ── Hard ceiling on maxBytes regardless of what the LLM requests ──────────────
 const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB
@@ -52,94 +53,42 @@ interface FetchDetails {
   contentRange: string | null;
 }
 
-interface FetchParams {
-  action: "get" | "head";
-  url: string;
-  byteStart?: number;
-  byteEnd?: number;
-  maxBytes: number;
-}
+// ── FetchParams Zod schema (single source of truth) ──────────────────────────
+// Zod schema drives both runtime validation in execute() and inputSchema for
+// the LLM (via z.toJSONSchema()).
 
-function parseFetchParams(params: Record<string, unknown>): FetchParams {
-  const actionRaw = params["action"];
-  const action = actionRaw === undefined ? "get" : actionRaw;
-  if (action !== "get" && action !== "head") {
-    throw new Error("Invalid input: action must be 'get' or 'head'");
-  }
+const fetchParamsSchema = z.object({
+  action: z
+    .enum(["get", "head"])
+    .default("get")
+    .describe('"get" retrieves the resource body; "head" retrieves headers only (no body).'),
+  url: z.url().describe("Full HTTPS URL to request. Must begin with https://."),
+  byteStart: z
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      '"get" only. First byte of the range to fetch, inclusive (0-based). Sends a Range: bytes=byteStart-byteEnd header. Requires 206 from server.',
+    ),
+  byteEnd: z
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      '"get" only. Last byte of the range to fetch, inclusive (0-based). If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.',
+    ),
+  maxBytes: z
+    .int()
+    .min(1)
+    .default(1_048_576)
+    .describe(
+      "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
+    ),
+});
 
-  const url = params["url"];
-  if (typeof url !== "string" || url.length === 0) {
-    throw new Error("Invalid input: url must be a non-empty string");
-  }
+type FetchParams = z.output<typeof fetchParamsSchema>;
 
-  const maxBytesRaw = params["maxBytes"];
-  let maxBytes = 1_048_576;
-  if (maxBytesRaw !== undefined) {
-    if (!Number.isInteger(maxBytesRaw) || (maxBytesRaw as number) <= 0) {
-      throw new Error("Invalid input: maxBytes must be a positive integer");
-    }
-    maxBytes = maxBytesRaw as number;
-  }
-
-  const byteStartRaw = params["byteStart"];
-  if (
-    byteStartRaw !== undefined &&
-    (!Number.isInteger(byteStartRaw) || (byteStartRaw as number) < 0)
-  ) {
-    throw new Error("Invalid input: byteStart must be a non-negative integer");
-  }
-
-  const byteEndRaw = params["byteEnd"];
-  if (byteEndRaw !== undefined && (!Number.isInteger(byteEndRaw) || (byteEndRaw as number) < 0)) {
-    throw new Error("Invalid input: byteEnd must be a non-negative integer");
-  }
-
-  return {
-    action,
-    url,
-    ...(byteStartRaw !== undefined ? { byteStart: byteStartRaw as number } : {}),
-    ...(byteEndRaw !== undefined ? { byteEnd: byteEndRaw as number } : {}),
-    maxBytes,
-  };
-}
-
-const fetchParamsRpcSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    action: {
-      type: "string",
-      enum: ["get", "head"],
-      default: "get",
-      description: '"get" retrieves the resource body; "head" retrieves headers only (no body).',
-    },
-    url: {
-      type: "string",
-      format: "uri",
-      description: "Full HTTPS URL to request. Must begin with https://.",
-    },
-    byteStart: {
-      type: "integer",
-      minimum: 0,
-      description:
-        '"get" only. First byte of the range to fetch, inclusive (0-based). Sends a Range: bytes=byteStart-byteEnd header. Requires 206 from server.',
-    },
-    byteEnd: {
-      type: "integer",
-      minimum: 0,
-      description:
-        '"get" only. Last byte of the range to fetch, inclusive (0-based). If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.',
-    },
-    maxBytes: {
-      type: "integer",
-      minimum: 1,
-      default: 1_048_576,
-      description:
-        "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
-    },
-  },
-  required: ["url"],
-} as const;
+const fetchParamsRpcSchema = z.toJSONSchema(fetchParamsSchema, { target: "draft-07" });
 
 // ── ToolDescriptor ────────────────────────────────────────────────────────────
 
@@ -189,24 +138,21 @@ Errors:
   inputSchema: fetchParamsRpcSchema,
 };
 
-// ── FetchTool ─────────────────────────────────────────────────────────────────
+// ── FetchToolTarget ───────────────────────────────────────────────────────────
 
-export class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
-  readonly descriptor: ToolDescriptor = descriptor;
+/**
+ * RpcTarget wrapper around FetchTool so that piccolo-core can pass it over
+ * JSRPC as a proper capability. WorkerEntrypoint cannot be used as a JSRPC
+ * target directly; RpcTarget subclasses can.
+ */
+class FetchTool extends RpcTarget implements ITool {
+  readonly #tool: FetchToolExtension;
+  readonly descriptor: ToolDescriptor;
 
-  // Required by Cloudflare Workers: WorkerEntrypoint must register at least one
-  // event handler. This Worker is invoked exclusively over JSRPC by piccolo-core;
-  // direct HTTP access is not supported.
-  override fetch(): Response {
-    return new Response("Method Not Allowed", { status: 405 });
-  }
-
-  async getTools(_session: ISession): Promise<ITool[]> {
-    // Use the loopback service binding stub so the JSRPC system receives a
-    // proper Fetcher/stub rather than `this` (WorkerEntrypoint cannot be used
-    // as a JSRPC target directly — ctx.exports provides the correct stub).
-    // Requires the enable_ctx_exports compatibility flag.
-    return [this.ctx.exports.FetchTool as unknown as ITool];
+  constructor(tool: FetchToolExtension) {
+    super();
+    this.#tool = tool;
+    this.descriptor = tool.descriptor;
   }
 
   async execute(
@@ -215,10 +161,7 @@ export class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITo
     _ctx: ISession,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
-    if (typeof params !== "object" || params === null || Array.isArray(params)) {
-      throw new Error("Invalid input: expected object params");
-    }
-    const parsed = parseFetchParams(params as Record<string, unknown>);
+    const parsed: FetchParams = fetchParamsSchema.parse(params);
 
     const url = new URL(parsed.url);
     validateScheme(url);
@@ -328,4 +271,21 @@ export class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITo
   }
 }
 
-export default FetchTool;
+// ── FetchTool ─────────────────────────────────────────────────────────────────
+
+export class FetchToolExtension extends WorkerEntrypoint implements IExtensionWorker {
+  readonly descriptor: ToolDescriptor = descriptor;
+  readonly tool = new FetchTool(this);
+
+  override fetch(): Response {
+    return new Response("OK", { status: 200 });
+  }
+
+  async getTools(_session: ISession): Promise<ITool[]> {
+    // WorkerEntrypoint cannot be passed as a JSRPC target directly.
+    // Wrap in a RpcTarget subclass so piccolo-core can hold it as a capability.
+    return [this.tool];
+  }
+}
+
+export default FetchToolExtension;

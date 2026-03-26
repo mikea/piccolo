@@ -30,9 +30,11 @@ import type {
   IGatewayCallback,
   InputResult,
   ISession,
+  ISessionListener,
   ITool,
   ITurn,
   NewSessionOptions,
+  SessionEvent,
   ToolDescriptor,
 } from "@piccolo/api";
 import type { LanguageModel, ModelMessage } from "ai";
@@ -59,7 +61,7 @@ import {
   flushPendingEntries,
   forkSession,
 } from "./session/persistence.ts";
-import { SessionTransformStream } from "./session-transform.ts";
+import { StreamBroadcaster } from "./stream-broadcaster.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { defaultModelId, parseModels } from "./types-internal.ts";
@@ -183,6 +185,27 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #branchEntries: AnyEntry[] = [];
   #messageToEntryId = new Map<ModelMessage, string>();
 
+  // ─── Listeners ────────────────────────────────────────────────────────────
+  #listeners = new Set<ISessionListener>();
+
+  addListener(listener: ISessionListener): void {
+    this.#listeners.add(listener);
+  }
+
+  removeListener(listener: ISessionListener): void {
+    this.#listeners.delete(listener);
+  }
+
+  #notifyListeners(event: SessionEvent): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener.onEvent(event);
+      } catch {
+        // a broken listener must never interrupt the DO
+      }
+    }
+  }
+
   // ─── Agent and infrastructure ─────────────────────────────────────────────
   #agent!: Agent;
   #extensionRunner!: ExtensionRunner;
@@ -209,7 +232,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Test helpers ─────────────────────────────────────────────────────────
   #modelOverridden = false;
-  #flushPromise: Promise<void> | null = null;
 
   // ─── Initialisation ───────────────────────────────────────────────────────
 
@@ -278,6 +300,15 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
     this.#rpcCtx = new SessionTarget(this);
+    // Register extension runner as a permanent listener.
+    const rpcCtx = this.#rpcCtx;
+    const extensionRunner = this.#extensionRunner;
+    this.addListener({
+      onEvent: (event) => {
+        if (event.type === "turn_flushed") return;
+        extensionRunner.emit(event, rpcCtx).catch(() => {});
+      },
+    });
     await this.#extensionRunner.initialize(
       this.#rpcCtx,
       this.env.CONFIG,
@@ -309,10 +340,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   _getAssembledSystemPrompt(): string {
     return this.#assembledSystemPrompt;
-  }
-
-  async waitForFlush(): Promise<void> {
-    if (this.#flushPromise !== null) await this.#flushPromise;
   }
 
   // ─── ISession: Identity ───────────────────────────────────────────────────
@@ -380,15 +407,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       ctx,
     )) as InputResult;
     if (inputResult.action === "handled") {
-      const emptyStream = new ReadableStream<AgentEvent>({
-        start(c) {
-          c.close();
-        },
-      });
-      const turn = new TurnImpl(emptyStream, callback);
+      const broadcaster = new StreamBroadcaster<AgentEvent>();
+      broadcaster.closed = true; // already done — connect() returns immediately-closed streams
+      const turn = new TurnImpl(broadcaster, callback);
       console.debug(`[session:${this.#sessionId}] #currentTurn null → turn (handled-input)`);
       this.#currentTurn = turn;
-      // emptyStream closes immediately — clear the turn right away
+      // No stream to drain — clear the turn right away
       void Promise.resolve().then(() => {
         console.debug(`[session:${this.#sessionId}] #currentTurn turn → null (handled-input)`);
         this.#currentTurn = null;
@@ -450,20 +474,19 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // Start the agent turn — returns AgentTurn synchronously
     const agentTurn = this.#agent.prompt([userMessage]);
 
-    // Wire the SessionTransformStream: peeks at events for DO side-effects,
-    // forwards each event unchanged to the gateway.
-    const transform = new SessionTransformStream(
-      `session:${this.#sessionId}`,
-      (event) => this.#onTurnEvent(event, ctx),
-      () => this.#onTurnClose(),
-    );
-
-    const outStream = agentTurn.stream.pipeThrough(transform);
-    const turn = new TurnImpl(outStream, callback);
-    // Assigned once — same RpcTarget instance for the duration of this logical turn
-    // (including any follow-up turns). Cleared in #onTurnClose() finally.
+    // The broadcaster fans out to any number of connect() subscribers.
+    // The DO pipes agentTurn.stream through it — bc.readable is the primary
+    // drain that drives backpressure; each connect() call gets an independent
+    // copy of every event from that point forward.
+    const broadcaster = new StreamBroadcaster<AgentEvent>();
+    const turn = new TurnImpl(broadcaster, callback);
     console.debug(`[session:${this.#sessionId}] #currentTurn null → turn`);
     this.#currentTurn = turn;
+
+    // Pipe the agent stream through the broadcaster and drain bc.readable.
+    // Peek at each event for DO side-effects; call #onTurnClose when done.
+    this.ctx.waitUntil(this.#drainTurnStream(agentTurn.stream, broadcaster));
+
     return turn;
   }
 
@@ -796,7 +819,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    *
    * Spec ref: specs/core.md §AgentSessionDO §#onTurnEvent
    */
-  #onTurnEvent(event: AgentEvent, extensionCtx: ISession): void {
+  #onTurnEvent(event: AgentEvent): void {
     // 1. In-flight history tracking
     switch (event.type) {
       case "agent_start":
@@ -832,27 +855,48 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         break;
     }
 
-    // 3. Extension dispatch (fire-and-forget)
-    // AgentEvent is a subset of ExtensionEvent — pass directly, no mapping needed.
-    this.#extensionRunner.emit(event, extensionCtx).catch(() => {});
+    // 3. Notify all listeners (extension runner is one of them).
+    this.#notifyListeners(event);
   }
 
   /**
-   * Called by SessionTransformStream's flush() when the Agent's stream closes.
-   * Schedules #handleAgentEnd() via ctx.waitUntil() and clears #currentTurn in
-   * the finally block — after all follow-up processing completes.
+   * Pipe agentStream through the broadcaster and drain bc.readable (the primary
+   * drain that drives backpressure). Calls #onTurnEvent per chunk.
+   * On stream error, aborts the broadcaster so subscribers receive the error.
    *
-   * Spec ref: specs/core.md §AgentSessionDO §#onTurnClose
+   * After the stream closes, schedules #handleAgentEnd via this.ctx.waitUntil()
+   * so D1 writes are protected from DO eviction. Fires turn_flushed to all
+   * listeners once #handleAgentEnd completes.
    */
-  #onTurnClose(): void {
-    this.#flushPromise = this.#handleAgentEnd().finally(() => {
-      console.debug(`[session:${this.#sessionId}] #currentTurn turn → null`);
-      this.#currentTurn = null;
-    });
-    this.#flushPromise.catch((err) => {
-      console.error(`[session:${this.#sessionId}] handleAgentEnd error`, err);
-    });
-    this.ctx.waitUntil(this.#flushPromise);
+  async #drainTurnStream(
+    agentStream: ReadableStream<AgentEvent>,
+    broadcaster: StreamBroadcaster<AgentEvent>,
+  ): Promise<void> {
+    const reader = agentStream.pipeThrough(broadcaster).getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        this.#onTurnEvent(value);
+      }
+    } catch (err) {
+      broadcaster.abort(err);
+    } finally {
+      reader.releaseLock();
+    }
+
+    // Use this.ctx.waitUntil so the DO runtime keeps this DO alive until
+    // D1 writes complete — even if the RPC connection drops beforehand.
+    const flush = this.#handleAgentEnd()
+      .catch((err) => {
+        console.error(`[session:${this.#sessionId}] handleAgentEnd error`, err);
+      })
+      .finally(() => {
+        console.debug(`[session:${this.#sessionId}] #currentTurn turn → null`);
+        this.#currentTurn = null;
+        this.#notifyListeners({ type: "turn_flushed" });
+      });
+    this.ctx.waitUntil(flush);
   }
 
   #appendEntry(entry: AnyEntry): void {
@@ -899,22 +943,23 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
     // Process follow-up queue: each follow-up starts a new agent turn.
     // These are internal turns — no gateway consumer listens to them.
-    // The same ctx is used so extensions receive follow-up events too.
-    const ctx = this.#rpcCtx;
     while (this.#followUpQueue.length > 0) {
       const followUpText = this.#followUpQueue.shift() ?? "";
       this.#messagesAtTurnStart = this.#agent.state.messages.length;
       const followUpTurn = this.#agent.prompt(followUpText);
 
-      // Consume follow-up stream through the same event processing pipeline.
-      // No gateway receives this stream — pipe to a discard WritableStream.
-      const followUpTransform = new SessionTransformStream(
-        `session:${this.#sessionId}:followup`,
-        (event) => this.#onTurnEvent(event, ctx),
-        () => {}, // no nested close handler — persistence done below via await
-      );
-
-      await followUpTurn.stream.pipeThrough(followUpTransform).pipeTo(new WritableStream());
+      // Drain the follow-up stream, calling #onTurnEvent per chunk.
+      // No broadcaster needed — no gateway listens to follow-up turns.
+      const reader = followUpTurn.stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          this.#onTurnEvent(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
 
       await this.#persistNewMessages();
     }
@@ -968,17 +1013,26 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 // ─── TurnImpl ─────────────────────────────────────────────────────────────────
 
 export class TurnImpl extends RpcTarget implements ITurn {
-  readonly #stream: ReadableStream<AgentEvent>;
+  readonly #broadcaster: StreamBroadcaster<AgentEvent>;
   readonly #callback: IGatewayCallback | undefined;
+  // Pre-connect one subscriber immediately so the first getStream() caller
+  // never misses events that were emitted before getStream() was called.
+  readonly #firstStream: ReadableStream<AgentEvent>;
+  #firstStreamConsumed = false;
 
-  constructor(stream: ReadableStream<AgentEvent>, callback: IGatewayCallback | undefined) {
+  constructor(broadcaster: StreamBroadcaster<AgentEvent>, callback: IGatewayCallback | undefined) {
     super();
-    this.#stream = stream;
+    this.#broadcaster = broadcaster;
     this.#callback = callback;
+    this.#firstStream = broadcaster.connect();
   }
 
   async getStream(): Promise<ReadableStream<AgentEvent>> {
-    return this.#stream;
+    if (!this.#firstStreamConsumed) {
+      this.#firstStreamConsumed = true;
+      return this.#firstStream;
+    }
+    return this.#broadcaster.connect();
   }
 
   async getCallback(): Promise<IGatewayCallback | undefined> {

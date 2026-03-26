@@ -251,7 +251,7 @@ export class Agent {
     // ──────────────────────────────────────────────────────────────────────────
 
     const emit = (event: AgentEvent) => {
-      console.debug("[agent] emit", event);
+      console.debug("[agent] emit", JSON.stringify(event));
       controller.enqueue(event);
     };
 

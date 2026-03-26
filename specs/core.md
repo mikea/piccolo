@@ -415,17 +415,18 @@ The D1 `sessions` row is **not** written here — it is written lazily on the fi
 │     If inputTokens > COMPACT_TOKENS (env var, default 100000): compact() before proceeding
 │
 ├─ 6. agent.prompt(userMessages) → AgentTurn (synchronous)
-│     AgentTurn.stream is piped through SessionTransformStream:
+│     A StreamBroadcaster<AgentEvent> is created and piped from AgentTurn.stream.
+│     The DO drains bc.readable (primary drain) in #drainTurnStream():
 │       - #onTurnEvent(event): in-flight tracking, token counts, extension dispatch
-│       - #onTurnClose(): schedules #handleAgentEnd() + clears #currentTurn
-│     SessionTransformStream output → TurnImpl (wraps stream + callback)
+│       - #onTurnClose(): called on completion, schedules #handleAgentEnd() + clears #currentTurn
+│     TurnImpl wraps the broadcaster; getStream() calls broadcaster.connect()
 │
 └─ 7. Return TurnImpl as ITurn to caller
        #currentTurn assigned once; cleared in #onTurnClose() finally block
        to preserve RpcTarget identity for reconnect (getCurrentTurn())
 ```
 
-When `SessionTransformStream.flush()` fires (Agent stream closes), `#onTurnClose()`
+When `#drainTurnStream()` finishes (Agent stream closes normally or errors), `#onTurnClose()`
 schedules `#handleAgentEnd()` via `ctx.waitUntil(...)` so persistence is not cut
 off when the RPC call frame completes.
 
@@ -1020,25 +1021,27 @@ private _startTurn(): AgentTurn {
 
 `_runStream()` calls `streamText(...)` from the `ai` package, enqueues events via `controller.enqueue()`, and in the `finally` block sets `_currentTurn = null` and calls `controller.close()`.
 
-### `SessionTransformStream`
+### `StreamBroadcaster<T>`
 
-`packages/core/src/session-transform.ts` — a thin pass-through `TransformStream<AgentEvent, AgentEvent>` used by `AgentSessionDO.prompt()` to observe events without splitting the stream:
+`packages/core/src/stream-broadcaster.ts` — a `TransformStream<T, T>` that fans out every chunk to zero or more subscriber streams:
 
 ```typescript
-class SessionTransformStream extends TransformStream<AgentEvent, AgentEvent> {
-  constructor(
-    label: string,
-    onEvent: (event: AgentEvent) => void,  // called for every event (sync)
-    onClose: () => void,                   // called when Agent stream closes
-  )
+class StreamBroadcaster<T> extends TransformStream<T, T> {
+  connect(): ReadableStream<T>  // new subscriber stream from this point forward
+  abort(reason: unknown): void  // error all subscribers (call on source error)
+  closed: boolean               // true after writable side closes
+  aborted: boolean              // true after abort() is called
 }
 ```
 
-All event-processing logic lives in `AgentSessionDO.#onTurnEvent()`, not in the transform callbacks.
+- `bc.readable` (inherited) is the primary drain — must be consumed by the DO to drive backpressure.
+- Each `connect()` call returns an independent `ReadableStream<T>` receiving chunks from that point forward.
+- `connect()` after close → immediately closed stream. After abort → immediately errored stream.
+- Broken subscriber controllers (enqueue/close/error throws) are silently removed and never affect other subscribers.
 
 ### `AgentSessionDO.#onTurnEvent()`
 
-Called synchronously for every event as it passes through `SessionTransformStream`. Contains all four peek reasons:
+Called synchronously for every event as the DO drains the turn stream. Contains all four peek reasons:
 
 1. **In-flight history** — accumulates `#streamingAssistantText` and `#streamingToolCalls` for `getHistory()` mid-turn
 2. **Token counts** — updates `#lastInputTokens` from `turn_end.usage` and `agent_end.totalUsage`
@@ -1046,22 +1049,29 @@ Called synchronously for every event as it passes through `SessionTransformStrea
 
 ### `AgentSessionDO.#onTurnClose()`
 
-Called from `SessionTransformStream.flush()` when the Agent's stream closes. Schedules `#handleAgentEnd()` via `ctx.waitUntil()`, and clears `#currentTurn` in the `finally` block — after all follow-up processing completes, preserving `TurnImpl` `RpcTarget` identity for the duration of the logical turn.
+Called from `#drainTurnStream()` when the agent stream closes (normally or on error). Schedules `#handleAgentEnd()` via `ctx.waitUntil()`, and clears `#currentTurn` in the `finally` block — after all follow-up processing completes, preserving `TurnImpl` `RpcTarget` identity for the duration of the logical turn.
 
 ### `AgentSessionDO.prompt()` pipeline
 
 ```
 agent.prompt([userMessage])
   → AgentTurn { stream: ReadableStream<AgentEvent>, abort() }
-  → .pipeThrough(new SessionTransformStream(...))
-  → outStream  (forwarded to TurnImpl)
-```
 
-`TurnImpl` wraps `outStream` (not `AgentTurn` directly). `#currentTurn = new TurnImpl(outStream, callback)` is assigned once and kept until `#onTurnClose()` finally runs.
+broadcaster = new StreamBroadcaster<AgentEvent>()
+TurnImpl(broadcaster, callback)  ← #currentTurn
+
+ctx.waitUntil(#drainTurnStream(agentTurn.stream, broadcaster, ctx))
+  → pipes agentTurn.stream through broadcaster
+  → drains bc.readable (primary drain)
+  → calls #onTurnEvent() per chunk
+  → calls #onTurnClose() on completion
+
+getStream() → broadcaster.connect()  ← each caller gets a fresh subscriber stream
+```
 
 ### Follow-up turns
 
-Inside `#handleAgentEnd()`, after D1 flush:
+Inside `#handleAgentEnd()`, after D1 flush. Follow-up turns are internal — no broadcaster needed:
 
 ```typescript
 while (this.#followUpQueue.length > 0) {
@@ -1069,15 +1079,17 @@ while (this.#followUpQueue.length > 0) {
   this.#messagesAtTurnStart = this.#agent.state.messages.length;
   const followUpTurn = this.#agent.prompt(text);
 
-  await followUpTurn.stream
-    .pipeThrough(new SessionTransformStream(label, onTurnEvent, () => {}))
-    .pipeTo(new WritableStream());  // discard — no gateway consumer
+  const reader = followUpTurn.stream.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    this.#onTurnEvent(value, ctx);
+  }
+  reader.releaseLock();
 
   await this.#persistNewMessages();
 }
 ```
-
-Follow-up turns are internal — no gateway receives their stream. The same `#onTurnEvent` handler is used for tracking and extension dispatch.
 
 ### `toAiSdkTools(tools: ITool[], ctx: ISession): ToolSet`
 

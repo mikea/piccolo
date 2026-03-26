@@ -166,7 +166,10 @@ export class ExtensionRunner implements IExtensionRunner {
 
         // Pass ctx to remote workers — they receive it as an RPC capability.
         const [tools, commands, additions] = await Promise.all([
-          this.#safeCall(name, "getTools", () => worker.getTools?.(ctx)),
+          this.#safeCall(name, "getTools", () => {
+            console.debug("[extensions] getTools", worker, ctx)
+            return worker.getTools?.(ctx);
+          }),
           this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
           this.#safeCall(name, "getSystemPromptAdditions", () =>
             worker.getSystemPromptAdditions?.(ctx),

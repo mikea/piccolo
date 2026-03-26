@@ -67,6 +67,23 @@ export type AgentEvent =
   | { type: "tool_end"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: "error"; message: string };
 
+/**
+ * SessionEvent — superset of AgentEvent, plus lifecycle events fired by the DO.
+ * `turn_flushed` fires after #handleAgentEnd() completes (D1 written, follow-ups done).
+ * Spec ref: specs/api.md §Shared Types §SessionEvent
+ */
+export type SessionEvent = AgentEvent | { type: "turn_flushed" };
+
+/**
+ * ISessionListener — receives every SessionEvent as the DO processes a turn.
+ * Install via AgentSessionDO.addListener(). The extension runner is always
+ * registered as a listener; tests may add additional ones.
+ * Spec ref: specs/api.md §ISessionListener
+ */
+export interface ISessionListener {
+  onEvent(event: SessionEvent): void;
+}
+
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
 /**

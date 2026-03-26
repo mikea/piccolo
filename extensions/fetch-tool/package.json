@@ -13,11 +13,12 @@
     "types": "wrangler types src/worker-configuration.d.ts"
   },
   "dependencies": {
-    "@piccolo/api": "workspace:*"
+    "@piccolo/api": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@piccolo/core": "workspace:*",
     "@cloudflare/vitest-pool-workers": "^0.13.4",
+    "@piccolo/core": "workspace:*",
     "@vitest/coverage-istanbul": "^4.1.1",
     "vitest": "*",
     "wrangler": "*"
