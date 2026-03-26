@@ -1,23 +1,25 @@
 /**
- * EmptyState.tsx — Shown when no session is selected.
+ * EmptySessionLayout.tsx — Shown when no session is selected.
  */
 
 import { useNavigate } from "@solidjs/router";
 import type { Component } from "solid-js";
 import type { IUser } from "@piccolo/core";
+import type { ISession } from "@piccolo/core";
 
 interface Props {
   user: IUser;
 }
 
-export const EmptyState: Component<Props> = (props) => {
+export const EmptySessionLayout: Component<Props> = (props) => {
   const navigate = useNavigate();
+  const user = props.user;
 
   const handleNew = async () => {
     try {
-      const session = await props.user.newSession();
+      const session = await user.newSession() as ISession;
       const id = await session.sessionId();
-      console.debug("[rpc] newSession → id:", id);
+      console.debug("[nav] newSession → navigating to /sessions/%s", id);
       navigate(`/sessions/${id}`);
     } catch (err) {
       console.error("[rpc] newSession error:", err);

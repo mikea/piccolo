@@ -4,8 +4,6 @@
 declare namespace Cloudflare {
 	interface Env {
 		CORE: Fetcher /* piccolo-core */;
-		/** The user ID for all sessions on this deployment. */
-		USER_ID: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

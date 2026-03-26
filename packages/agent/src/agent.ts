@@ -202,6 +202,27 @@ export class Agent {
     // Reset streaming state; omit the error key to satisfy exactOptionalPropertyTypes.
     const { error: _discarded, ...stateWithoutError } = this._state;
     this._state = { ...stateWithoutError, isStreaming: true };
+
+    // ── Debug: log what is sent to the LLM ────────────────────────────────────
+    console.debug(
+      "[agent] _runStream start — model=%s systemPrompt=%d chars messages=%d",
+      typeof this._state.model === "object" && this._state.model !== null && "modelId" in this._state.model
+        ? String((this._state.model as { modelId: string }).modelId)
+        : String(this._state.model),
+      this._state.systemPrompt.length,
+      this._state.messages.length,
+    );
+    for (let i = 0; i < this._state.messages.length; i++) {
+      const msg = this._state.messages[i];
+      if (msg === undefined) continue;
+      const contentPreview =
+        typeof msg.content === "string"
+          ? msg.content.slice(0, 120)
+          : JSON.stringify(msg.content).slice(0, 120);
+      console.debug("[agent]   msg[%d] role=%s content=%s", i, msg.role, contentPreview);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     this._emit({ type: "agent_start" });
 
     const toolSet = toAiSdkTools(this._state.tools, this._ctx);
@@ -240,6 +261,7 @@ export class Agent {
         },
 
         onChunk: ({ chunk }) => {
+          console.debug("[agent] onChunk type=%s", chunk.type);
           switch (chunk.type) {
             case "text-delta":
               this._emit({ type: "text_delta", delta: chunk.text });
@@ -268,6 +290,7 @@ export class Agent {
         },
 
         onStepFinish: ({ stepNumber, finishReason, usage, content }) => {
+          console.debug("[agent] onStepFinish step=%d reason=%s", stepNumber, finishReason);
           // Emit tool_end for any tool errors — these do not appear in onChunk in ai v6.
           for (const part of content) {
             if (part.type === "tool-error") {
@@ -290,6 +313,7 @@ export class Agent {
         },
 
         onFinish: ({ totalUsage, response }) => {
+          console.debug("[agent] onFinish messages=%d", response.messages.length);
           finalUsage = totalUsage;
           // Append all response messages (assistant + tool) to state history.
           this._state.messages.push(...response.messages);
@@ -297,25 +321,31 @@ export class Agent {
 
         onError: ({ error }) => {
           const message = error instanceof Error ? error.message : String(error);
+          console.debug("[agent] onError message=%s", message);
           this._state = { ...this._state, error: message };
           this._emit({ type: "error", message });
         },
 
         onAbort: () => {
+          console.debug("[agent] onAbort");
           aborted = true;
         },
       });
 
+      console.debug("[agent] consumeStream starting");
       await result.consumeStream();
+      console.debug("[agent] consumeStream done");
     } catch (e) {
       // consumeStream() rejects if the stream itself throws (e.g. network error
       // not caught by onError). Surface as an error event.
       const message = e instanceof Error ? e.message : String(e);
+      console.debug("[agent] consumeStream catch: %s", message);
       if (!aborted) {
         this._state = { ...this._state, error: message };
         this._emit({ type: "error", message });
       }
     } finally {
+      console.debug("[agent] finally aborted=%s", aborted);
       this._state = { ...this._state, isStreaming: false };
       if (!aborted) {
         this._emit({ type: "agent_end", totalUsage: finalUsage });
@@ -356,6 +386,7 @@ export class Agent {
   // ─── Event emission ───────────────────────────────────────────────────────
 
   private _emit(event: AgentEvent): void {
+    console.debug("[agent] emit type=%s listeners=%d", event.type, this._listeners.size);
     for (const listener of this._listeners) {
       listener(event);
     }

@@ -16,10 +16,11 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application"
-  },
-
-  "vars": {
-    // The user ID stamped on all sessions for this deployment.
-    "USER_ID": "default-user"
   }
+
+  // Auth: Cloudflare Access (Zero Trust) enforces login.
+  // The Cf-Access-Jwt-Assertion header is injected by CF on every request.
+  // The Worker decodes the JWT payload to extract the user's email as userId.
+  // No secret or additional config needed here — configure the Access
+  // application in the Cloudflare Zero Trust dashboard.
 }

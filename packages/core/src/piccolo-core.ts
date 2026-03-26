@@ -13,6 +13,7 @@
 
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { AgentSessionDO } from "./agent-session-do.ts";
+import { stubAsRpc } from "./rpc-util.ts";
 import { getSession as dbGetSession } from "./db/schema.ts";
 import { listSessions as dbListSessions } from "./session/persistence.ts";
 import type { IPiccoloCore, ISession, IUser, NewSessionOptions } from "./types.ts";
@@ -37,21 +38,28 @@ class UserImpl extends RpcTarget implements IUser {
     // Initialize the DO; ignore the returned ISession since the stub itself is the ISession.
     await stub._init(sessionId, this.#userId, options);
     console.debug("[core] newSession done sessionId=%s", sessionId);
-    return stub as unknown as ISession;
+    return stubAsRpc<ISession>(stub);
   }
 
   async getSession(sessionId: string): Promise<ISession> {
     console.debug("[core] getSession sessionId=%s userId=%s", sessionId, this.#userId);
     const row = await dbGetSession(this.#env.SESSIONS_DB, sessionId);
-    if (!row || row.user_id !== this.#userId) throw new Error("Forbidden");
-    return this.#getDoStub(sessionId) as unknown as ISession;
+    // row is null for sessions that haven't been prompted yet (lazy D1 commit).
+    // Only enforce ownership when a row exists.
+    if (row !== null && row.user_id !== this.#userId) throw new Error("Forbidden");
+    const stub = this.#getDoStub(sessionId);
+    // Ensure the DO is initialized — _init is idempotent so safe to call always.
+    // This handles the case where the DO is cold and was never _init'd
+    // (e.g. loading a session URL directly before the first prompt).
+    await stub._init(sessionId, this.#userId);
+    return stubAsRpc<ISession>(stub);
   }
 
   async listSessions(): Promise<ISession[]> {
     console.debug("[core] listSessions userId=%s", this.#userId);
     const infos = await dbListSessions(this.#userId, this.#env.SESSIONS_DB);
     console.debug("[core] listSessions found %d sessions", infos.length);
-    return infos.map((info) => this.#getDoStub(info.id) as unknown as ISession);
+    return infos.map((info) => stubAsRpc<ISession>(this.#getDoStub(info.id)));
   }
 
   async listModels(): Promise<string[]> {

@@ -1,111 +1,230 @@
 /**
  * ChatView.tsx — Main chat panel for an active session.
  *
- * Fetches the session via user.getSession(id) on route change.
- * Owns all turn state. Passes ISession down as props.
+ * Receives the ISession RPC stub as a prop from SessionLayout.
+ * All conversation state is server-owned. On mount we call getHistory()
+ * to reconstruct the visible chat, then subscribe() to reconnect to any
+ * active streaming turn (e.g. after a page reload mid-turn).
+ *
+ * No local "messages" store. No "isStreaming" signal.
+ * The server is the single source of truth — the UI just displays it.
+ *
+ * IMPORTANT: ISession is an RpcStub Proxy. Capture it as a plain variable
+ * at component init — never pass it into SolidJS reactive primitives.
  */
 
-import { useParams } from "@solidjs/router";
-import { type Component, createEffect, createSignal } from "solid-js";
+import { type Component, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { AgentEvent, ISession, IUser } from "@piccolo/core";
-import type { Message, MessageRole } from "./types.ts";
+import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/core";
 import { ChatInput } from "./ChatInput.tsx";
 import { Header } from "./Header.tsx";
 import { MessageList } from "./MessageList.tsx";
 
 interface Props {
-  user: IUser;
+  session: ISession;
 }
 
 export const ChatView: Component<Props> = (props) => {
-  const params = useParams<{ id: string }>();
+  console.debug("[nav] ChatView mounted");
+  // Capture once — never read props.session in reactive context.
+  const session = props.session;
 
-  const [session, setSession] = createSignal<ISession | null>(null);
-  const [messages, setMessages] = createStore<Message[]>([]);
+  const [entries, setEntries] = createStore<HistoryEntry[]>([]);
+  // isStreaming is derived from whether we're actively consuming a stream.
   const [isStreaming, setIsStreaming] = createSignal(false);
 
-  createEffect(() => {
-    const id = params.id;
-    if (!id) return;
-    setSession(null);
-    setMessages([]);
+  let aborted = false;
+
+  onCleanup(() => {
+    aborted = true;
+    setEntries([]);
     setIsStreaming(false);
-    console.debug("[rpc] getSession calling...", id);
-    props.user.getSession(id)
-      .then((s) => { setSession(s); console.debug("[rpc] getSession →", id); })
-      .catch((err) => console.error("[rpc] getSession error:", err));
   });
 
-  function addMessage(role: MessageRole, content: string, streaming = false): void {
-    const id = Math.random().toString(36).slice(2, 10);
-    setMessages((msgs) => [...msgs, { id, role, content, isStreaming: streaming }]);
-  }
+  // ─── Stream consumption ────────────────────────────────────────────────────
 
-  function updateLastAssistant(f: (c: string) => string): void {
-    setMessages((msgs) => {
-      const idx = msgs.length - 1;
-      if (idx < 0 || msgs[idx]?.role !== "assistant") return msgs;
-      return msgs.map((m, i) => i === idx ? { ...m, content: f(m.content) } : m);
-    });
-  }
-
-  function finishLastAssistant(): void {
-    setMessages((msgs) => {
-      const idx = msgs.length - 1;
-      if (idx < 0 || msgs[idx]?.role !== "assistant") return msgs;
-      return msgs.map((m, i) => i === idx ? { ...m, isStreaming: false } : m);
-    });
-  }
-
-  function handleEvent(event: AgentEvent): void {
-    switch (event.type) {
-      case "agent_start": addMessage("assistant", "", true); break;
-      case "text_delta": updateLastAssistant((c) => c + event.delta); break;
-      case "agent_end": finishLastAssistant(); setIsStreaming(false); break;
-      case "error":
-        finishLastAssistant(); setIsStreaming(false);
-        addMessage("error", event.message);
-        break;
-      case "tool_start": addMessage("tool", `Running: ${event.toolName}...`); break;
-      case "tool_end": if (event.isError) addMessage("error", `Tool ${event.toolName} failed`); break;
+  /**
+   * Consume a ReadableStream<AgentEvent> and update entries reactively.
+   * Handles both prompt() streams and subscribe() reconnect streams.
+   *
+   * `setStreaming` controls whether we call setIsStreaming(true/false).
+   * For subscribe() reconnects we only flip isStreaming if the stream is
+   * actually live (i.e. we receive at least one event before done).
+   */
+  async function consumeStream(
+    stream: ReadableStream<AgentEvent>,
+    setStreaming = true,
+  ): Promise<void> {
+    console.debug("[stream] consumeStream start, setStreaming=%s", setStreaming);
+    const reader = stream.getReader();
+    let streamingSet = false;
+    let eventCount = 0;
+    try {
+      while (!aborted) {
+        console.debug("[stream] reading... aborted=%s", aborted);
+        const { done, value: event } = await reader.read();
+        console.debug("[stream] read result: done=%s type=%s", done, event?.type ?? "—");
+        if (done) break;
+        eventCount++;
+        if (setStreaming && !streamingSet) {
+          setIsStreaming(true);
+          streamingSet = true;
+          console.debug("[ui] isStreaming → true (from stream)");
+        }
+        applyEvent(event);
+      }
+    } catch (err) {
+      console.error("[stream] read error:", err);
+      finishStreamingEntry();
+    } finally {
+      console.debug("[stream] consumeStream done, eventCount=%d", eventCount);
+      if (!aborted && streamingSet) {
+        setIsStreaming(false);
+        console.debug("[ui] isStreaming → false (from stream)");
+      }
+      reader.releaseLock();
     }
   }
 
-  async function handleSend(text: string): Promise<void> {
-    const s = session();
-    if (!s || isStreaming()) return;
-    console.debug("[rpc] prompt calling...");
-    addMessage("user", text);
-    setIsStreaming(true);
-    try {
-      const stream = await s.prompt(text);
-      const reader = stream.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        handleEvent(value);
+  function applyEvent(event: AgentEvent): void {
+    console.debug("[ui] applyEvent type=%s", event.type);
+    switch (event.type) {
+      case "agent_start":
+        // Add a new streaming assistant entry.
+        setEntries((es) => [
+          ...es,
+          { type: "assistant", id: "streaming", content: "", isStreaming: true } as HistoryEntry,
+        ]);
+        break;
+      case "text_delta":
+        // Append text to the last streaming assistant entry.
+        setEntries((es) => {
+          const idx = lastStreamingAssistantIdx(es);
+          if (idx === -1) return es;
+          return es.map((e, i) => {
+            if (i !== idx || e.type !== "assistant") return e;
+            return { ...e, content: e.content + event.delta };
+          });
+        });
+        break;
+      case "tool_start":
+        setEntries((es) => [
+          ...es,
+          {
+            type: "tool",
+            id: event.toolCallId,
+            toolName: event.toolName,
+            input: event.input,
+            output: undefined,
+            isError: false,
+            isStreaming: true,
+          } as HistoryEntry,
+        ]);
+        break;
+      case "tool_end":
+        setEntries((es) =>
+          es.map((e) => {
+            if (e.type !== "tool" || e.id !== event.toolCallId) return e;
+            return { ...e, output: event.output, isError: event.isError, isStreaming: false };
+          }),
+        );
+        break;
+      case "agent_end":
+        finishStreamingEntry();
+        break;
+      case "error":
+        finishStreamingEntry();
+        setEntries((es) => [
+          ...es,
+          { type: "error", id: Math.random().toString(36).slice(2), message: event.message } as HistoryEntry,
+        ]);
+        break;
+    }
+  }
+
+  function lastStreamingAssistantIdx(es: readonly HistoryEntry[]): number {
+    for (let i = es.length - 1; i >= 0; i--) {
+      if (es[i]?.type === "assistant" && (es[i] as { isStreaming: boolean }).isStreaming) return i;
+    }
+    return -1;
+  }
+
+  function finishStreamingEntry(): void {
+    setEntries((es) =>
+      es.map((e) => {
+        if (e.type === "assistant" && e.isStreaming) return { ...e, isStreaming: false };
+        if (e.type === "tool" && e.isStreaming) return { ...e, isStreaming: false };
+        return e;
+      }),
+    );
+  }
+
+  // ─── Initialisation ────────────────────────────────────────────────────────
+
+  onMount(() => {
+    void (async () => {
+      try {
+        // Load status and history in parallel.
+        console.debug("[rpc] getStatus + getHistory calling...");
+        const [status, history] = await Promise.all([
+          session.getStatus(),
+          session.getHistory(),
+        ]);
+        console.debug("[rpc] getStatus →", JSON.stringify(status));
+        console.debug("[rpc] getHistory →", history.length, "entries");
+        setEntries(history);
+
+        // Only subscribe if the server says a turn is currently streaming.
+        if (status.isStreaming) {
+          console.debug("[rpc] subscribe calling... (turn is active)");
+          const stream = await session.subscribe();
+          console.debug("[rpc] subscribe returned stream");
+          void consumeStream(stream);
+        } else {
+          console.debug("[rpc] no active turn, skipping subscribe()");
+        }
+      } catch (err) {
+        console.error("[rpc] init error:", err);
       }
+    })();
+  });
+
+  // ─── User actions ──────────────────────────────────────────────────────────
+
+  async function handleSend(text: string): Promise<void> {
+    if (isStreaming()) { console.debug("[ui] handleSend blocked — already streaming"); return; }
+    console.debug("[rpc] prompt calling... text=%s", text.slice(0, 60));
+    const userId = Math.random().toString(36).slice(2);
+    setEntries((es) => [...es, { type: "user", id: userId, content: text } as HistoryEntry]);
+    setIsStreaming(true);
+    console.debug("[ui] isStreaming → true");
+    try {
+      const stream = await session.prompt(text);
+      console.debug("[rpc] prompt returned stream, type=%s", Object.prototype.toString.call(stream));
+      // Pass setStreaming=false — isStreaming is already true above.
+      await consumeStream(stream, false);
+      console.debug("[rpc] consumeStream finished");
     } catch (err) {
-      console.error("[rpc] prompt error:", err);
-      finishLastAssistant();
-      setIsStreaming(false);
+      console.error("[rpc] prompt/stream error:", err);
+      finishStreamingEntry();
+    } finally {
+      if (!aborted) {
+        setIsStreaming(false);
+        console.debug("[ui] isStreaming → false");
+      }
     }
   }
 
   async function handleAbort(): Promise<void> {
-    const s = session();
-    if (!s) return;
-    try { await s.abort(); } catch { /* turn may have ended */ }
-    finishLastAssistant();
+    try { await session.abort(); } catch { /* turn may have ended */ }
+    finishStreamingEntry();
     setIsStreaming(false);
   }
 
-  const s = session();
   return (
     <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
-      {s && <Header session={s} />}
-      <MessageList messages={messages} />
+      <Header session={session} />
+      <MessageList entries={entries} />
       <ChatInput
         isStreaming={isStreaming()}
         onSend={(text: string) => void handleSend(text)}

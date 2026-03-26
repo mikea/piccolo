@@ -1,9 +1,8 @@
 /**
  * ModelPicker.tsx — Model selector dropdown.
- * Uses session.listModels() — no user prop needed.
  */
 
-import { type Component, For, createResource } from "solid-js";
+import { type Component, For, createResource, createSignal } from "solid-js";
 import type { ISession } from "@piccolo/core";
 
 interface Props {
@@ -11,23 +10,30 @@ interface Props {
 }
 
 export const ModelPicker: Component<Props> = (props) => {
-  const [models] = createResource(() => props.session.listModels());
+  console.debug("[ui] ModelPicker mounted");
+  const session = props.session;
 
-  const [activeModel, { mutate }] = createResource(
-    () => props.session,
-    async (session) => {
-      const model = await session.getModel();
-      console.debug("[rpc] getModel →", model);
-      return model;
-    },
-  );
+  const [models] = createResource(async () => {
+    console.debug("[rpc] listModels calling...");
+    const result = await session.listModels();
+    console.debug("[rpc] listModels →", result);
+    return result;
+  });
+
+  const [activeModel, setActiveModel] = createSignal<string>("");
+
+  session.getModel().then((m) => {
+    console.debug("[rpc] getModel →", m);
+    setActiveModel(m);
+  }).catch((err) => console.error("[rpc] getModel error:", err));
 
   const handleChange = async (e: Event) => {
     const modelId = (e.currentTarget as HTMLSelectElement).value;
+    console.debug("[rpc] setModel calling... modelId=%s", modelId);
     try {
-      await props.session.setModel(modelId);
-      console.debug("[rpc] setModel →", modelId);
-      mutate(modelId);
+      await session.setModel(modelId);
+      console.debug("[rpc] setModel done modelId=%s", modelId);
+      setActiveModel(modelId);
     } catch (err) {
       console.error("[rpc] setModel error:", err);
     }
@@ -35,7 +41,7 @@ export const ModelPicker: Component<Props> = (props) => {
 
   return (
     <select
-      value={activeModel() ?? ""}
+      value={activeModel()}
       onChange={handleChange}
       style="padding:4px 8px;background:#1a1a1a;color:#e8e8e8;border:1px solid #2a2a2a;border-radius:4px;font-size:12px;cursor:pointer;"
     >

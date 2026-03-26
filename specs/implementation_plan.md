@@ -546,13 +546,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 
 **`IGatewayCallback` threading:** `ISession.prompt()` and `AgentSessionDO.prompt()` accept an optional `callback?: IGatewayCallback` 3rd parameter. The callback is stored in `DOState.callback` for the duration of the turn and accessible via `ISession.getCallback()`. This allows tools to call `requestSelect`/`requestConfirm`/`requestInput` mid-turn without needing the callback passed through every intermediate call.
 
-**capnweb `RpcTarget` for browser-facing classes:** `WebGatewayImpl`, `WebGatewaySessionImpl`, `TurnHandleImpl` extend `RpcTarget` from `"capnweb"`. 
-
-**`TurnHandleImpl` constructor returns synchronously:** `prompt()` constructs `TurnHandleImpl` without awaiting the session resolution. The `#run()` async method resolves the session lazily. This preserves Cap'n Web promise pipelining: `const turn = session.prompt("Hello", listener, callback)` returns immediately.
-
-**`WebAgentEvent` extended type:** `tool_start` and `tool_end` variants gain an optional `component?: WebComponentDescriptor` field. This extension is gateway-local — `AgentEvent` in piccolo-core is unchanged.
-
-**Tool cache for enrichment:** `WebGatewaySessionImpl` maintains a `#toolCache: Map<string, ToolWithGatewayUI>` refreshed from `session.getActiveTools()` before each turn. Until step 12 tools are wired, descriptors from `getActiveTools()` have no `getGatewayUI` — enrichment is a no-op. The cache pattern is ready for step 12.
+**`WebGatewayImpl`:** Only exposes `getUser()` — returns `this.core.getUser(this.userId)` directly. No session wrapping, no streaming wrappers. The browser uses `IUser` and `ISession` from core directly.
 
 **Test wrangler config:** `wrangler.test.jsonc` omits the `CORE` service binding so Miniflare starts cleanly in tests. Tests mock `IPiccoloCore` directly using `createMockCore()`. `auth.ts` JWT verification is excluded from coverage reporting since it requires a real CF Access server.
 
@@ -574,11 +568,7 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
   - `app/vite.config.ts` (outDir `../dist`)
   - `app/tsconfig.json` (`jsxImportSource: "solid-js"`)
   - `app/index.html` (`<div id="root">`)
-- Cap'n Web client: `app/src/rpc.ts` — `getApi()` singleton connecting to `wss://{host}/rpc`; dev mode passes `X-Dev-Auth` header via `VITE_DEV_AUTH_SECRET`
-- Application state: `app/src/store.ts` — SolidJS `createStore` for sessions, messages, streaming state
-- RpcTarget browser stubs:
-  - `app/src/listener.ts` — `EventListener extends RpcTarget implements IAgentEventListener`
-  - `app/src/callback.ts` — `GatewayCallbackImpl` stub (M1: returns null/false; modals in M2)
+- `app/src/main.tsx` connects to `IWebGateway`, calls `getUser()` once, passes `IUser` as a prop
 - Routing (`@solidjs/router`):
   - `app/src/main.tsx` — `render(() => <App />, root)`
   - `app/src/App.tsx` — routes: `/` → redirect, `/sessions` layout, `/sessions/:id` chat
@@ -597,7 +587,6 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
   - `agent_end` → set `isStreaming: false`, clear `activeTurn`
   - `error` → add error message, set `isStreaming: false`
   - `tool_start`/`tool_end` → plain text lines in M1 (rich UI in M2)
-- Auth: CF Access JWT via cookie on WS upgrade; `VITE_DEV_AUTH_SECRET` env var for local dev
 - `gateways/web/package.json` scripts: `build:app` (vite build), `build` (build:app + wrangler dry-run), `deploy` (build:app + wrangler deploy)
 - `wrangler.template.jsonc` updated: `"assets": { "directory": "./dist", "html_handling": "single-page-application" }`
 
@@ -615,27 +604,21 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
 | `gateways/web/app/vite.config.ts` | Vite + `vite-plugin-solid`; `root: __dirname`, `outDir: ../dist` |
 | `gateways/web/app/tsconfig.json` | Extends root; `jsxImportSource: "solid-js"`, `lib: ["ES2022","DOM"]` |
 | `gateways/web/app/index.html` | SPA shell: `<div id="root">`, `<script type="module" src="/src/main.tsx">` |
-| `gateways/web/app/src/main.tsx` | Entry: loads sessions + models, calls `render(() => <App />, root)` |
-| `gateways/web/app/src/App.tsx` | Router setup: `/` → redirect, `/sessions` → layout, `/sessions/:id` → chat |
-| `gateways/web/app/src/rpc.ts` | `getApi()` singleton; dev auth via URL query params (`?devAuth=&devUserId=`) |
-| `gateways/web/app/src/store.ts` | SolidJS `createStore`; all app state + actions; RPC stubs in `createSignal` |
-| `gateways/web/app/src/listener.ts` | `EventListener extends RpcTarget implements IAgentEventListener` |
-| `gateways/web/app/src/callback.ts` | `GatewayCallbackImpl` stub (M1: all methods return null/false) |
+| `gateways/web/app/src/main.tsx` | Entry: connects to `IWebGateway`, gets `IUser` stub, calls `render(() => <App user={user} />, root)` |
+| `gateways/web/app/src/App.tsx` | Router setup: `/` → redirect, `/sessions` → layout, `/sessions/:id` → chat; `IUser` passed as prop |
 | `gateways/web/app/src/components/SessionLayout.tsx` | Two-panel grid layout: sidebar + outlet |
 | `gateways/web/app/src/components/SessionSidebar.tsx` | Session list, new chat button, delete, inline rename on dblclick |
 | `gateways/web/app/src/components/ChatView.tsx` | Activates session on `:id` param change; assembles Header+MessageList+ChatInput |
 | `gateways/web/app/src/components/MessageList.tsx` | `For` over messages; auto-scroll to bottom |
 | `gateways/web/app/src/components/MessageItem.tsx` | `Switch/Match` for user/assistant/error/tool bubbles; streaming cursor |
 | `gateways/web/app/src/components/ChatInput.tsx` | Textarea; Enter to send, Shift+Enter newline; Abort button while streaming |
-| `gateways/web/app/src/components/ModelPicker.tsx` | `<select>` dropdown; `api.listModels()` → `session.setModel()` |
+| `gateways/web/app/src/components/ModelPicker.tsx` | `<select>` dropdown; `session.listModels()` → `session.setModel()` |
 | `gateways/web/app/src/components/Header.tsx` | Session name + ModelPicker |
 | `gateways/web/app/src/components/EmptyState.tsx` | "No session selected" with "Start a new chat" CTA |
 
 #### Key design decisions
 
-**Dev auth via URL query params**: `capnweb`'s `newWebSocketRpcSession` does not support custom WebSocket headers. Dev credentials (`AUTH_SECRET`, userId) are passed as `?devAuth=&devUserId=` query params. `gateways/web/src/auth.ts` was updated to also check `URLSearchParams` from the WebSocket upgrade URL.
-
-**RpcTarget stubs outside reactive store**: `IWebGatewaySession` and `ITurnHandle` stubs are stored in `createSignal` (not the `createStore`), because SolidJS should not track RpcTarget object internals.
+**No global store**: All state is owned by the component that needs it. `IUser` and `ISession` are passed as plain props — no `RpcStub<X>` types in components (only `main.tsx` uses `capnweb`). `ISession` stubs are stored in `createSignal` since SolidJS should not track RpcTarget internals.
 
 **Fine-grained streaming**: `text_delta` events use `setStore("messages", idx, "content", c => c + delta)` — SolidJS's fine-grained reactivity updates only the text node, not the full message list.
 
@@ -757,6 +740,8 @@ Gives the LLM the ability to make HTTPS GET/HEAD requests to the public internet
 **Test tsconfig isolation:** Tests live in `test/` with their own `tsconfig.json` that adds `@cloudflare/vitest-pool-workers/types`. The root `tsconfig.json` includes only `src/**/*` to avoid the `cloudflare:test` ambient module conflict with `verbatimModuleSyntax`.
 
 **Binary detection heuristic:** Content-types that do not include `text`, `json`, `xml`, or `javascript` are treated as binary and base64-encoded. This matches the spec and matches the pattern used across the codebase.
+
+**`fetch()` handler required:** Cloudflare rejects deployment of Workers with no registered event handlers (error code 10068). `FetchTool` adds a minimal `override fetch(): Response` that returns `405 Method Not Allowed`. This satisfies the Cloudflare requirement; the tool is invoked exclusively via JSRPC in production. All `WorkerEntrypoint`-based extension Workers must include this pattern.
 
 ---
 

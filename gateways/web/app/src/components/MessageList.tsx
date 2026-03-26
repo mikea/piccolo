@@ -1,27 +1,30 @@
 /**
- * MessageList.tsx — Scrollable list of chat messages.
+ * MessageList.tsx — Scrollable list of chat history entries.
  *
- * Pure presentational component. Messages are passed as a prop from ChatView.
+ * Accepts HistoryEntry[] directly from the server (via ISession.getHistory()).
+ * No client-side Message type — the server is the source of truth.
  */
 
 import { type Component, createEffect, For, onMount } from "solid-js";
-import type { Message } from "./types.ts";
+import type { HistoryEntry } from "@piccolo/core";
 import { MessageItem } from "./MessageItem.tsx";
 
 interface Props {
-  messages: Message[];
+  entries: HistoryEntry[];
 }
 
 export const MessageList: Component<Props> = (props) => {
+  console.debug("[ui] MessageList mounted");
   let listRef: HTMLDivElement | undefined;
 
   createEffect(() => {
-    const _msgs = props.messages.map((m) => m.content).join("");
-    void _msgs;
+    const len = props.entries.length;
+    console.debug("[ui] MessageList entries count=%d", len);
     if (listRef) listRef.scrollTop = listRef.scrollHeight;
   });
 
   onMount(() => {
+    console.debug("[ui] MessageList onMount");
     if (listRef) listRef.scrollTop = listRef.scrollHeight;
   });
 
@@ -30,7 +33,7 @@ export const MessageList: Component<Props> = (props) => {
       ref={listRef}
       style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;"
     >
-      <For each={props.messages}>{(message) => <MessageItem message={message} />}</For>
+      <For each={props.entries}>{(entry) => <MessageItem entry={entry} />}</For>
     </div>
   );
 };

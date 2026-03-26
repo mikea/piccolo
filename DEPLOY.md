@@ -157,32 +157,16 @@ pnpm wrangler tail --config packages/core/wrangler.jsonc
 cp gateways/web/wrangler.template.jsonc gateways/web/wrangler.jsonc
 ```
 
-The web gateway has no placeholder IDs — it references piccolo-core by service
-name and R2 by bucket name. The only thing to change (optionally) is the
-Cloudflare Access configuration.
-
-**Production auth (Cloudflare Access):**
+The gateway requires no additional vars. Auth is handled by **Cloudflare Zero
+Trust (Access)**:
 
 1. Go to **dash.cloudflare.com → Zero Trust → Access → Applications**
-2. Create a Self-Hosted application for your gateway's URL
-3. Configure the allowed users/groups
-4. The CF Access JWT is automatically attached to requests as the
-   `CF-Access-Jwt-Assertion` header. The gateway validates it server-side.
-   No further configuration is needed in `wrangler.jsonc`.
+2. Create a Self-Hosted application for your gateway's deployed URL
+3. Configure allowed users / identity provider
 
-**No Cloudflare Access (open / dev):**
-
-Set the `AUTH_SECRET` dev escape hatch — this allows any request that
-sends a matching `X-Dev-Auth` header to authenticate:
-
-```bash
-pnpm wrangler secret put AUTH_SECRET \
-  --config gateways/web/wrangler.jsonc
-```
-
-> **Security note:** `AUTH_SECRET` is a development convenience only. Do not
-> use it as a production auth mechanism — it is a shared secret with no
-> per-user identity. For production, use Cloudflare Access.
+CF Access will inject a `Cf-Access-Jwt-Assertion` header on every request.
+The Worker decodes the JWT payload and uses the `email` claim as the userId.
+Requests without a valid JWT receive a `401 Unauthorized`.
 
 ---
 
@@ -227,23 +211,10 @@ Browser → piccolo-web-gateway → piccolo-core (AgentSessionDO)
 The `dist/` directory was not uploaded. Run `pnpm deploy` from `gateways/web/`
 (not just `wrangler deploy`).
 
-### "Unauthorized" on WebSocket connect
+### WebSocket connection fails
 
-- **With Cloudflare Access:** the Access application is not configured, or your
-  user is not in the allowed group.
-- **Without CF Access:** `AUTH_SECRET` is not set, or the browser SPA was built
-  without setting `VITE_DEV_AUTH_SECRET`.
-
-For local dev without CF Access, set `AUTH_SECRET` via `wrangler secret put`
-and set `VITE_DEV_AUTH_SECRET` in a `.env.local` file in `gateways/web/app/`:
-
-```bash
-# gateways/web/app/.env.local  (gitignored)
-VITE_DEV_AUTH_SECRET=your-secret-here
-VITE_DEV_USER_ID=your-user-id
-```
-
-Then redeploy: `pnpm deploy:web`
+Check that `piccolo-core` is deployed and the `CORE` service binding in
+`gateways/web/wrangler.jsonc` references the correct service name.
 
 ### Agent returns errors about AI Gateway
 
@@ -311,7 +282,7 @@ No `piccolo-core` redeploy is needed. The extension registry is polled at sessio
 |---|---|---|
 | D1 database | `piccolo-sessions` | piccolo-core (`SESSIONS_DB`) |
 | KV namespace | `piccolo-config` | piccolo-core (`CONFIG`) |
-| R2 bucket | `piccolo-assets` | piccolo-core + web gateway (`ASSETS`) |
+| R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) |
 | Dispatch namespace | `piccolo-extensions` | piccolo-core (`EXTENSIONS`) |
 | AI Gateway | `piccolo` (or your slug) | piccolo-core via `CF_AI_GATEWAY_NAME` |
 
@@ -320,4 +291,3 @@ No `piccolo-core` redeploy is needed. The extension registry is polled at sessio
 | Secret | Worker | Value |
 |---|---|---|
 | `CF_AI_GATEWAY_TOKEN` | `piccolo-core` | CF API token with AI Gateway Write permission |
-| `AUTH_SECRET` | `piccolo-web-gateway` | Dev-only auth bypass; omit in production with CF Access |

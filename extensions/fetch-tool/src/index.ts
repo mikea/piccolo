@@ -139,6 +139,13 @@ Errors:
 export default class FetchTool extends WorkerEntrypoint implements ITool {
   readonly descriptor: ToolDescriptor = descriptor;
 
+  // Required by Cloudflare Workers: WorkerEntrypoint must register at least one
+  // event handler. This Worker is invoked exclusively over JSRPC by piccolo-core;
+  // direct HTTP access is not supported.
+  override fetch(): Response {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
   async execute(
     _toolCallId: string,
     params: {

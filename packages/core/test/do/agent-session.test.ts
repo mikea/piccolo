@@ -617,3 +617,123 @@ describe("AgentSessionDO — _init idempotency", () => {
     expect(row?.user_id).toBe("user-1");
   });
 });
+
+describe("AgentSessionDO — getStatus", () => {
+  it("getStatus() returns isStreaming: false when idle", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
+    const status = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getStatus(),
+    );
+    expect(status.isStreaming).toBe(false);
+    expect(typeof status.model).toBe("string");
+    expect(status.model.length).toBeGreaterThan(0);
+    expect(status.name).toBeUndefined();
+  });
+
+  it("getStatus() returns the session name after setName()", async () => {
+    const sid = uniqueId();
+    await runPrompt(sid, "hi", "hello");
+    const stub = getStub(sid);
+    await runInDurableObject(stub, (instance: AgentSessionDO) => instance.setName("My Chat"));
+    const status = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getStatus(),
+    );
+    expect(status.name).toBe("My Chat");
+  });
+});
+
+describe("AgentSessionDO — getHistory", () => {
+  it("getHistory() returns [] before any prompts", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
+    const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getHistory(),
+    );
+    expect(history).toEqual([]);
+  });
+
+  it("getHistory() returns user and assistant entries after a turn", async () => {
+    const sid = uniqueId();
+    await runPrompt(sid, "hello world", "assistant response text");
+    const stub = getStub(sid);
+    const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getHistory(),
+    );
+    const userEntry = history.find((e) => e.type === "user");
+    const assistantEntry = history.find((e) => e.type === "assistant");
+    expect(userEntry).toBeDefined();
+    if (userEntry?.type === "user") expect(userEntry.content).toBe("hello world");
+    expect(assistantEntry).toBeDefined();
+    if (assistantEntry?.type === "assistant") {
+      expect(assistantEntry.content).toBe("assistant response text");
+      expect(assistantEntry.isStreaming).toBe(false);
+    }
+  });
+
+  it("getHistory() accumulates entries across multiple turns", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      await instance._init(sid, "user-1");
+      instance._setModelForTest(createMockModel({ response: "reply one" }));
+      await drainStream(await instance.prompt("question one"));
+      await instance.waitForFlush();
+      instance._setModelForTest(createMockModel({ response: "reply two" }));
+      await drainStream(await instance.prompt("question two"));
+      await instance.waitForFlush();
+    });
+    const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
+      instance.getHistory(),
+    );
+    const userEntries = history.filter((e) => e.type === "user");
+    const assistantEntries = history.filter((e) => e.type === "assistant");
+    expect(userEntries.length).toBeGreaterThanOrEqual(2);
+    expect(assistantEntries.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("AgentSessionDO — subscribe", () => {
+  it("subscribe() returns an immediately-closed stream when idle", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
+    const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      const stream = await instance.subscribe();
+      return drainStream(stream);
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  it("subscribe() during an active turn receives the remaining events", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+
+    const [promptEvents, subscribeEvents] = await runInDurableObject(
+      stub,
+      async (instance: AgentSessionDO) => {
+        instance._setModelForTest(createMockModel({ response: "hello from subscribe" }));
+        await instance._init(sid, "user-1");
+
+        // Start prompt (returns stream immediately — agent runs async).
+        const promptStream = await instance.prompt("go");
+        // Subscribe to the same turn.
+        const subscribeStream = await instance.subscribe();
+
+        // Drain both concurrently.
+        const [pEvents, sEvents] = await Promise.all([
+          drainStream(promptStream),
+          drainStream(subscribeStream),
+        ]);
+        await instance.waitForFlush();
+        return [pEvents, sEvents] as [AgentEvent[], AgentEvent[]];
+      },
+    );
+
+    // Both streams should contain agent events.
+    expect(promptEvents.some((e) => e.type === "agent_end")).toBe(true);
+    expect(subscribeEvents.some((e) => e.type === "agent_end")).toBe(true);
+  });
+});

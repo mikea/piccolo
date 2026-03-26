@@ -20,7 +20,7 @@
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
-import type { Agent, AgentEvent, LanguageModel, ModelMessage } from "@piccolo/agent";
+import type { Agent, LanguageModel, ModelMessage } from "@piccolo/agent";
 import { Agent as AgentClass } from "@piccolo/agent";
 import type { CompactionState } from "./compaction.ts";
 import { compact } from "./compaction.ts";
@@ -40,16 +40,20 @@ import {
 } from "./session/persistence.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
+import { LoggingTransformStream } from "./logging-stream.ts";
 import type {
+  AgentEvent,
   Attachment,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
+  HistoryEntry,
   IAgentTool,
   IGatewayCallback,
   ISession,
   ITurn,
   NewSessionOptions,
+  SessionStatus,
   ToolDescriptor,
 } from "./types.ts";
 import type { CustomEntry, CustomMessageEntry } from "./db/entry-types.ts";
@@ -84,6 +88,14 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #callback: IGatewayCallback | undefined = undefined;
   #lastInputTokens = 0;
   #messagesAtTurnStart = 0;
+
+  // ─── Live streaming state (for getHistory / subscribe) ────────────────────
+  // Tracks in-flight assistant content so getHistory() can return it before
+  // the turn completes and commits to D1. Cleared on agent_end / error.
+  #streamingAssistantText = "";
+  #streamingToolCalls: Map<string, { toolName: string; input: unknown }> = new Map();
+  // Writers for active subscribe() streams. Events are fanned out here.
+  #liveSubscribers: Set<WritableStreamDefaultWriter<AgentEvent>> = new Set();
 
   // ─── Test helpers ─────────────────────────────────────────────────────────
   #modelOverridden = false;
@@ -265,15 +277,21 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       await this.#compact({});
     }
 
-    // Set up stream and abort
-    const { readable, writable } = new TransformStream<AgentEvent, AgentEvent>();
-    const writer = writable.getWriter();
+    // Set up stream and abort. Use a single LoggingTransformStream so the
+    // returned readable is the direct output — no extra pipeThrough() wrapper
+    // which would lock the stream before capnweb can transfer it.
+    const logStream = new LoggingTransformStream<AgentEvent>("[session:prompt]");
+    const writer = logStream.writable.getWriter();
     this.#messagesAtTurnStart = this.#agent.state.messages.length;
     const abortController = new AbortController();
     this.#abortController = abortController;
 
     const unsub = this.#agent.subscribe((event: AgentEvent) => {
       writer.write(event).catch(() => {});
+      // Fan out to all active subscribe() streams.
+      this.#fanOutToSubscribers(event);
+      // Track in-flight streaming content for getHistory().
+      this.#trackStreamingEvent(event);
       if (event.type === "turn_end") {
         this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
       }
@@ -300,7 +318,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         writer.close().catch(() => {});
       });
 
-    return readable;
+    return logStream.readable;
   }
 
   async sendUserMessage(content: string): Promise<void> {
@@ -322,6 +340,149 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async getCurrentTurn(): Promise<ITurn | undefined> {
     if (this.#callback === undefined && this.#abortController === null) return undefined;
     return new TurnImpl(this.#callback);
+  }
+
+  // ─── ISession: History & live subscription ────────────────────────────────
+
+  async getHistory(): Promise<HistoryEntry[]> {
+    const entries: HistoryEntry[] = [];
+    const isStreaming = this.#abortController !== null;
+
+    // Walk committed messages to build history entries.
+    // #messages are the ModelMessage[] currently held in the agent (committed after agent_end).
+    // We also need a map from toolCallId → entry index to fill in tool results.
+    const toolEntryIndex = new Map<string, number>();
+
+    for (const msg of this.#messages) {
+      const id = this.#messageToEntryId.get(msg) ?? Math.random().toString(36).slice(2);
+      if (msg.role === "user") {
+        const content = typeof msg.content === "string" ? msg.content : "[attachment]";
+        entries.push({ type: "user", id, content });
+      } else if (msg.role === "assistant") {
+        let text = "";
+        if (typeof msg.content === "string") {
+          text = msg.content;
+        } else if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (typeof part === "object" && part !== null && "type" in part) {
+              if (part.type === "text" && "text" in part) {
+                text += String(part.text);
+              } else if (
+                part.type === "tool-call" &&
+                "toolName" in part &&
+                "input" in part &&
+                "toolCallId" in part
+              ) {
+                const toolCallId = String(part.toolCallId);
+                const toolIdx = entries.length;
+                toolEntryIndex.set(toolCallId, toolIdx);
+                entries.push({
+                  type: "tool",
+                  id: toolCallId,
+                  toolName: String(part.toolName),
+                  input: part.input,
+                  output: undefined,
+                  isError: false,
+                  isStreaming: false,
+                });
+              }
+            }
+          }
+        }
+        if (text.length > 0) {
+          entries.push({ type: "assistant", id, content: text, isStreaming: false });
+        }
+      } else if (msg.role === "tool") {
+        // tool role messages carry tool results — fill in the matching tool entry.
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (
+              typeof part === "object" &&
+              part !== null &&
+              "type" in part &&
+              part.type === "tool-result" &&
+              "toolCallId" in part
+            ) {
+              const toolCallId = String(part.toolCallId);
+              const idx = toolEntryIndex.get(toolCallId);
+              if (idx !== undefined) {
+                const existing = entries[idx];
+                if (existing?.type === "tool") {
+                  const isError = "isError" in part ? Boolean(part.isError) : false;
+                  const output = "result" in part ? part.result : undefined;
+                  entries[idx] = { ...existing, output, isError };
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Append in-flight streaming content if a turn is active.
+    if (isStreaming) {
+      for (const [toolCallId, tc] of this.#streamingToolCalls) {
+        entries.push({
+          type: "tool",
+          id: toolCallId,
+          toolName: tc.toolName,
+          input: tc.input,
+          output: undefined,
+          isError: false,
+          isStreaming: true,
+        });
+      }
+      if (this.#streamingAssistantText.length > 0) {
+        entries.push({
+          type: "assistant",
+          id: "streaming",
+          content: this.#streamingAssistantText,
+          isStreaming: true,
+        });
+      }
+    }
+
+    return entries;
+  }
+
+  async subscribe(): Promise<ReadableStream<AgentEvent>> {
+    if (this.#abortController === null) {
+      // No active turn — return an immediately-closed stream.
+      return new ReadableStream<AgentEvent>({ start(c) { c.close(); } });
+    }
+    // Create a new TransformStream, register the writer for fan-out, and
+    // return the readable end wrapped with a logging stream.
+    const { readable, writable } = new TransformStream<AgentEvent, AgentEvent>();
+    const writer = writable.getWriter();
+    this.#liveSubscribers.add(writer);
+    const subscribers = this.#liveSubscribers;
+    // Cancel cleans up the fan-out registration.
+    const cancellable = new ReadableStream<AgentEvent>({
+      start(controller) {
+        const reader = readable.getReader();
+        function pump(): void {
+          reader.read().then(({ done, value }) => {
+            if (done) { controller.close(); return; }
+            controller.enqueue(value as AgentEvent);
+            pump();
+          }).catch((err: unknown) => { controller.error(err); });
+        }
+        pump();
+      },
+      cancel() {
+        subscribers.delete(writer);
+        writer.close().catch(() => {});
+      },
+    });
+    return cancellable.pipeThrough(new LoggingTransformStream("[session:subscribe]"));
+  }
+
+  async getStatus(): Promise<SessionStatus> {
+    return {
+      isStreaming: this.#abortController !== null,
+      model: this.#modelId,
+      name: this.#name,
+    };
   }
 
   // ─── ISession: Model management ───────────────────────────────────────────
@@ -495,6 +656,57 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
+
+  /** Fan out an event to all active subscribe() streams. */
+  #fanOutToSubscribers(event: AgentEvent): void {
+    for (const writer of this.#liveSubscribers) {
+      writer.write(event).catch(() => {
+        // If a subscriber's writer is closed/errored, remove it.
+        this.#liveSubscribers.delete(writer);
+      });
+    }
+    // Close and clear subscribers when the turn ends.
+    if (event.type === "agent_end" || event.type === "error") {
+      for (const writer of this.#liveSubscribers) {
+        writer.close().catch(() => {});
+      }
+      this.#liveSubscribers.clear();
+    }
+  }
+
+  /** Track in-flight streaming events for getHistory(). */
+  #trackStreamingEvent(event: AgentEvent): void {
+    switch (event.type) {
+      case "agent_start":
+        // Reset streaming state for a new turn.
+        this.#streamingAssistantText = "";
+        this.#streamingToolCalls.clear();
+        break;
+      case "text_delta":
+        this.#streamingAssistantText += event.delta;
+        break;
+      case "tool_start":
+        this.#streamingToolCalls.set(event.toolCallId, {
+          toolName: event.toolName,
+          input: event.input,
+        });
+        break;
+      case "tool_end":
+        // Tool finished — clear from streaming map (it will be in committed messages).
+        this.#streamingToolCalls.delete(event.toolCallId);
+        break;
+      case "turn_end":
+        // Between turns: reset assistant text accumulator for the next turn.
+        this.#streamingAssistantText = "";
+        break;
+      case "agent_end":
+      case "error":
+        // Turn complete — clear all in-flight state.
+        this.#streamingAssistantText = "";
+        this.#streamingToolCalls.clear();
+        break;
+    }
+  }
 
   #appendEntry(entry: AnyEntry): void {
     this.#pendingEntries.push(entry);

@@ -112,4 +112,4 @@ When a gateway renders a tool call or result:
 | Custom tool UI interface | `IWebUI` | `ITelegramUI` |
 | Shared fallback UI | `ITextUI` | `ITextUI` |
 | Callback UI | `IGatewayCallback` stubs (modal dialogs) | Inline keyboards |
-| Auth | `USER_ID` env var (single-user deployment) | Bot token + KV allowlist |
+| Auth | CF Zero Trust (Access JWT email as userId) | Bot token + KV allowlist |

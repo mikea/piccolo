@@ -22,6 +22,8 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 
 No additional bindings are required. Cloudflare Workers have unrestricted outbound `fetch()` access to the public internet by default.
 
+Cloudflare requires every deployed Worker to register at least one event handler. Because `FetchTool` is invoked exclusively over JSRPC (never via HTTP), it registers a minimal `fetch()` handler that returns `405 Method Not Allowed` for any direct HTTP requests.
+
 ---
 
 ## `ToolDescriptor`

@@ -54,10 +54,21 @@ export default {
 
 | Var | Description |
 |---|---|
-| `USER_ID` | Authenticated user ID stamped on all sessions |
+| CF Access JWT | `email` (or `sub`) claim decoded from `Cf-Access-Jwt-Assertion` header on every request |
 
 ---
 
 ## Browser SPA
 
 SolidJS + Vite. `IUser` stub passed as a prop through the component tree. No global store. Components call `IUser`/`ISession` methods directly via JSRPC.
+
+### Stateless UI principle
+
+The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:
+
+1. Calls `ISession.getHistory()` on mount to reconstruct the visible conversation.
+2. Calls `ISession.subscribe()` immediately after to reconnect to any in-progress streaming turn (e.g. after a page reload mid-turn). The returned `ReadableStream<AgentEvent>` closes immediately if no turn is active.
+3. Calls `ISession.getStatus()` to read `isStreaming` / `model` / `name` for UI controls.
+4. On user send: calls `ISession.prompt(text)` and reads the returned `ReadableStream<AgentEvent>` to update the UI incrementally.
+
+This means reloading the page while a turn is streaming reconnects and displays the correct live state without any lost content.

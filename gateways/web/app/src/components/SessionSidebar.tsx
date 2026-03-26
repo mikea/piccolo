@@ -2,14 +2,16 @@
  * SessionSidebar.tsx — Left panel: session list, new chat button.
  */
 
-import { A, useMatch, useNavigate } from "@solidjs/router";
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import type { ISession } from "@piccolo/core";
 
 interface Props {
   sessions: ISession[];
   loading: boolean;
+  activeSessionId: string | null;
   onNewSession: () => void;
+  onSelectSession: (id: string) => void;
+  onDeleteActiveSession: () => void;
   refetchSessions: () => void;
 }
 
@@ -29,7 +31,15 @@ export const SessionSidebar: Component<Props> = (props) => (
         <p style="color:#666;font-size:13px;padding:8px;">Loading...</p>
       </Show>
       <For each={props.sessions}>
-        {(session) => <SessionItem session={session} refetchSessions={props.refetchSessions} />}
+        {(session) => (
+          <SessionItem
+            session={session}
+            activeSessionId={props.activeSessionId}
+            onSelect={props.onSelectSession}
+            onDeleteActive={props.onDeleteActiveSession}
+            refetchSessions={props.refetchSessions}
+          />
+        )}
       </For>
     </div>
   </aside>
@@ -37,32 +47,36 @@ export const SessionSidebar: Component<Props> = (props) => (
 
 interface ItemProps {
   session: ISession;
+  activeSessionId: string | null;
+  onSelect: (id: string) => void;
+  onDeleteActive: () => void;
   refetchSessions: () => void;
 }
 
 const SessionItem: Component<ItemProps> = (props) => {
-  const navigate = useNavigate();
+  const session = props.session;
+
   const [editing, setEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
 
   const [info] = createResource(async () => {
-    const [id, name] = await Promise.all([props.session.sessionId(), props.session.getName()]);
+    const [id, name] = await Promise.all([session.sessionId(), session.getName()]);
     return { id, name };
   });
 
   const displayName = () => info()?.name ?? "New chat";
-  const matchActive = useMatch(() => `/sessions/${info()?.id ?? "__none__"}`);
-  const isActive = () => !!matchActive();
-  const bg = () => (isActive() ? "#2a3a5a" : "transparent");
+  const isActive = () => info()?.id === props.activeSessionId;
+  const bg = () => isActive() ? "#2a3a5a" : "transparent";
 
   const handleDelete = async (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (confirm("Delete this session?")) {
+      const wasActive = isActive();
       try {
-        await props.session.delete();
+        await session.delete();
         props.refetchSessions();
-        if (isActive()) navigate("/sessions");
+        if (wasActive) props.onDeleteActive();
       } catch (err) {
         console.error("[rpc] delete error:", err);
       }
@@ -74,7 +88,7 @@ const SessionItem: Component<ItemProps> = (props) => {
     const val = editValue().trim();
     if (val && val !== displayName()) {
       try {
-        await props.session.setName(val);
+        await session.setName(val);
         props.refetchSessions();
       } catch (err) {
         console.error("[rpc] setName error:", err);
@@ -105,10 +119,10 @@ const SessionItem: Component<ItemProps> = (props) => {
               />
             }
           >
-            <A
-              href={`/sessions/${i().id}`}
-              style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-radius:4px;text-decoration:none;color:#e8e8e8;font-size:13px;cursor:pointer;"
+            <div
+              onClick={() => props.onSelect(i().id)}
               onDblClick={() => { setEditValue(displayName()); setEditing(true); }}
+              style="display:flex;align-items:center;gap:4px;padding:6px 8px;border-radius:4px;color:#e8e8e8;font-size:13px;cursor:pointer;"
             >
               <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                 {displayName()}
@@ -118,7 +132,7 @@ const SessionItem: Component<ItemProps> = (props) => {
                 onClick={(e) => void handleDelete(e)}
                 style="flex-shrink:0;background:none;border:none;color:#666;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:3px;"
               >×</button>
-            </A>
+            </div>
           </Show>
         </div>
       )}
