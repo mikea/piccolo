@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // packages/api is a pure type library — no Workers globals needed.
+    // WebWorker gives us ReadableStream, WritableStream, etc.
+    "lib": ["ES2022", "WebWorker"]
+  },
+  "include": ["src/**/*"]
+}

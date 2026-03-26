@@ -13,7 +13,7 @@
  * Spec ref: specs/core.md §Agent Loop §SessionTransformStream
  */
 
-import type { AgentEvent } from "./types.ts";
+import type { AgentEvent } from "@piccolo/api";
 
 export class SessionTransformStream extends TransformStream<AgentEvent, AgentEvent> {
   constructor(label: string, onEvent: (event: AgentEvent) => void, onClose: () => void) {

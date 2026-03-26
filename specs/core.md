@@ -14,12 +14,12 @@ The agent loop (`Agent` class, `AgentTurn`, `toAiSdkTools`, `agentCompact`) live
 |---|---|
 | Expose `IPiccoloCore` and `ISession` to gateways | `WorkerEntrypoint` JSRPC |
 | Own one `AgentSessionDO` per session | Durable Object |
+| Run the agent loop | `Agent` class (in `agent.ts`), called by `AgentSessionDO` |
 | Persist conversation history | D1 + DO storage |
 | Dispatch events to extensions | `ExtensionRunner` via dispatch namespace |
 | Assemble the system prompt | `SystemPromptAssembler` |
 | Manage model selection | Stored per session in D1 |
-| Auto-retry transient LLM errors | Retry loop inside `AgentSessionDO` |
-| Trigger and persist context compaction | `CompactionManager` inside DO |
+| Trigger and persist context compaction | `compact()` in `compaction.ts`, called by DO |
 
 ---
 
@@ -414,22 +414,20 @@ The D1 `sessions` row is **not** written here — it is written lazily on the fi
 ├─ 5. Check compaction threshold:
 │     If inputTokens > COMPACT_TOKENS (env var, default 100000): compact() before proceeding
 │
-├─ 6. Set up ReadableStream<AgentEvent> + subscriber
+├─ 6. agent.prompt(userMessages) → AgentTurn (synchronous)
+│     AgentTurn.stream is piped through SessionTransformStream:
+│       - #onTurnEvent(event): in-flight tracking, token counts, extension dispatch
+│       - #onTurnClose(): schedules #handleAgentEnd() + clears #currentTurn
+│     SessionTransformStream output → TurnImpl (wraps stream + callback)
 │
-├─ 7. agent.prompt(userMessages) → streaming begins
-│     Each AgentEvent from agent:
-│       - Forward to ReadableStream pushed to caller
-│       - Emit to ExtensionRunner (fire-and-forget)
-│       - On "agent_end": flushPendingEntries(), checkRetry()
-│     The prompt task is anchored with `ctx.waitUntil(...)` so it continues
-│     after the RPC method returns.
-│
-└─ 8. Return ReadableStream<AgentEvent> to IPiccoloCore
+└─ 7. Return TurnImpl as ITurn to caller
+       #currentTurn assigned once; cleared in #onTurnClose() finally block
+       to preserve RpcTarget identity for reconnect (getCurrentTurn())
 ```
 
-When `agent_end` schedules the async flush/retry work, that promise is also
-passed to `ctx.waitUntil(...)` so persistence is not cut off when the RPC call
-frame completes.
+When `SessionTransformStream.flush()` fires (Agent stream closes), `#onTurnClose()`
+schedules `#handleAgentEnd()` via `ctx.waitUntil(...)` so persistence is not cut
+off when the RPC call frame completes.
 
 ### Persistence
 
@@ -728,54 +726,6 @@ async function compact(
 
 ---
 
-## Auto-Retry — Implementation
-
-Triggered when `AgentEvent { type: "error" }` fires and the error is transient.
-
-```typescript
-const TRANSIENT_ERROR_RE = /overloaded|rate.?limit|429|503|504|timeout/i;
-const CONTEXT_OVERFLOW_RE = /context.?length|too.?many.?token|prompt.?too.?long/i;
-
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1_000;
-const MAX_DELAY_MS = 30_000;
-
-async function checkRetry(
-  errorMessage: string,
-  agent: Agent,
-  signal: AbortSignal,
-  // Called when error is a context-length overflow so the caller can trigger compaction.
-  // Returns false after invoking the callback (not a retryable error).
-  onContextOverflow: () => Promise<void>,
-): Promise<boolean> {
-  if (CONTEXT_OVERFLOW_RE.test(errorMessage)) {
-    // Not a transient error — invoke compaction callback and return false
-    await onContextOverflow();
-    return false;
-  }
-  if (!TRANSIENT_ERROR_RE.test(errorMessage)) {
-    return false;
-  }
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const delay = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
-    const jittered = delay * (0.8 + Math.random() * 0.4);
-    await sleep(jittered, signal);
-
-    // Remove the failed assistant message before retrying
-    agent.replaceMessages(
-      agent.state.messages.filter((_, i) => i < agent.state.messages.length - 1)
-    );
-    await agent.continue();
-
-    if (!agent.state.error) return true;  // success
-  }
-  return false;
-}
-```
-
----
-
 ## `ISession` — Core-Side Implementation
 
 `SessionImpl extends RpcTarget` holds a **live reference to `DOState`**. All mutations (model changes, custom entries, etc.) write directly into `doState.pendingEntries` / `doState.branchEntries`. No D1 flush happens here — flushing occurs at `agent_end` as usual.
@@ -963,3 +913,172 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
   }));
 }
 ```
+
+---
+
+## Agent Loop — Implementation
+
+The agent loop is implemented in `packages/core/src/agent.ts`. It orchestrates multi-turn, tool-calling conversations via the `ai` SDK's `streamText`. It has no Workers-specific globals and no knowledge of sessions, persistence, or extensions — those are all DO concerns.
+
+### `AgentTurn`
+
+```typescript
+interface AgentTurn {
+  /** Single-consumer ReadableStream of AgentEvents for this turn. */
+  readonly stream: ReadableStream<AgentEvent>;
+  /** Abort this turn immediately. No-op after the turn completes. */
+  abort(): void;
+}
+```
+
+`AgentTurn` is returned synchronously by `Agent.prompt()`. The stream starts filling immediately in the background. `abort()` cancels the underlying `AbortController` and propagates to the AI SDK and all tool `execute()` calls.
+
+### `AgentOptions` / `AgentState`
+
+```typescript
+interface AgentOptions {
+  model: LanguageModel;   // from ai package
+  systemPrompt: string;
+  tools?: ITool[];
+  maxSteps?: number;        // default: 20
+  steeringMode?: "one-at-a-time" | "all";
+}
+
+interface AgentState {
+  model: LanguageModel;
+  systemPrompt: string;
+  tools: ITool[];
+  messages: ModelMessage[];
+  isStreaming: boolean;
+  error?: string;
+}
+```
+
+### `Agent` Public API
+
+```typescript
+class Agent {
+  readonly state: AgentState;
+
+  // Turn lifecycle
+  prompt(text: string, images?: ImagePart[]): AgentTurn;  // throws if turn active
+  prompt(messages: ModelMessage[]): AgentTurn;
+  getCurrentTurn(): AgentTurn | null;  // synchronous
+  abort(): void;                       // delegates to getCurrentTurn()?.abort()
+
+  // Synchronous mutations
+  setModel(model: LanguageModel): void;
+  setTools(tools: ITool[]): void;
+  setContext(ctx: ISession): void;     // called by DO before each prompt()
+  setSystemPrompt(prompt: string): void;
+  appendMessages(messages: ModelMessage[]): void;
+  replaceMessages(messages: ModelMessage[]): void;
+
+  // Steering queue
+  steer(message: ModelMessage): void;
+  clearSteering(): ModelMessage[];
+}
+```
+
+**Key design decisions:**
+
+- `prompt()` is **synchronous** — it creates the `AgentTurn` and `ReadableStream`, then kicks off `_runStream()` asynchronously via `void`. Events flow into the stream as the AI SDK produces them.
+- There is **no `continue()` method**. The DO handles follow-up turns by calling `agent.prompt(text)` directly.
+- There is **no `subscribe()` method**. All event observation is done by reading `AgentTurn.stream`.
+- `_ctx: ISession | null` is set via `setContext()` and threaded into every tool `execute()` call by `toAiSdkTools()`.
+
+### `prompt()` implementation
+
+```typescript
+prompt(input: string | ModelMessage[], images?: ImagePart[]): AgentTurn {
+  if (this._currentTurn !== null) {
+    throw new Error("A turn is already in progress. Call abort() first.");
+  }
+  // Build messages, push to this._state.messages
+  // ...
+  return this._startTurn();
+}
+
+private _startTurn(): AgentTurn {
+  const ac = new AbortController();
+  let controller!: ReadableStreamDefaultController<AgentEvent>;
+  const stream = new ReadableStream<AgentEvent>({ start(c) { controller = c; } });
+  const turn: AgentTurn = { stream, abort: () => ac.abort() };
+  this._currentTurn = turn;
+  void this._runStream(controller, ac.signal);
+  return turn;
+}
+```
+
+`_runStream()` calls `streamText(...)` from the `ai` package, enqueues events via `controller.enqueue()`, and in the `finally` block sets `_currentTurn = null` and calls `controller.close()`.
+
+### `SessionTransformStream`
+
+`packages/core/src/session-transform.ts` — a thin pass-through `TransformStream<AgentEvent, AgentEvent>` used by `AgentSessionDO.prompt()` to observe events without splitting the stream:
+
+```typescript
+class SessionTransformStream extends TransformStream<AgentEvent, AgentEvent> {
+  constructor(
+    label: string,
+    onEvent: (event: AgentEvent) => void,  // called for every event (sync)
+    onClose: () => void,                   // called when Agent stream closes
+  )
+}
+```
+
+All event-processing logic lives in `AgentSessionDO.#onTurnEvent()`, not in the transform callbacks.
+
+### `AgentSessionDO.#onTurnEvent()`
+
+Called synchronously for every event as it passes through `SessionTransformStream`. Contains all four peek reasons:
+
+1. **In-flight history** — accumulates `#streamingAssistantText` and `#streamingToolCalls` for `getHistory()` mid-turn
+2. **Token counts** — updates `#lastInputTokens` from `turn_end.usage` and `agent_end.totalUsage`
+3. **Extension dispatch** — `extensionRunner.emit(event.type, event, ctx)` fire-and-forget
+
+### `AgentSessionDO.#onTurnClose()`
+
+Called from `SessionTransformStream.flush()` when the Agent's stream closes. Schedules `#handleAgentEnd()` via `ctx.waitUntil()`, and clears `#currentTurn` in the `finally` block — after all follow-up processing completes, preserving `TurnImpl` `RpcTarget` identity for the duration of the logical turn.
+
+### `AgentSessionDO.prompt()` pipeline
+
+```
+agent.prompt([userMessage])
+  → AgentTurn { stream: ReadableStream<AgentEvent>, abort() }
+  → .pipeThrough(new SessionTransformStream(...))
+  → outStream  (forwarded to TurnImpl)
+```
+
+`TurnImpl` wraps `outStream` (not `AgentTurn` directly). `#currentTurn = new TurnImpl(outStream, callback)` is assigned once and kept until `#onTurnClose()` finally runs.
+
+### Follow-up turns
+
+Inside `#handleAgentEnd()`, after D1 flush:
+
+```typescript
+while (this.#followUpQueue.length > 0) {
+  const text = this.#followUpQueue.shift()!;
+  this.#messagesAtTurnStart = this.#agent.state.messages.length;
+  const followUpTurn = this.#agent.prompt(text);
+
+  await followUpTurn.stream
+    .pipeThrough(new SessionTransformStream(label, onTurnEvent, () => {}))
+    .pipeTo(new WritableStream());  // discard — no gateway consumer
+
+  await this.#persistNewMessages();
+}
+```
+
+Follow-up turns are internal — no gateway receives their stream. The same `#onTurnEvent` handler is used for tracking and extension dispatch.
+
+### `toAiSdkTools(tools: ITool[], ctx: ISession): ToolSet`
+
+Converts `ITool[]` to the AI SDK `ToolSet` format. `ctx` (the live `ISession`) is threaded into every tool `execute()` call. `jsonSchema()` from `ai` is used to wrap the `JSONSchema7` descriptor.
+
+### `agentCompact(messages, keepRecentTokens, model): Promise<{ summary, keptMessages }>`
+
+Uses `generateText` (non-streaming) with the same `LanguageModel` as the Agent. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by `compact()` in `compaction.ts`.
+
+### LLM Backend
+
+All LLM calls go through the **Cloudflare AI Gateway** unified endpoint. `createModel(env, modelId)` in `gateway.ts` constructs the `LanguageModel` via `ai-gateway-provider`. Models are addressed as `{provider}/{model-id}` (e.g. `anthropic/claude-sonnet-4-5`). `piccolo-core` constructs the model; the `Agent` class has no knowledge of how it was built.

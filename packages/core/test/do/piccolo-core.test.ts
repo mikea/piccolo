@@ -10,10 +10,10 @@
 
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
+import type { ISession, IUser } from "@piccolo/api";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
 import { PiccoloCore } from "../../src/piccolo-core.ts";
-import type { ISession, IUser } from "../../src/types.ts";
 import { setupTestDb } from "../mocks/d1.ts";
 import { createMockModel } from "./mock-model.ts";
 

@@ -19,6 +19,21 @@
  */
 
 import { DurableObject, RpcTarget } from "cloudflare:workers";
+import type {
+  AgentEvent,
+  Attachment,
+  CompactOptions,
+  ContextUsage,
+  CustomEntry as CustomEntryType,
+  HistoryEntry,
+  IGatewayCallback,
+  ISession,
+  ITool,
+  ITurn,
+  NewSessionOptions,
+  SessionStatus,
+  ToolDescriptor,
+} from "@piccolo/api";
 import type { LanguageModel, ModelMessage } from "ai";
 import { Agent } from "./agent.ts";
 import type { CompactionState } from "./compaction.ts";
@@ -46,22 +61,6 @@ import {
 import { SessionTransformStream } from "./session-transform.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
-import type {
-  AgentEvent,
-  AgentTurn,
-  Attachment,
-  CompactOptions,
-  ContextUsage,
-  CustomEntry as CustomEntryType,
-  HistoryEntry,
-  IGatewayCallback,
-  ISession,
-  ITool,
-  ITurn,
-  NewSessionOptions,
-  SessionStatus,
-  ToolDescriptor,
-} from "./types.ts";
 import { defaultModelId, parseModels } from "./types-internal.ts";
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
@@ -788,7 +787,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // The same extensionCtx is used so extensions receive follow-up events too.
     const extensionCtx = this.#asSessionStub();
     while (this.#followUpQueue.length > 0) {
-      const followUpText = this.#followUpQueue.shift()!;
+      const followUpText = this.#followUpQueue.shift() ?? "";
       this.#messagesAtTurnStart = this.#agent.state.messages.length;
       const followUpTurn = this.#agent.prompt(followUpText);
 

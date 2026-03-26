@@ -1,148 +1,70 @@
-import type { FinishReason, LanguageModelUsage, ModelMessage } from "ai";
-import type { Attachment, ICommand, ISession, ITool, ToolResult } from "./types.ts";
-import type { SystemPromptAddition } from "./types-internal.ts";
+/**
+ * extension-types.ts — piccolo-core internal extension dispatch types.
+ *
+ * Re-exports all public extension event/result types from @piccolo/api so that
+ * core implementation files have a single import point.
+ *
+ * Also defines IExtensionRunner — the core-internal interface implemented by
+ * ExtensionRunner. This is NOT part of the public JSRPC API; it is used only
+ * inside piccolo-core to dispatch events to extension Workers.
+ */
 
-export interface InputEvent {
-  text: string;
-  attachments: Attachment[];
-  source: "user";
-  commandName?: string;
-  commandArgs?: string;
-}
+// Re-export everything from @piccolo/api that core internals need
+export type {
+  AgentEndEvent,
+  AgentStartEvent,
+  Attachment,
+  BeforeAgentStartEvent,
+  BeforeAgentStartResult,
+  BeforeCompactEvent,
+  BeforeCompactResult,
+  CompactEvent,
+  ContextEvent,
+  ContextResult,
+  ICommand,
+  IExtensionListener,
+  IExtensionWorker,
+  InputEvent,
+  InputResult,
+  ISession,
+  ITool,
+  SessionShutdownEvent,
+  SessionStartEvent,
+  SystemPromptAddition,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolEndEvent,
+  ToolResult,
+  ToolResultEvent,
+  ToolResultOverride,
+  ToolStartEvent,
+  TurnEndEvent,
+  TurnStartEvent,
+} from "@piccolo/api";
 
-export interface InputResult {
-  action: "handled" | "transform" | "continue";
-  text?: string;
-}
+import type {
+  BeforeAgentStartEvent,
+  BeforeAgentStartResult,
+  BeforeCompactEvent,
+  BeforeCompactResult,
+  ContextEvent,
+  ContextResult,
+  ICommand,
+  InputEvent,
+  InputResult,
+  ISession,
+  ITool,
+  SystemPromptAddition,
+  ToolCallEvent,
+  ToolCallResult,
+  ToolResultEvent,
+  ToolResultOverride,
+} from "@piccolo/api";
 
-export interface BeforeAgentStartEvent {
-  text: string;
-  attachments: Attachment[];
-  systemPrompt: string;
-}
-
-export interface BeforeAgentStartResult {
-  systemPrompt?: string;
-  contextMessages?: ModelMessage[];
-}
-
-export interface ContextEvent {
-  messages: ModelMessage[];
-}
-
-export interface ContextResult {
-  messages: ModelMessage[];
-}
-
-export interface ToolCallEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-}
-
-export interface ToolCallResult {
-  block: boolean;
-  reason?: string;
-}
-
-export interface ToolResultEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-  output: unknown;
-  isError: boolean;
-}
-
-export type ToolResultOverride = Partial<ToolResult>;
-
-export interface BeforeCompactEvent {
-  messages: ModelMessage[];
-  keepRecentTokens: number;
-}
-
-export interface BeforeCompactResult {
-  cancel?: boolean;
-  summary?: string;
-}
-
-export interface SessionStartEvent {
-  sessionId: string;
-  userId: string;
-  modelId: string;
-}
-
-export interface SessionShutdownEvent {
-  sessionId: string;
-}
-
-export interface AgentStartEvent {
-  sessionId: string;
-}
-
-export interface AgentEndEvent {
-  sessionId: string;
-  messages: ModelMessage[];
-  totalUsage: LanguageModelUsage;
-}
-
-export interface TurnStartEvent {
-  stepNumber: number;
-}
-
-export interface TurnEndEvent {
-  stepNumber: number;
-  finishReason: FinishReason;
-  usage: LanguageModelUsage;
-}
-
-export interface ToolStartEvent {
-  toolCallId: string;
-  toolName: string;
-  input: unknown;
-}
-
-export interface ToolEndEvent {
-  toolCallId: string;
-  toolName: string;
-  output: unknown;
-  isError: boolean;
-}
-
-export interface CompactEvent {
-  summary: string;
-  keptMessageCount: number;
-}
-
-export interface IExtensionListener {
-  onSessionStart?(event: SessionStartEvent, ctx: ISession): Promise<void>;
-  onSessionShutdown?(event: SessionShutdownEvent, ctx: ISession): Promise<void>;
-  onBeforeAgentStart?(
-    event: BeforeAgentStartEvent,
-    ctx: ISession,
-  ): Promise<BeforeAgentStartResult | undefined>;
-  onAgentStart?(event: AgentStartEvent, ctx: ISession): Promise<void>;
-  onAgentEnd?(event: AgentEndEvent, ctx: ISession): Promise<void>;
-  onTurnStart?(event: TurnStartEvent, ctx: ISession): Promise<void>;
-  onTurnEnd?(event: TurnEndEvent, ctx: ISession): Promise<void>;
-  onToolStart?(event: ToolStartEvent, ctx: ISession): Promise<void>;
-  onToolEnd?(event: ToolEndEvent, ctx: ISession): Promise<void>;
-  onContext?(event: ContextEvent, ctx: ISession): Promise<ContextResult | undefined>;
-  onToolCall?(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult | undefined>;
-  onToolResult?(event: ToolResultEvent, ctx: ISession): Promise<ToolResultOverride | undefined>;
-  onInput?(event: InputEvent, ctx: ISession): Promise<InputResult | undefined>;
-  onBeforeCompact?(
-    event: BeforeCompactEvent,
-    ctx: ISession,
-  ): Promise<BeforeCompactResult | undefined>;
-  onCompact?(event: CompactEvent, ctx: ISession): Promise<void>;
-}
-
-export interface IExtensionWorker extends IExtensionListener {
-  getTools?(ctx: ISession): Promise<ITool[] | undefined>;
-  getCommands?(ctx: ISession): Promise<ICommand[] | undefined>;
-  getSystemPromptAdditions?(ctx: ISession): Promise<SystemPromptAddition[] | undefined>;
-}
-
+/**
+ * IExtensionRunner — core-internal interface for dispatching to extensions.
+ * Implemented by ExtensionRunner. NOT a JSRPC surface.
+ */
 export interface IExtensionRunner {
   emitInput(event: InputEvent, ctx: ISession): Promise<InputResult>;
   emitBeforeAgentStart(

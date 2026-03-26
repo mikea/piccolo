@@ -4,9 +4,9 @@
  * Spec ref: specs/core.md §Agent Loop §toAiSdkTools
  */
 
+import type { ISession, ITool, ToolResult } from "@piccolo/api";
 import { describe, expect, it, vi } from "vitest";
 import { toAiSdkTools } from "../src/agent-tools.ts";
-import type { ISession, ITool, ToolResult } from "../src/types.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

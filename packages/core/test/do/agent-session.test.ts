@@ -16,11 +16,11 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
+import type { AgentEvent, Attachment } from "@piccolo/api";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
 import { parseEntry } from "../../src/db/entry-types.ts";
 import { getEntries, getSession } from "../../src/db/schema.ts";
-import type { AgentEvent } from "../../src/types.ts";
 import { setupTestDb } from "../mocks/d1.ts";
 import { createMockModel } from "./mock-model.ts";
 
@@ -62,7 +62,7 @@ async function drainStream(stream: ReadableStream<AgentEvent>): Promise<AgentEve
 async function promptStream(
   instance: AgentSessionDO,
   text: string,
-  attachments?: import("../../src/types.ts").Attachment[],
+  attachments?: Attachment[],
 ): Promise<ReadableStream<AgentEvent>> {
   const turn = await instance.prompt(text, attachments);
   return turn.getStream();

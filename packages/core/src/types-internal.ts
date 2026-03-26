@@ -1,33 +1,12 @@
 /**
- * Internal types used by piccolo-core's DO layer.
+ * Internal utility types and functions for piccolo-core's DO layer.
  *
- * These are types that appear in both step-5 stubs and the eventual real
- * implementations (steps 6–8). Defined here to avoid circular imports and
- * to keep them available from the moment step 5 is written.
- *
- * All shapes must exactly match specs/api.md.
- *
- * Spec ref: specs/api.md §8 (SystemPromptAddition, CommandDescriptor)
+ * Spec ref: specs/api.md
  */
 
-// ─── System prompt contributions ─────────────────────────────────────────────
+import type { ICommand } from "@piccolo/api";
 
-/**
- * A snippet contributed by an extension to the assembled system prompt.
- * Spec ref: specs/api.md §8 §System prompt
- */
-export interface SystemPromptAddition {
-  /** Where in the system prompt to insert this snippet. */
-  section: "skills" | "guidelines" | "context" | "footer";
-  /** The text to insert. Markdown supported. */
-  content: string;
-  /** Relative weight for ordering within the section. Lower = earlier. Default: 100. */
-  priority?: number;
-}
-
-// ─── Commands ─────────────────────────────────────────────────────────────────
-
-import type { ICommand } from "./types.ts";
+/** Alias for ICommand — kept for historical naming in core internals. */
 export type CommandDescriptor = ICommand;
 
 // ─── Model list ───────────────────────────────────────────────────────────────

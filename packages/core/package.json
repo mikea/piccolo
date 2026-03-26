@@ -17,6 +17,7 @@
     "types": "wrangler types src/worker-configuration.d.ts"
   },
   "dependencies": {
+    "@piccolo/api": "workspace:*",
     "ai": "^6.0.138",
     "ai-gateway-provider": "^3.1.2"
   },

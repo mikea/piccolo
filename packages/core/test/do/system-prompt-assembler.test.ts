@@ -5,10 +5,9 @@
  * Covers all cases from specs/core.md §SystemPromptAssembler.
  */
 
+import type { ITool, SystemPromptAddition } from "@piccolo/api";
 import { describe, expect, it } from "vitest";
 import { SystemPromptAssembler } from "../../src/system-prompt-assembler.ts";
-import type { ITool } from "../../src/types.ts";
-import type { SystemPromptAddition } from "../../src/types-internal.ts";
 
 const BASE = "You are a helpful assistant.";
 

@@ -13,6 +13,7 @@
  * Spec ref: specs/api.md §8 IExtensionWorker
  */
 
+import type { ICommand, ISession, ITool, SystemPromptAddition } from "@piccolo/api";
 import type {
   BeforeAgentStartEvent,
   BeforeAgentStartResult,
@@ -30,11 +31,9 @@ import type {
   ToolResultEvent,
   ToolResultOverride,
 } from "../../src/extension-types.ts";
-import type { ICommand, ISession, ITool } from "../../src/types.ts";
-import type { SystemPromptAddition } from "../../src/types-internal.ts";
 
-// Re-export types for convenience in test files
-export type { SystemPromptAddition } from "../../src/types-internal.ts";
+// Re-export for convenience in test files
+export type { SystemPromptAddition } from "@piccolo/api";
 
 export interface MockExtensionOptions {
   /** Extension name (informational, for debugging). */

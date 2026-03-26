@@ -7,10 +7,10 @@
  * Spec ref: specs/core.md §Agent Loop
  */
 
+import type { AgentEvent, ISession, ITool, ToolResult } from "@piccolo/api";
 import type { LanguageModel, ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { Agent } from "../src/agent.ts";
-import type { AgentEvent, AgentTurn, ISession, ITool, ToolResult } from "../src/types.ts";
 import { createMockModel } from "./do/mock-model.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

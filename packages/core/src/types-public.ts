@@ -1,61 +1,40 @@
 /**
- * types-public.ts — Public type-only exports for @piccolo/core.
+ * types-public.ts — Public type-only re-exports for @piccolo/core.
  *
- * This file re-exports all public types from types.ts without pulling in any
- * implementation files that reference the Workers `Env` interface (agent-session-do.ts,
- * piccolo-core.ts, session-impl.ts etc.).
+ * Used by gateways and extensions that map "@piccolo/core" to this file via
+ * tsconfig paths to avoid pulling in the Workers `Env` interface.
  *
- * Used by gateways and extensions that depend on @piccolo/core types only.
- * They map "@piccolo/core" to this file via tsconfig paths to avoid Env conflicts.
+ * All types are sourced from @piccolo/api — the canonical contract package.
+ * Gateways and extensions should prefer importing from @piccolo/api directly;
+ * this file exists for backwards compatibility during the transition.
  *
  * Spec ref: specs/api.md — all public interfaces
  */
 
-// Re-export ai types that gateways/extensions may need directly
-export type {
-  FinishReason,
-  ImagePart,
-  LanguageModel,
-  LanguageModelUsage,
-  ModelMessage,
-} from "ai";
 export type {
   AgentEndEvent,
+  AgentEvent,
   AgentStartEvent,
+  Attachment,
   BeforeAgentStartEvent,
   BeforeAgentStartResult,
   BeforeCompactEvent,
   BeforeCompactResult,
   CompactEvent,
+  CompactOptions,
   ContextEvent,
   ContextResult,
-  IExtensionListener,
-  IExtensionRunner,
-  IExtensionWorker,
-  InputEvent,
-  InputResult,
-  SessionShutdownEvent,
-  SessionStartEvent,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolEndEvent,
-  ToolResultEvent,
-  ToolResultOverride,
-  ToolStartEvent,
-  TurnEndEvent,
-  TurnStartEvent,
-} from "./extension-types.ts";
-export type {
-  AgentEvent,
-  AgentTurn,
-  Attachment,
-  CompactOptions,
   ContextUsage,
   CustomEntry,
+  FinishReason,
   GatewayId,
   HistoryEntry,
   ICommand,
+  IExtensionListener,
+  IExtensionWorker,
   IGatewayCallback,
+  InputEvent,
+  InputResult,
   IPiccoloCore,
   ISession,
   ITextUI,
@@ -64,10 +43,24 @@ export type {
   IUser,
   IWebUI,
   JsonSchema7,
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
   NewSessionOptions,
-  SessionRecord,
+  SessionShutdownEvent,
+  SessionStartEvent,
   SessionStatus,
+  SystemPromptAddition,
+  ToolCallEvent,
+  ToolCallResult,
   ToolDescriptor,
+  ToolEndEvent,
   ToolResult,
+  ToolResultEvent,
+  ToolResultOverride,
+  ToolStartEvent,
+  TurnEndEvent,
+  TurnStartEvent,
   WebComponentDescriptor,
-} from "./types.ts";
+} from "@piccolo/api";
+// SessionRecord is core-internal only (D1 storage detail); not re-exported here

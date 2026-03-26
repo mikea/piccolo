@@ -12,8 +12,7 @@
  * Spec ref: specs/core.md §SystemPromptAssembler
  */
 
-import type { ITool } from "./types.ts";
-import type { SystemPromptAddition } from "./types-internal.ts";
+import type { ITool, SystemPromptAddition } from "@piccolo/api";
 
 export class SystemPromptAssembler {
   /**

@@ -15,6 +15,7 @@
  *   specs/api.md  §8 (IExtensionWorker, event/result types)
  */
 
+import type { ICommand, ISession, ITool, SystemPromptAddition } from "@piccolo/api";
 import type {
   BeforeAgentStartEvent,
   BeforeAgentStartResult,
@@ -32,8 +33,6 @@ import type {
   ToolResultEvent,
   ToolResultOverride,
 } from "./extension-types.ts";
-import type { ICommand, ISession, ITool } from "./types.ts";
-import type { SystemPromptAddition } from "./types-internal.ts";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
@@ -46,6 +45,8 @@ function formatError(error: unknown): string {
   }
 }
 
+// Re-export so callers can import everything from extension-runner.ts
+export type { SystemPromptAddition } from "@piccolo/api";
 export type {
   AgentEndEvent,
   AgentStartEvent,
@@ -72,8 +73,6 @@ export type {
   TurnEndEvent,
   TurnStartEvent,
 } from "./extension-types.ts";
-// Re-export so callers can import everything from extension-runner.ts
-export type { SystemPromptAddition } from "./types-internal.ts";
 
 // ─── parseCommand ─────────────────────────────────────────────────────────────
 

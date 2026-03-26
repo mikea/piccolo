@@ -9,9 +9,9 @@
  * Spec ref: specs/core.md §Agent Loop §toAiSdkTools
  */
 
+import type { ISession, ITool } from "@piccolo/api";
 import type { ToolSet } from "ai";
 import { jsonSchema, tool } from "ai";
-import type { ISession, ITool } from "./types.ts";
 
 /**
  * Convert an array of ITool into the AI SDK ToolSet record.

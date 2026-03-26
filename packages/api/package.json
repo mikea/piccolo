@@ -1,0 +1,14 @@
+{
+  "name": "@piccolo/api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "piccolo-api: JSRPC contract types for extensions and gateways. No implementations.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "ai": "^6.0.138"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.8"
+  }
+}

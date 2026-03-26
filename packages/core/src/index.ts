@@ -4,56 +4,37 @@
  * PiccoloCore is the WorkerEntrypoint (IPiccoloCore) that gateways connect to.
  * AgentSessionDO must also be a named export for Wrangler DO registration.
  *
+ * All public JSRPC types are re-exported from @piccolo/api.
+ *
  * Spec ref: specs/api.md §1 IPiccoloCore, specs/core.md §IPiccoloCore WorkerEntrypoint
  */
 
-// ── Durable Objects ───────────────────────────────────────────────────────────
-// AgentSessionDO — must be a named export for Wrangler DO registration
-export { AgentSessionDO } from "./agent-session-do.ts";
-// ── Public types ──────────────────────────────────────────────────────────────
-// All shared types from specs/api.md — consumed by gateways and extensions.
+// All public JSRPC contract types from @piccolo/api
 export type {
   AgentEndEvent,
+  AgentEvent,
   AgentStartEvent,
+  Attachment,
   BeforeAgentStartEvent,
   BeforeAgentStartResult,
   BeforeCompactEvent,
   BeforeCompactResult,
   CompactEvent,
+  CompactOptions,
   ContextEvent,
   ContextResult,
-  IExtensionListener,
-  IExtensionRunner,
-  IExtensionWorker,
-  InputEvent,
-  InputResult,
-  SessionShutdownEvent,
-  SessionStartEvent,
-  ToolCallEvent,
-  ToolCallResult,
-  ToolEndEvent,
-  ToolResultEvent,
-  ToolResultOverride,
-  ToolStartEvent,
-  TurnEndEvent,
-  TurnStartEvent,
-} from "./extension-types.ts";
-// ── Worker entrypoint ─────────────────────────────────────────────────────────
-export { PiccoloCore as default } from "./piccolo-core.ts";
-// ── Public library API ────────────────────────────────────────────────────────
-// Session persistence layer
-export * from "./session/index.ts";
-export type {
-  AgentEvent,
-  AgentTurn,
-  Attachment,
-  CompactOptions,
   ContextUsage,
   CustomEntry,
+  FinishReason,
   GatewayId,
   HistoryEntry,
   ICommand,
+  IExtensionListener,
+  IExtensionWorker,
   IGatewayCallback,
+  ImagePart,
+  InputEvent,
+  InputResult,
   IPiccoloCore,
   ISession,
   ITextUI,
@@ -62,10 +43,31 @@ export type {
   IUser,
   IWebUI,
   JsonSchema7,
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
   NewSessionOptions,
-  SessionRecord,
+  SessionShutdownEvent,
+  SessionStartEvent,
   SessionStatus,
+  SystemPromptAddition,
+  ToolCallEvent,
+  ToolCallResult,
   ToolDescriptor,
+  ToolEndEvent,
   ToolResult,
+  ToolResultEvent,
+  ToolResultOverride,
+  ToolStartEvent,
+  TurnEndEvent,
+  TurnStartEvent,
   WebComponentDescriptor,
-} from "./types.ts";
+} from "@piccolo/api";
+// ── Durable Objects ───────────────────────────────────────────────────────────
+// AgentSessionDO — must be a named export for Wrangler DO registration
+export { AgentSessionDO } from "./agent-session-do.ts";
+// ── Worker entrypoint ─────────────────────────────────────────────────────────
+export { PiccoloCore as default } from "./piccolo-core.ts";
+// ── Public library API ────────────────────────────────────────────────────────
+// Session persistence layer
+export * from "./session/index.ts";

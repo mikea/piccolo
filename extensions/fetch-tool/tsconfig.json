@@ -2,8 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["./src/worker-configuration.d.ts"],
-    // Redirect @piccolo/core to its types-only export (avoids pulling in core's Env bindings).
+    // Extensions depend on @piccolo/api, not @piccolo/core.
+    // @piccolo/api is a pure type library with no Workers Env bindings.
     "paths": {
+      "@piccolo/api": ["../../packages/api/src/index.ts"],
+      // Keep @piccolo/core redirect for any legacy imports
       "@piccolo/core": ["../../packages/core/src/types-public.ts"]
     },
     // skipLibCheck is required: test files use `cloudflare:test` ambient module which

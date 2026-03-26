@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/core";
+import type { IExtensionWorker, ISession, ITool, ToolDescriptor, ToolResult } from "@piccolo/api";
 
 // ── Hard ceiling on maxBytes regardless of what the LLM requests ──────────────
 const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB

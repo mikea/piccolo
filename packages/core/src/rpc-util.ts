@@ -11,6 +11,7 @@
 
 import { RpcTarget } from "cloudflare:workers";
 
+// biome-ignore lint/suspicious/noExplicitAny: Proxy trick requires any — see JSDoc
 export function asRpcTarget<T>(stub: any): T {
   return new Proxy(stub, {
     getPrototypeOf() {

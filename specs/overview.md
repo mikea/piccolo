@@ -12,6 +12,7 @@ Piccolo is composed of the following independently deployed Cloudflare Workers:
 
 | Component | Kind | Description |
 |---|---|---|
+| `piccolo-api` | npm package | JSRPC contract types (interfaces only, no implementations) |
 | `piccolo-core` | Worker + DOs | Agent session orchestration, agent loop, and JSRPC hub |
 | Web UI gateway | Worker + DO | Browser chat interface |
 | Telegram gateway | Worker + DO | Telegram bot interface |
@@ -28,13 +29,17 @@ Cloudflare AI Gateway  ◄── all LLM calls routed here
   ▲
   │  (ai + ai-gateway-provider)
   │
-piccolo-core   (agent loop + session orchestration; uses ai + ai-gateway-provider directly)
+piccolo-core   (implements @piccolo/api; agent loop + session orchestration)
   ▲
+  │  (JSRPC)
   │
-Extensions     (Workers in dispatch namespace; depend on piccolo-core via JSRPC)
+Extensions     (Workers in dispatch namespace; depend on @piccolo/api)
   ▲
+  │  (JSRPC)
   │
-Gateways       (Workers with service binding to piccolo-core)
+Gateways       (Workers with service binding to piccolo-core; depend on @piccolo/api)
+
+piccolo-api    (no code; defines the JSRPC contract types shared by all)
 ```
 
 ---
@@ -55,6 +60,10 @@ The gateway provides:
 - No per-provider API key management in piccolo code — keys are stored as CF AI Gateway secrets
 
 The `ai` and `ai-gateway-provider` packages are the client libraries used to call the gateway. They handle streaming, tool calling, multi-step loops, and message history.
+
+### `piccolo-api` → [api.md](api.md)
+
+JSRPC contract type library. Contains only TypeScript interface and type declarations — no implementations, no logic, no runtime code. All public interfaces (`ISession`, `ITool`, `IExtensionWorker`, etc.) are defined here. Extensions and gateways depend on this package, not on `piccolo-core`.
 
 ### `piccolo-core` → [core.md](core.md)
 
@@ -138,7 +147,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 
 | Document | Contents |
 |---|---|
-| [api.md](api.md) | **All public JSRPC/capnweb APIs**: `IPiccoloCore`, `ISession`, `AgentSessionDO`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
+| [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
 | [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, fork, listing |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |

@@ -1,6 +1,15 @@
-# Piccolo — Public JSRPC API
+# Piccolo — Public JSRPC API (`@piccolo/api`)
 
 All inter-component communication in piccolo uses Cloudflare Workers RPC (JSRPC). This document is the single source of truth for every public RPC interface, shared message type, and event union. Other spec documents reference these names without re-defining them.
+
+These types are implemented in the `@piccolo/api` npm workspace package (`packages/api/src/index.ts`). Extensions and gateways import from `@piccolo/api` directly — they do NOT depend on `@piccolo/core`. `piccolo-core` implements the interfaces defined here.
+
+**Dependency rule:**
+```
+extensions → @piccolo/api  (NOT @piccolo/core)
+gateways   → @piccolo/api  (NOT @piccolo/core)
+piccolo-core depends on @piccolo/api and implements its interfaces
+```
 
 ---
 
@@ -13,16 +22,9 @@ import type { ModelMessage, LanguageModelUsage, FinishReason } from "ai";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
-// Internal session record — used only by piccolo-core persistence layer.
-// Not exposed to gateway clients.
-interface SessionRecord {
-  id: string;          // UUID v4
-  userId: string;
-  createdAt: number;   // Unix ms
-  updatedAt: number;   // Unix ms
-  name?: string;
-  cwd?: string;
-}
+// NOTE: SessionRecord is an internal piccolo-core type (D1 row shape).
+// It lives in packages/core/src/types.ts, not in @piccolo/api.
+// Clients always work with ISession stubs — they never see SessionRecord.
 
 // SessionInfo is an internal D1 query result type, not a public interface.
 // Kept here for reference only; clients always work with ISession stubs.

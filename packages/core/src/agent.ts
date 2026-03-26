@@ -8,16 +8,35 @@
  * No Workers-specific globals. No gateway or session concepts.
  * Suitable for use inside Durable Objects or any async context.
  *
- * The caller (piccolo-core) is responsible for constructing the LanguageModel
- * (via createModel() from gateway.ts or a mock in tests).
+ * The caller (piccolo-core AgentSessionDO) is responsible for constructing
+ * the LanguageModel (via createModel() from gateway.ts or a mock in tests).
  *
  * Spec ref: specs/core.md §Agent Loop
  */
 
+import type { AgentEvent, ISession, ITool } from "@piccolo/api";
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
 import { toAiSdkTools } from "./agent-tools.ts";
-import type { AgentEvent, AgentOptions, AgentState, AgentTurn, ISession, ITool } from "./types.ts";
+
+// ─── AgentTurn ────────────────────────────────────────────────────────────────
+
+/**
+ * A handle to the currently active agent turn.
+ * Returned synchronously by Agent.prompt().
+ * Internal to piccolo-core — not part of the JSRPC API surface.
+ * The JSRPC-facing turn is ITurn (in @piccolo/api), which wraps this stream.
+ *
+ * Spec ref: specs/core.md §Agent Loop §AgentTurn
+ */
+export interface AgentTurn {
+  /** The AgentEvent stream for this turn. Single-consumer. */
+  readonly stream: ReadableStream<AgentEvent>;
+  /** Abort this turn immediately. No-op after the turn completes. */
+  abort(): void;
+}
+
+// ─── Agent ────────────────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_STEERING_MODE = "one-at-a-time" as const;
@@ -26,7 +45,14 @@ export class Agent {
   private readonly _maxSteps: number;
   private readonly _steeringMode: "one-at-a-time" | "all";
 
-  private _state: AgentState;
+  // ── Agent state fields (no separate AgentState interface) ──────────────────
+  private _model: LanguageModel;
+  private _systemPrompt: string;
+  private _tools: ITool[];
+  private _messages: ModelMessage[];
+  private _isStreaming: boolean;
+  private _error: string | undefined;
+
   private _steeringQueue: ModelMessage[] = [];
   private _currentTurn: AgentTurn | null = null;
 
@@ -37,33 +63,50 @@ export class Agent {
    */
   private _ctx: ISession | null = null;
 
-  constructor(options: AgentOptions) {
+  constructor(options: {
+    model: LanguageModel;
+    systemPrompt: string;
+    tools?: ITool[];
+    maxSteps?: number;
+    steeringMode?: "one-at-a-time" | "all";
+  }) {
     this._maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     this._steeringMode = options.steeringMode ?? DEFAULT_STEERING_MODE;
-
-    this._state = {
-      model: options.model,
-      systemPrompt: options.systemPrompt,
-      tools: options.tools ?? [],
-      messages: [],
-      isStreaming: false,
-    };
+    this._model = options.model;
+    this._systemPrompt = options.systemPrompt;
+    this._tools = options.tools ?? [];
+    this._messages = [];
+    this._isStreaming = false;
   }
 
-  // ─── State access ─────────────────────────────────────────────────────────
+  // ─── State accessors ──────────────────────────────────────────────────────
 
-  get state(): AgentState {
-    return this._state;
+  get state(): {
+    model: LanguageModel;
+    systemPrompt: string;
+    tools: ITool[];
+    messages: ModelMessage[];
+    isStreaming: boolean;
+    error?: string;
+  } {
+    return {
+      model: this._model,
+      systemPrompt: this._systemPrompt,
+      tools: this._tools,
+      messages: this._messages,
+      isStreaming: this._isStreaming,
+      ...(this._error !== undefined ? { error: this._error } : {}),
+    };
   }
 
   // ─── Synchronous state mutations ──────────────────────────────────────────
 
   setModel(model: LanguageModel): void {
-    this._state = { ...this._state, model };
+    this._model = model;
   }
 
   setTools(tools: ITool[]): void {
-    this._state = { ...this._state, tools };
+    this._tools = tools;
   }
 
   /**
@@ -76,30 +119,26 @@ export class Agent {
   }
 
   setSystemPrompt(prompt: string): void {
-    this._state = { ...this._state, systemPrompt: prompt };
+    this._systemPrompt = prompt;
   }
 
   appendMessages(messages: ModelMessage[]): void {
-    this._state = { ...this._state, messages: [...this._state.messages, ...messages] };
+    this._messages = [...this._messages, ...messages];
   }
 
   replaceMessages(messages: ModelMessage[]): void {
-    this._state = { ...this._state, messages };
+    this._messages = messages;
   }
 
   // ─── Steering queue ───────────────────────────────────────────────────────
 
   /**
    * Inject a message mid-turn (after the next tool batch, before the next LLM call).
-   * If no turn is active the message will be dequeued on the next prompt()'s first step.
    */
   steer(message: ModelMessage): void {
     this._steeringQueue.push(message);
   }
 
-  /**
-   * Return and clear all pending steering messages.
-   */
   clearSteering(): ModelMessage[] {
     const msgs = this._steeringQueue;
     this._steeringQueue = [];
@@ -109,8 +148,8 @@ export class Agent {
   // ─── Abort ────────────────────────────────────────────────────────────────
 
   /**
-   * Abort the currently streaming turn immediately.
-   * Delegates to the current AgentTurn's abort(). No-op if idle.
+   * Abort the currently streaming turn. Delegates to the current AgentTurn.
+   * No-op if idle.
    */
   abort(): void {
     this._currentTurn?.abort();
@@ -128,13 +167,12 @@ export class Agent {
 
   /**
    * Start a new agent turn with user text (and optional images).
-   * Throws if a turn is already in progress (getCurrentTurn() !== null).
+   * Throws if a turn is already in progress.
    * Returns an AgentTurn synchronously — the stream starts filling immediately.
    */
   prompt(text: string, images?: ImagePart[]): AgentTurn;
   /**
-   * Start a new agent turn with pre-built messages (e.g. from the core after
-   * rehydration or when forwarding structured content).
+   * Start a new agent turn with pre-built messages.
    * Throws if a turn is already in progress.
    */
   prompt(messages: ModelMessage[]): AgentTurn;
@@ -143,7 +181,6 @@ export class Agent {
       throw new Error("A turn is already in progress. Call abort() first.");
     }
 
-    // Build user message(s) to append
     let newMessages: ModelMessage[];
     if (typeof input === "string") {
       if (images && images.length > 0) {
@@ -156,18 +193,14 @@ export class Agent {
     }
 
     if (newMessages.length > 0) {
-      this._state.messages.push(...newMessages);
+      this._messages.push(...newMessages);
     }
 
     return this._startTurn();
   }
 
-  // ─── Internal ────────────────────────────────────────────────────────────
+  // ─── Internal ─────────────────────────────────────────────────────────────
 
-  /**
-   * Create the AgentTurn, wire the ReadableStream, kick off _runStream async.
-   * Shared by prompt() — only entry point now (continue() is removed).
-   */
   private _startTurn(): AgentTurn {
     const ac = new AbortController();
 
@@ -194,23 +227,20 @@ export class Agent {
     controller: ReadableStreamDefaultController<AgentEvent>,
     signal: AbortSignal,
   ): Promise<void> {
-    // Reset streaming state; omit the error key to satisfy exactOptionalPropertyTypes.
-    const { error: _discarded, ...stateWithoutError } = this._state;
-    this._state = { ...stateWithoutError, isStreaming: true };
+    this._isStreaming = true;
+    this._error = undefined;
 
-    // ── Debug: log what is sent to the LLM ────────────────────────────────────
+    // ── Debug logging ──────────────────────────────────────────────────────────
     console.debug(
       "[agent] _runStream start — model=%s systemPrompt=%d chars messages=%d",
-      typeof this._state.model === "object" &&
-        this._state.model !== null &&
-        "modelId" in this._state.model
-        ? String((this._state.model as { modelId: string }).modelId)
-        : String(this._state.model),
-      this._state.systemPrompt.length,
-      this._state.messages.length,
+      typeof this._model === "object" && this._model !== null && "modelId" in this._model
+        ? String((this._model as { modelId: string }).modelId)
+        : String(this._model),
+      this._systemPrompt.length,
+      this._messages.length,
     );
-    for (let i = 0; i < this._state.messages.length; i++) {
-      const msg = this._state.messages[i];
+    for (let i = 0; i < this._messages.length; i++) {
+      const msg = this._messages[i];
       if (msg === undefined) continue;
       const contentPreview =
         typeof msg.content === "string"
@@ -218,7 +248,7 @@ export class Agent {
           : JSON.stringify(msg.content).slice(0, 120);
       console.debug("[agent]   msg[%d] role=%s content=%s", i, msg.role, contentPreview);
     }
-    // ─────────────────────────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
 
     const emit = (event: AgentEvent) => {
       controller.enqueue(event);
@@ -230,7 +260,7 @@ export class Agent {
     if (ctx === null) {
       throw new Error("Agent context not set. Call setContext() before prompt().");
     }
-    const toolSet = toAiSdkTools(this._state.tools, ctx);
+    const toolSet = toAiSdkTools(this._tools, ctx);
     let aborted = false;
     let finalUsage: LanguageModelUsage = {
       inputTokens: 0,
@@ -249,15 +279,14 @@ export class Agent {
 
     try {
       const result = streamText({
-        model: this._state.model,
-        system: this._state.systemPrompt,
-        messages: this._state.messages,
+        model: this._model,
+        system: this._systemPrompt,
+        messages: this._messages,
         tools: toolSet,
         stopWhen: stepCountIs(this._maxSteps),
         abortSignal: signal,
 
         prepareStep: ({ stepNumber, messages }) => {
-          // After the first step, inject any pending steering messages.
           if (stepNumber > 0 && this._steeringQueue.length > 0) {
             const steering = this._dequeueSteer();
             return Promise.resolve({ messages: [...messages, ...steering] });
@@ -296,7 +325,6 @@ export class Agent {
 
         onStepFinish: ({ stepNumber, finishReason, usage, content }) => {
           console.debug("[agent] onStepFinish step=%d reason=%s", stepNumber, finishReason);
-          // Emit tool_end for any tool errors — these do not appear in onChunk in ai v6.
           for (const part of content) {
             if (part.type === "tool-error") {
               const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
@@ -320,14 +348,13 @@ export class Agent {
         onFinish: ({ totalUsage, response }) => {
           console.debug("[agent] onFinish messages=%d", response.messages.length);
           finalUsage = totalUsage;
-          // Append all response messages (assistant + tool) to state history.
-          this._state.messages.push(...response.messages);
+          this._messages.push(...response.messages);
         },
 
         onError: ({ error }) => {
           const message = error instanceof Error ? error.message : String(error);
           console.debug("[agent] onError message=%s", message);
-          this._state = { ...this._state, error: message };
+          this._error = message;
           emit({ type: "error", message });
         },
 
@@ -341,17 +368,15 @@ export class Agent {
       await result.consumeStream();
       console.debug("[agent] consumeStream done");
     } catch (e) {
-      // consumeStream() rejects if the stream itself throws (e.g. network error
-      // not caught by onError). Surface as an error event.
       const message = e instanceof Error ? e.message : String(e);
       console.debug("[agent] consumeStream catch: %s", message);
       if (!aborted) {
-        this._state = { ...this._state, error: message };
+        this._error = message;
         emit({ type: "error", message });
       }
     } finally {
       console.debug("[agent] finally aborted=%s", aborted);
-      this._state = { ...this._state, isStreaming: false };
+      this._isStreaming = false;
       if (!aborted) {
         emit({ type: "agent_end", totalUsage: finalUsage });
       }
@@ -360,15 +385,12 @@ export class Agent {
     }
   }
 
-  // ─── Queue helpers ────────────────────────────────────────────────────────
-
   private _dequeueSteer(): ModelMessage[] {
     if (this._steeringMode === "all") {
       const msgs = this._steeringQueue;
       this._steeringQueue = [];
       return msgs;
     }
-    // one-at-a-time
     const msg = this._steeringQueue.shift();
     return msg !== undefined ? [msg] : [];
   }

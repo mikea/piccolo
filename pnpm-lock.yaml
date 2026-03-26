@@ -37,6 +37,10 @@ importers:
         version: 4.77.0(@cloudflare/workers-types@4.20260317.1)
 
   extensions/fetch-tool:
+    dependencies:
+      '@piccolo/api':
+        specifier: workspace:*
+        version: link:../../packages/api
     devDependencies:
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.13.4
@@ -140,8 +144,21 @@ importers:
         specifier: ^2.11.11
         version: 2.11.11(solid-js@1.9.12)(vite@8.0.2(@types/node@24.12.0)(esbuild@0.27.3))
 
+  packages/api:
+    dependencies:
+      ai:
+        specifier: ^6.0.138
+        version: 6.0.138(zod@4.3.6)
+    devDependencies:
+      '@ai-sdk/provider':
+        specifier: ^3.0.8
+        version: 3.0.8
+
   packages/core:
     dependencies:
+      '@piccolo/api':
+        specifier: workspace:*
+        version: link:../api
       ai:
         specifier: ^6.0.138
         version: 6.0.138(zod@4.3.6)
