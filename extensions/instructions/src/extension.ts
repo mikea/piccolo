@@ -112,34 +112,32 @@ export async function buildSystemPromptAdditions(
 /**
  * RpcTarget implementing ITool for the 'instructions' tool.
  *
- * Receives the D1 database and session context at construction time (captured
- * from getTools(ctx) on the extension WorkerEntrypoint). Using constructor
- * injection avoids the need for this.env in RpcTarget subclasses.
+ * Receives only the D1 database at construction time (from getTools() on the
+ * extension WorkerEntrypoint). ISession is NOT stored — it is passed on every
+ * execute() call and forwarded to the private action methods as needed.
  *
  * Spec ref: specs/instructions_extension.md §Tool
  */
 export class InstructionsTool extends RpcTarget implements ITool {
   readonly #db: D1Database;
-  readonly #ctx: ISession;
 
-  constructor(db: D1Database, ctx: ISession) {
+  constructor(db: D1Database) {
     super();
     this.#db = db;
-    this.#ctx = ctx;
   }
 
   getDescriptor(): Promise<ToolDescriptor> {
     return Promise.resolve(descriptor);
   }
 
-  async execute(_toolCallId: string, params: unknown, _ctx: ISession): Promise<ToolResult> {
+  async execute(_toolCallId: string, params: unknown, ctx: ISession): Promise<ToolResult> {
     const parsed: InstructionsParams = instructionsParamsSchema.parse(params);
 
     switch (parsed.action) {
       case "list":
-        return this.#list();
+        return this.#list(ctx);
       case "add":
-        return this.#add(parsed.scope_type, parsed.content);
+        return this.#add(parsed.scope_type, parsed.content, ctx);
       case "remove":
         return this.#remove(parsed.id);
       default: {
@@ -152,8 +150,8 @@ export class InstructionsTool extends RpcTarget implements ITool {
 
   // ── Action implementations ──────────────────────────────────────────────────
 
-  async #list(): Promise<ToolResult> {
-    const [userId, sessionId] = await Promise.all([this.#ctx.userId(), this.#ctx.sessionId()]);
+  async #list(ctx: ISession): Promise<ToolResult> {
+    const [userId, sessionId] = await Promise.all([ctx.userId(), ctx.sessionId()]);
     const rows = await listVisible(this.#db, userId, sessionId);
 
     if (rows.length === 0) {
@@ -178,14 +176,14 @@ export class InstructionsTool extends RpcTarget implements ITool {
     return { content: [{ type: "text", text }], details: { rows } };
   }
 
-  async #add(scopeType: ScopeType, content: string): Promise<ToolResult> {
+  async #add(scopeType: ScopeType, content: string, ctx: ISession): Promise<ToolResult> {
     let scopeId: string;
     if (scopeType === "everyone") {
       scopeId = "";
     } else if (scopeType === "user") {
-      scopeId = await this.#ctx.userId();
+      scopeId = await ctx.userId();
     } else {
-      scopeId = await this.#ctx.sessionId();
+      scopeId = await ctx.sessionId();
     }
 
     const id = await addInstruction(this.#db, scopeType, scopeId, content);
@@ -225,8 +223,8 @@ export class InstructionsExtension extends WorkerEntrypoint<Env> implements IExt
     return new Response("OK", { status: 200 });
   }
 
-  async getTools(ctx: ISession): Promise<ITool[]> {
-    return [new InstructionsTool(this.env.INSTRUCTIONS_DB, ctx)];
+  async getTools(_ctx: ISession): Promise<ITool[]> {
+    return [new InstructionsTool(this.env.INSTRUCTIONS_DB)];
   }
 
   async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]> {
