@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    // verbatimModuleSyntax must be off for test files: the `cloudflare:test` ambient
+    // module declaration is not itself an ES module.
+    "verbatimModuleSyntax": false,
+    "types": ["@cloudflare/vitest-pool-workers/types"],
+    "skipLibCheck": true
+  },
+  "include": ["./**/*.ts", "../src/worker-configuration.d.ts"]
+}

@@ -879,4 +879,5 @@ Full system smoke tests after all pieces are in place.
 | 15 | `ext-d1-tool` | `extensions/d1-tool` | [d1_tool.md](d1_tool.md) |
 | 16 | `ext-skills` | `extensions/skills` | [skills_extension.md](skills_extension.md) |
 | 17 | `ext-templates` | `extensions/templates` | [prompt_templates_extension.md](prompt_templates_extension.md) |
-| 18 | E2E integration tests | `tests/e2e` | all |
+| 18 | `ext-instructions` | `extensions/instructions` | [instructions_extension.md](instructions_extension.md) |
+| 19 | E2E integration tests | `tests/e2e` | all |

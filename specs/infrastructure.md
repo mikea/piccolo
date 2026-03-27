@@ -33,10 +33,12 @@ All piccolo components run on the **Cloudflare Workers runtime** (V8 isolates). 
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │ Extension Dispatch Namespace (piccolo-extensions)        │   │
-│  │   ext-r2-tool / ext-d1-tool / ext-skills / ext-templates │   │
+│  │   ext-fetch-tool / ext-r2-tool / ext-d1-tool            │   │
+│  │   ext-instructions / ext-skills / ext-templates          │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
-│  KV: piccolo-config    R2: piccolo-assets    D1: piccolo-sessions│
+│  KV: piccolo-config  R2: piccolo-assets                         │
+│  D1: piccolo-sessions  D1: piccolo-instructions                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

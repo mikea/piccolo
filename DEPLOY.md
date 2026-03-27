@@ -276,11 +276,74 @@ No `piccolo-core` redeploy is needed. The extension registry is polled at sessio
 
 ---
 
+## Step 9 — Deploy `ext-instructions`
+
+The instructions extension lets the LLM manage persistent instructions that are
+automatically appended to the system prompt, scoped to everyone / user / session.
+It requires its own D1 database.
+
+### 9a. Create the D1 database
+
+```bash
+pnpm wrangler d1 create piccolo-instructions
+```
+
+Copy the `database_id` from the output.
+
+### 9b. Configure `ext-instructions`
+
+```bash
+cp extensions/instructions/wrangler.template.jsonc extensions/instructions/wrangler.jsonc
+```
+
+Open `extensions/instructions/wrangler.jsonc` and paste the database ID:
+
+```jsonc
+"d1_databases": [
+  {
+    "binding": "INSTRUCTIONS_DB",
+    "database_name": "piccolo-instructions",
+    "database_id": "PASTE_D1_ID_HERE"    // ← from Step 9a
+  }
+]
+```
+
+### 9c. Apply D1 migrations
+
+```bash
+pnpm wrangler d1 migrations apply piccolo-instructions \
+  --config extensions/instructions/wrangler.jsonc --remote
+```
+
+This creates the `instructions` table. Safe to re-run.
+
+### 9d. Deploy the extension Worker into the dispatch namespace
+
+```bash
+pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc \
+  --dispatch-namespace piccolo-extensions
+```
+
+### 9e. Register in the extension registry KV
+
+Add `ext-instructions` to the registry alongside any other active extensions:
+
+```bash
+pnpm wrangler kv key put --remote --binding CONFIG \
+  --config packages/core/wrangler.jsonc \
+  extensions:registry '["ext-fetch-tool","ext-instructions"]'
+```
+
+No `piccolo-core` redeploy is needed.
+
+---
+
 ## Summary of resources created
 
 | Resource | Name | Used by |
 |---|---|---|
 | D1 database | `piccolo-sessions` | piccolo-core (`SESSIONS_DB`) |
+| D1 database | `piccolo-instructions` | ext-instructions (`INSTRUCTIONS_DB`) |
 | KV namespace | `piccolo-config` | piccolo-core (`CONFIG`) |
 | R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) |
 | Dispatch namespace | `piccolo-extensions` | piccolo-core (`EXTENSIONS`) |

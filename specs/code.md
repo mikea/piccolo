@@ -402,6 +402,8 @@ piccolo/
 └── extensions/
     ├── r2-tool/            ext-r2-tool Worker
     ├── d1-tool/            ext-d1-tool Worker
+    ├── fetch-tool/         ext-fetch-tool Worker
+    ├── instructions/       ext-instructions Worker
     ├── skills/             ext-skills Worker
     └── templates/          ext-templates Worker
 ```
