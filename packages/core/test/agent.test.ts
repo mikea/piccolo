@@ -33,7 +33,7 @@ function makeTool(
   result: ToolResult = { content: [{ type: "text", text: "tool result" }] },
 ): ITool {
   return {
-    descriptor: {
+    getDescriptor: async () => ({
       name,
       label: name,
       description: `${name} tool`,
@@ -42,7 +42,7 @@ function makeTool(
         properties: { input: { type: "string" } },
         additionalProperties: false,
       },
-    },
+    }),
     execute: vi.fn().mockResolvedValue(result),
   };
 }

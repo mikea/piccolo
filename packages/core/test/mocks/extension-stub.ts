@@ -107,7 +107,7 @@ function isToolInstance(
   return (
     typeof value === "object" &&
     value !== null &&
-    "descriptor" in value &&
+    "getDescriptor" in value &&
     "execute" in value &&
     typeof (value as ITool).execute === "function"
   );
@@ -136,8 +136,9 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
 
   const tools: ITool[] = (options.tools ?? []).map((tool) => {
     if (isToolInstance(tool)) return tool;
+    const desc = tool;
     return {
-      descriptor: tool,
+      getDescriptor: async () => desc,
       execute: async () => ({ content: [] }),
     } satisfies ITool;
   });

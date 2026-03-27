@@ -312,7 +312,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       onComplete: async () => {},
     });
 
-    // 4. Set up extension runner and system prompt
+    // 4. Set up extension runner and system prompt infrastructure.
+    // Extensions are initialised here (inside blockConcurrencyWhile) since
+    // getTools/getCommands/getSystemPromptAdditions do not call back into ctx.
+    // The system prompt assembly is deferred to #ensureSystemPrompt() (called
+    // from prompt()) so that any reverse RPC into ctx from extensions happens
+    // outside the concurrency block.
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
     this.#rpcCtx = new SessionTarget(this);
@@ -323,15 +328,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.env.EXTENSIONS,
       this.#modelId,
     );
-    const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
-    const extensionTools = this.#extensionRunner.getTools();
-    this.#assembledSystemPrompt = await this.#assembler.assemble(
-      basePrompt,
-      this.#extensionRunner.getSystemPromptAdditions(),
-      extensionTools,
-    );
-    this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
-    this.#agent.setTools(extensionTools);
+    this.#agent.setTools(this.#extensionRunner.getTools());
 
     void t0; // suppress unused-variable warning
   }
@@ -344,7 +341,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#modelOverridden = true;
   }
 
-  _getAssembledSystemPrompt(): string {
+  async _getAssembledSystemPrompt(): Promise<string> {
+    await this.#ensureSystemPrompt();
     return this.#assembledSystemPrompt;
   }
 
@@ -398,6 +396,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     attachments?: Attachment[],
     callback?: IGatewayCallback,
   ): Promise<ITurn> {
+    // Ensure the system prompt (and extension tools) are set before the first
+    // turn. #ensureSystemPrompt() is a no-op after the first call. Called here
+    // rather than in blockConcurrencyWhile so that reverse RPC calls from
+    // extensions back into ctx are not deadlocked.
+    await this.#ensureSystemPrompt();
     if (this.#currentTurn !== null) {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
@@ -711,7 +714,21 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
 
+  async #ensureSystemPrompt(): Promise<void> {
+    if (!this.#assembledSystemPrompt) {
+      const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
+      const extensionTools = this.#extensionRunner.getTools();
+      this.#assembledSystemPrompt = await this.#assembler.assemble(
+        basePrompt,
+        this.#extensionRunner.getSystemPromptAdditions(),
+        extensionTools,
+      );
+      this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
+    }
+  }
+
   async getSystemPrompt(): Promise<string> {
+    await this.#ensureSystemPrompt();
     return this.#assembledSystemPrompt;
   }
 

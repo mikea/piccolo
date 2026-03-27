@@ -18,7 +18,7 @@ function makeTool(
   result: ToolResult = { content: [{ type: "text", text: "ok" }] },
 ): ITool {
   return {
-    descriptor: {
+    getDescriptor: async () => ({
       name,
       label: name,
       description: `${name} description`,
@@ -28,7 +28,7 @@ function makeTool(
         required: ["value"],
         additionalProperties: false,
       },
-    },
+    }),
     execute: vi.fn().mockResolvedValue(result),
   };
 }
@@ -63,26 +63,26 @@ async function callExecuteWithSignal(
 // ─── toAiSdkTools ─────────────────────────────────────────────────────────────
 
 describe("toAiSdkTools", () => {
-  it("returns empty record for empty tools array", () => {
-    const result = toAiSdkTools([], mockSession);
+  it("returns empty record for empty tools array", async () => {
+    const result = await toAiSdkTools([], mockSession);
     expect(result).toEqual({});
   });
 
-  it("uses descriptor.name as the record key", () => {
+  it("uses descriptor.name as the record key", async () => {
     const t = makeTool("my_tool");
-    const result = toAiSdkTools([t], mockSession);
+    const result = await toAiSdkTools([t], mockSession);
     expect(Object.keys(result)).toEqual(["my_tool"]);
   });
 
-  it("creates a separate entry per tool", () => {
+  it("creates a separate entry per tool", async () => {
     const tools = [makeTool("tool_a"), makeTool("tool_b"), makeTool("tool_c")];
-    const result = toAiSdkTools(tools, mockSession);
+    const result = await toAiSdkTools(tools, mockSession);
     expect(Object.keys(result).sort()).toEqual(["tool_a", "tool_b", "tool_c"]);
   });
 
-  it("produced tool has description matching descriptor", () => {
+  it("produced tool has description matching descriptor", async () => {
     const t = makeTool("greet");
-    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTools = await toAiSdkTools([t], mockSession);
     const sdkTool = sdkTools["greet"];
     expect(sdkTool).toBeDefined();
     expect(sdkTool?.description).toBe("greet description");
@@ -90,7 +90,7 @@ describe("toAiSdkTools", () => {
 
   it("execute() on the AI SDK tool calls ITool.execute() with the session", async () => {
     const t = makeTool("echo", { content: [{ type: "text", text: "echoed" }] });
-    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTools = await toAiSdkTools([t], mockSession);
     const sdkTool = sdkTools["echo"];
     expect(sdkTool).toBeDefined();
 
@@ -102,11 +102,18 @@ describe("toAiSdkTools", () => {
 
   it("passes abortSignal through to ITool.execute()", async () => {
     const t = makeTool("abort_tool");
-    const sdkTools = toAiSdkTools([t], mockSession);
+    const sdkTools = await toAiSdkTools([t], mockSession);
     const sdkTool = sdkTools["abort_tool"];
     const signal = new AbortController().signal;
     // biome-ignore lint/suspicious/noExplicitAny: test-only cast for AI SDK internal type
     await callExecuteWithSignal(sdkTool?.execute as any, { value: "x" }, "call_2", signal);
-    expect(t.execute).toHaveBeenCalledWith("call_2", { value: "x" }, mockSession, signal);
+    // The implementation wraps the AbortSignal in an AbortSignalTarget (IAbortSignal)
+    // before passing to execute(). Verify it was called with an object that has isAborted().
+    const [callId, input, ctx, iSignal] =
+      (t.execute as ReturnType<typeof vi.fn>).mock.calls[0] ?? [];
+    expect(callId).toBe("call_2");
+    expect(input).toEqual({ value: "x" });
+    expect(ctx).toBe(mockSession);
+    expect(typeof iSignal?.isAborted).toBe("function");
   });
 });

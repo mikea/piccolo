@@ -14,11 +14,17 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 
 ### `wrangler.template.jsonc`
 
+The template uses `piccolo-workspace` as the example bucket name. Deployers copy it to `wrangler.jsonc` (gitignored) and change the bucket name to match what they created. `wrangler.jsonc` is never committed.
+
 ```jsonc
 {
   "name": "ext-r2-tool",
   "r2_buckets": [
-    { "binding": "BUCKET", "bucket_name": "piccolo-workspace" }
+    {
+      // Change "piccolo-workspace" to match the bucket you created.
+      "binding": "BUCKET",
+      "bucket_name": "piccolo-workspace"
+    }
   ]
 }
 ```
@@ -79,9 +85,12 @@ e.g. 'projects/myapp/README.md'. Keys are case-sensitive.`,
 // action: "read"
 interface R2ReadDetails {
   key: string;
-  size: number;
-  contentType?: string;
+  size: number;              // full object size in bytes (obj.size)
+  contentType: string | undefined;
   lastModified: string;      // ISO 8601
+  ranged: boolean;           // true if byteOffset, byteLength, or suffix was specified
+  truncated: boolean;        // true if maxBytes was applied and body was cut short
+  returnedBytes: number;     // bytes actually included in content[0].text (after range + truncation)
 }
 
 // action: "write"
@@ -106,7 +115,7 @@ interface R2ListDetails {
   }>;
   prefixes: string[];        // virtual directory prefixes (only when delimiter is set)
   truncated: boolean;
-  cursor?: string;           // pass to next list call to get the next page
+  cursor: string | undefined; // present only when truncated=true; pass to next list call to get the next page
 }
 
 // action: "stat"
@@ -114,7 +123,7 @@ interface R2StatDetails {
   key: string;
   size: number;
   etag: string;
-  contentType?: string;
+  contentType: string | undefined;
   lastModified: string;      // ISO 8601
   customMetadata: Record<string, string>;
 }
@@ -156,9 +165,9 @@ interface R2CopyDetails {
 1. Call `env.BUCKET.list({ prefix, delimiter, limit, cursor })`.
 2. Set `content[0].text` to a summary, e.g. `"Listed 42 objects under 'src/'" `.
 3. Set `details: R2ListDetails`:
-   - Map `listed.objects` → `objects` array.
+   - Map `listed.objects` → `objects` array (key, size, lastModified ISO string, etag).
    - Map `listed.delimitedPrefixes` → `prefixes`.
-   - Copy `listed.truncated` and `listed.cursor`.
+   - Copy `listed.truncated`. Set `cursor` to `listed.cursor` when `truncated` is `true`; omit (set to `undefined`) otherwise. The R2 API does not expose `cursor` on the response when `truncated` is `false`.
 
 ### `stat`
 

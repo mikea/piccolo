@@ -276,13 +276,65 @@ No `piccolo-core` redeploy is needed. The extension registry is polled at sessio
 
 ---
 
-## Step 9 — Deploy `ext-instructions`
+## Step 9 — Deploy `ext-r2-tool`
+
+The R2 tool gives the agent read/write access to a dedicated R2 bucket. It supports all seven operations: `read`, `write`, `delete`, `list`, `stat`, `copy`, and `move`. The `read` action supports byte-range reads and `maxBytes` truncation, similar to the fetch tool.
+
+The r2-tool uses a **separate** bucket from the core's `ASSETS` bucket. This keeps agent-writable workspace files isolated from infrastructure assets.
+
+### 9a. Create the workspace R2 bucket
+
+Choose a bucket name (e.g. `piccolo-workspace`) and create it:
+
+```bash
+pnpm wrangler r2 bucket create piccolo-workspace
+```
+
+### 9b. Configure `ext-r2-tool`
+
+```bash
+cp extensions/r2-tool/wrangler.template.jsonc extensions/r2-tool/wrangler.jsonc
+```
+
+Open `extensions/r2-tool/wrangler.jsonc` and replace the placeholder with your bucket name:
+
+```jsonc
+"r2_buckets": [
+  {
+    "binding": "BUCKET",
+    "bucket_name": "piccolo-workspace"    // ← replace <BUCKET_NAME> with the name from Step 9a
+  }
+]
+```
+
+### 9c. Deploy the extension Worker into the dispatch namespace
+
+```bash
+pnpm wrangler deploy --config extensions/r2-tool/wrangler.jsonc \
+  --dispatch-namespace piccolo-extensions
+```
+
+### 9d. Register in the extension registry KV
+
+Add `ext-r2-tool` to the registry alongside any other active extensions. Adjust the array to include everything you have deployed so far:
+
+```bash
+pnpm wrangler kv key put --remote --binding CONFIG \
+  --config packages/core/wrangler.jsonc \
+  extensions:registry '["ext-fetch-tool","ext-r2-tool"]'
+```
+
+No `piccolo-core` redeploy is needed. The extension registry is polled at session start.
+
+---
+
+## Step 10 — Deploy `ext-instructions`
 
 The instructions extension lets the LLM manage persistent instructions that are
 automatically appended to the system prompt, scoped to everyone / user / session.
 It requires its own D1 database.
 
-### 9a. Create the D1 database
+### 10a. Create the D1 database
 
 ```bash
 pnpm wrangler d1 create piccolo-instructions
@@ -290,7 +342,7 @@ pnpm wrangler d1 create piccolo-instructions
 
 Copy the `database_id` from the output.
 
-### 9b. Configure `ext-instructions`
+### 10b. Configure `ext-instructions`
 
 ```bash
 cp extensions/instructions/wrangler.template.jsonc extensions/instructions/wrangler.jsonc
@@ -303,12 +355,12 @@ Open `extensions/instructions/wrangler.jsonc` and paste the database ID:
   {
     "binding": "INSTRUCTIONS_DB",
     "database_name": "piccolo-instructions",
-    "database_id": "PASTE_D1_ID_HERE"    // ← from Step 9a
+    "database_id": "PASTE_D1_ID_HERE"    // ← from Step 10a
   }
 ]
 ```
 
-### 9c. Apply D1 migrations
+### 10c. Apply D1 migrations
 
 ```bash
 pnpm wrangler d1 migrations apply piccolo-instructions \
@@ -317,21 +369,21 @@ pnpm wrangler d1 migrations apply piccolo-instructions \
 
 This creates the `instructions` table. Safe to re-run.
 
-### 9d. Deploy the extension Worker into the dispatch namespace
+### 10d. Deploy the extension Worker into the dispatch namespace
 
 ```bash
 pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc \
   --dispatch-namespace piccolo-extensions
 ```
 
-### 9e. Register in the extension registry KV
+### 10e. Register in the extension registry KV
 
 Add `ext-instructions` to the registry alongside any other active extensions:
 
 ```bash
 pnpm wrangler kv key put --remote --binding CONFIG \
   --config packages/core/wrangler.jsonc \
-  extensions:registry '["ext-fetch-tool","ext-instructions"]'
+  extensions:registry '["ext-fetch-tool","ext-r2-tool","ext-instructions"]'
 ```
 
 No `piccolo-core` redeploy is needed.
@@ -345,7 +397,8 @@ No `piccolo-core` redeploy is needed.
 | D1 database | `piccolo-sessions` | piccolo-core (`SESSIONS_DB`) |
 | D1 database | `piccolo-instructions` | ext-instructions (`INSTRUCTIONS_DB`) |
 | KV namespace | `piccolo-config` | piccolo-core (`CONFIG`) |
-| R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) |
+| R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) — infrastructure / SPA assets |
+| R2 bucket | your bucket name (e.g. `piccolo-workspace`) | ext-r2-tool (`BUCKET`) — agent-writable workspace |
 | Dispatch namespace | `piccolo-extensions` | piccolo-core (`EXTENSIONS`) |
 | AI Gateway | `piccolo` (or your slug) | piccolo-core via `CF_AI_GATEWAY_NAME` |
 
