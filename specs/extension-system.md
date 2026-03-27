@@ -472,3 +472,4 @@ The `ISession` stub gives extensions a controlled API into the core session — 
 |---|---|---|
 | Skills | [skills_extension.md](skills_extension.md) | Load skills from URLs; register `/skill:name` commands |
 | Prompt Templates | [prompt_templates_extension.md](prompt_templates_extension.md) | Load templates from URLs; register `/template:name` commands |
+| Instructions | [instructions_extension.md](instructions_extension.md) | Persistent instructions scoped by everyone/user/session, appended to system prompt |

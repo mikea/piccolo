@@ -82,3 +82,17 @@ The UI holds **no conversation state**. All state lives server-side in `AgentSes
 4. On user send: calls `ISession.prompt(text)`. Events arrive via the existing session subscription. No per-turn observable needed.
 
 This means reloading the page while a turn is streaming reconnects and displays the correct live state without any lost content.
+
+### Reasoning display
+
+`reasoning-delta` events are accumulated into an ephemeral `reasoning: string` field on the streaming `UIEntry` (an extension of the `assistant` `HistoryEntry`). This field is **not** persisted — it exists only for the duration of the streaming turn.
+
+The `ReasoningBlock` component renders the reasoning text:
+
+- **While `isStreaming === true`**: expanded by default, labelled "Thinking…", shows the accumulated text in grey italic.
+- **When `isStreaming` transitions to `false`**: automatically collapses to a toggle labelled "Reasoning". The user can click to expand/collapse.
+- If `reasoning` is empty the block is not rendered at all.
+
+The `reasoning` field is preserved when `text-delta` events arrive (it is not cleared). The `ReasoningBlock`'s collapsed state is driven solely by the `isStreaming` prop transition.
+
+Store mutations for both `reasoning-delta` and `text-delta` use SolidJS granular path-based `setEntries(idx, updater)` calls — not whole-array replacements — so reactive updates fire correctly.

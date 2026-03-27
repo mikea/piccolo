@@ -253,13 +253,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async #initialize(): Promise<void> {
     const t0 = Date.now();
-    console.debug("[session] initialize start");
-
     // 1. Read sessionId and modelId from DO storage
     const sessionId = (await this.ctx.storage.get<string>("sessionId")) ?? "";
     const storedModelId = await this.ctx.storage.get<string>("modelId");
     const storedName = await this.ctx.storage.get<string>("name");
-    console.debug(`[session:${sessionId}] initialize storage read done dt=${Date.now() - t0}ms`);
 
     this.#sessionId = sessionId;
     this.#modelId = storedModelId ?? defaultModelId(this.env.MODELS);
@@ -269,7 +266,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     if (sessionId !== "") {
       const db = this.env.SESSIONS_DB;
       const sessionRow = await getSession(db, sessionId);
-      console.debug(`[session:${sessionId}] initialize getSession done dt=${Date.now() - t0}ms`);
       if (sessionRow !== null) {
         this.#userId = sessionRow.user_id;
         this.#modelId = sessionRow.model_id;
@@ -279,9 +275,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         this.#updatedAt = sessionRow.updated_at;
 
         const rawRows = await getEntries(db, sessionId);
-        console.debug(
-          `[session:${sessionId}] initialize getEntries done entries=${rawRows.length} dt=${Date.now() - t0}ms`,
-        );
         const allEntries = rawRows.map(parseEntry);
         const context = buildSessionContext(allEntries, this.#leafId);
         this.#messages = context.messages;
@@ -294,9 +287,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
           }
         }
         this.#branchEntries = walkToRoot(allEntries, this.#leafId);
-        console.debug(
-          `[session:${sessionId}] initialize rehydrate done messages=${this.#messages.length} dt=${Date.now() - t0}ms`,
-        );
       }
     }
 
@@ -333,11 +323,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.env.EXTENSIONS,
       this.#modelId,
     );
-    console.debug(`[session:${sessionId}] initialize extensionRunner done dt=${Date.now() - t0}ms`);
-
     const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
     const extensionTools = this.#extensionRunner.getTools();
-    this.#assembledSystemPrompt = this.#assembler.assemble(
+    this.#assembledSystemPrompt = await this.#assembler.assemble(
       basePrompt,
       this.#extensionRunner.getSystemPromptAdditions(),
       extensionTools,
@@ -345,7 +333,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
     this.#agent.setTools(extensionTools);
 
-    console.debug(`[session:${sessionId}] initialize done dt=${Date.now() - t0}ms`);
+    void t0; // suppress unused-variable warning
   }
 
   // ─── Test-only helpers ────────────────────────────────────────────────────
@@ -377,12 +365,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── ISession: Metadata ───────────────────────────────────────────────────
 
   async getName(): Promise<string | undefined> {
-    console.debug(`[session:${this.#sessionId}] getName → ${this.#name}`);
     return this.#name;
   }
 
   async setName(name: string): Promise<void> {
-    console.debug(`[session:${this.#sessionId}] setName name=${name}`);
     this.#name = name;
     await this.ctx.storage.put("name", name);
     const entry: SessionInfoEntry = {
@@ -412,11 +398,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     attachments?: Attachment[],
     callback?: IGatewayCallback,
   ): Promise<ITurn> {
-    console.debug(`[session:${this.#sessionId}] prompt text=${text.slice(0, 80)}`);
     if (this.#currentTurn !== null) {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
-    this.#agent.setContext(this);
+    this.#agent.setContext(this.#rpcCtx);
     const ctx = this.#rpcCtx;
 
     // emitInput
@@ -426,11 +411,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     )) as InputResult;
     if (inputResult.action === "handled") {
       const turn = new TurnImpl(callback);
-      console.debug(`[session:${this.#sessionId}] #currentTurn null → turn (handled-input)`);
       this.#currentTurn = turn;
       // No events to emit — clear the turn right away.
       void Promise.resolve().then(() => {
-        console.debug(`[session:${this.#sessionId}] #currentTurn turn → null (handled-input)`);
         this.#currentTurn = null;
       });
       return turn;
@@ -488,7 +471,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#messagesAtTurnStart = this.#agent.state.messages.length;
 
     const turn = new TurnImpl(callback);
-    console.debug(`[session:${this.#sessionId}] #currentTurn null → turn`);
     this.#currentTurn = turn;
 
     // Start the agent turn — events flow via the agent subscription registered in _init.
@@ -621,7 +603,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
-    console.debug(`[session:${this.#sessionId}] subscribe`, observer);
     return this.#observable.subscribe(observer);
   }
 
@@ -630,13 +611,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async getModel(): Promise<string> {
     const stored = this.#modelId;
     const allowed = parseModels(this.env.MODELS);
-    const result = allowed.includes(stored) ? stored : (allowed[0] ?? stored);
-    console.debug(`[session:${this.#sessionId}] getModel stored=${stored} → ${result}`);
-    return result;
+    return allowed.includes(stored) ? stored : (allowed[0] ?? stored);
   }
 
   async setModel(modelId: string): Promise<void> {
-    console.debug(`[session:${this.#sessionId}] setModel modelId=${modelId}`);
     this.#modelId = modelId;
     this.#agent.setModel(createModel(this.env, modelId));
     const entry: ModelChangeEntry = {
@@ -660,15 +638,13 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async listModels(): Promise<string[]> {
-    const models = parseModels(this.env.MODELS);
-    console.debug(`[session:${this.#sessionId}] listModels → ${JSON.stringify(models)}`);
-    return models;
+    return parseModels(this.env.MODELS);
   }
 
   // ─── ISession: Tools ──────────────────────────────────────────────────────
 
   async getActiveTools(): Promise<ToolDescriptor[]> {
-    return this.#agent.state.tools.map((t) => t.descriptor as ToolDescriptor);
+    return Promise.all(this.#agent.state.tools.map((t) => t.getDescriptor()));
   }
 
   async setActiveTools(tools: ITool[]): Promise<void> {
@@ -899,7 +875,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       return; // don't clear #currentTurn or notify yet
     }
 
-    console.debug(`[session:${this.#sessionId}] #currentTurn turn → null`);
     this.#currentTurn = null;
     this.#notifyListeners({ type: "turn_flushed" });
   }

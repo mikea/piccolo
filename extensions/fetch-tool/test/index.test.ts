@@ -1,6 +1,5 @@
-import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import FetchTool from "../src/index";
+import { FetchTool } from "../src/extension.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -18,10 +17,9 @@ function mockResponse(opts: {
   return new Response(bodyInit, init);
 }
 
-/** Construct the tool instance and a no-op ctx. */
+/** Construct the inner tool instance directly (bypassing the WorkerEntrypoint). */
 function makeTool(): FetchTool {
-  // WorkerEntrypoint constructor accepts (ctx, env); pass empty stubs.
-  return new FetchTool({} as ExecutionContext, env);
+  return new FetchTool();
 }
 
 // Minimal ISession stub — execute() only needs to accept it, not call anything.
@@ -34,9 +32,7 @@ afterEach(() => {
 describe("extension worker interface", () => {
   it("getTools returns the fetch tool descriptor", async () => {
     const tool = makeTool();
-    const tools = await tool.getTools(ctx);
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.descriptor.name).toBe("fetch");
+    expect((await tool.getDescriptor()).name).toBe("fetch");
   });
 
   it("returned tool executes successfully", async () => {
@@ -53,9 +49,7 @@ describe("extension worker interface", () => {
     );
 
     const tool = makeTool();
-    const [registered] = await tool.getTools(ctx);
-    if (!registered) throw new Error("Expected fetch tool registration");
-    const result = await registered.execute(
+    const result = await tool.execute(
       "id-dispatch",
       { action: "get", url: "https://example.com" },
       ctx,

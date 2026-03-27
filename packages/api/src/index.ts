@@ -126,11 +126,26 @@ export interface ToolResult {
 }
 
 /**
+ * IAbortSignal — JSRPC-serializable cancellation token.
+ *
+ * The platform AbortSignal cannot cross JSRPC boundaries. This interface is
+ * an RpcTarget capability: piccolo-core creates an implementation backed by the
+ * real AbortSignal and passes it to tool execute() calls over JSRPC.
+ * Tool implementations call isAborted() to poll, or register a callback via
+ * onAbort() and cancel their own AbortController accordingly.
+ * Spec ref: specs/api.md §Shared Types §IAbortSignal
+ */
+export interface IAbortSignal {
+  /** Returns true if cancellation has been requested. */
+  isAborted(): Promise<boolean>;
+}
+
+/**
  * ITool — the full interface every tool Worker must implement.
  * Spec ref: specs/api.md §Shared Types §ITool
  */
 export interface ITool {
-  readonly descriptor: ToolDescriptor;
+  getDescriptor(): Promise<ToolDescriptor>;
 
   /**
    * Called by the core when the LLM invokes this tool.
@@ -140,7 +155,7 @@ export interface ITool {
     toolCallId: string,
     params: unknown,
     ctx: ISession,
-    signal?: AbortSignal,
+    signal?: IAbortSignal,
   ): Promise<ToolResult>;
 
   /** Optional. Called by a gateway before rendering a tool call or result. */

@@ -9,9 +9,22 @@
  * Spec ref: specs/core.md §Agent Loop §toAiSdkTools
  */
 
-import type { ISession, ITool } from "@piccolo/api";
+import { RpcTarget } from "cloudflare:workers";
+import type { IAbortSignal, ISession, ITool } from "@piccolo/api";
 import type { ToolSet } from "ai";
 import { jsonSchema, tool } from "ai";
+
+/** RpcTarget wrapping a platform AbortSignal for cross-JSRPC cancellation. */
+class AbortSignalTarget extends RpcTarget implements IAbortSignal {
+  readonly #signal: AbortSignal;
+  constructor(signal: AbortSignal) {
+    super();
+    this.#signal = signal;
+  }
+  isAborted(): Promise<boolean> {
+    return Promise.resolve(this.#signal.aborted);
+  }
+}
 
 /**
  * Convert an array of ITool into the AI SDK ToolSet record.
@@ -23,17 +36,26 @@ import { jsonSchema, tool } from "ai";
  * Tool execution errors are caught by the AI SDK and delivered as tool-error
  * stream parts; the agent translates these to tool-result events with isError: true.
  */
-export function toAiSdkTools(tools: ITool[], ctx: ISession): ToolSet {
-  return Object.fromEntries(
-    tools.map((t) => [
-      t.descriptor.name,
-      tool({
-        description: t.descriptor.description,
-        inputSchema: jsonSchema(t.descriptor.inputSchema),
-        execute: async (input, { toolCallId, abortSignal }) => {
-          return t.execute(toolCallId, input, ctx, abortSignal);
-        },
-      }),
-    ]),
+export async function toAiSdkTools(tools: ITool[], ctx: ISession): Promise<ToolSet> {
+  const entries = await Promise.all(
+    tools.map(async (t) => {
+      const desc = await t.getDescriptor();
+      return [
+        desc.name,
+        tool({
+          description: desc.description,
+          inputSchema: jsonSchema(desc.inputSchema),
+          execute: async (input, { toolCallId, abortSignal }) => {
+            return t.execute(
+              toolCallId,
+              input,
+              ctx,
+              abortSignal ? new AbortSignalTarget(abortSignal) : undefined,
+            );
+          },
+        }),
+      ] as const;
+    }),
   );
+  return Object.fromEntries(entries);
 }

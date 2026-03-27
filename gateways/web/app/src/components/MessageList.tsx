@@ -5,12 +5,12 @@
  * No client-side Message type — the server is the source of truth.
  */
 
-import type { HistoryEntry } from "@piccolo/api";
 import { type Component, createEffect, For, onMount } from "solid-js";
+import type { UIEntry } from "./ChatView.tsx";
 import { MessageItem } from "./MessageItem.tsx";
 
 interface Props {
-  entries: HistoryEntry[];
+  entries: UIEntry[];
 }
 
 export const MessageList: Component<Props> = (props) => {

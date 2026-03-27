@@ -159,6 +159,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | [extension-system.md](extension-system.md) | Extension use-cases, 12 examples, dispatch, provided extensions |
 | [skills_extension.md](skills_extension.md) | Skills extension: load from URLs, `/skill:name` commands, Agent Skills standard |
 | [prompt_templates_extension.md](prompt_templates_extension.md) | Prompt templates extension: load from URLs, `/template:name` with argument substitution |
+| [instructions_extension.md](instructions_extension.md) | Instructions extension: persistent per-scope instructions appended to the system prompt |
 | [session-format.md](session-format.md) | Redirect → core.md (session schema now in core.md) |
 | [data-flows.md](data-flows.md) | External flows: gateway→core→LLM→response; internal flows redirect to core.md |
 | [infrastructure.md](infrastructure.md) | Deployment topology, CI/CD, gateway bindings, extension namespace |

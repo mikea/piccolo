@@ -27,6 +27,15 @@ import { ChatInput } from "./ChatInput.tsx";
 import { Header } from "./Header.tsx";
 import { MessageList } from "./MessageList.tsx";
 
+/**
+ * Local extension of the assistant HistoryEntry that carries ephemeral
+ * reasoning text while streaming. `reasoning` is cleared on the first
+ * text-delta so it disappears when the real response starts.
+ */
+export type UIEntry =
+  | HistoryEntry
+  | (Extract<HistoryEntry, { type: "assistant" }> & { reasoning: string });
+
 interface Props {
   session: ISession;
 }
@@ -36,7 +45,7 @@ export const ChatView: Component<Props> = (props) => {
   // Capture once — never read props.session in reactive context.
   const session = props.session;
 
-  const [entries, setEntries] = createStore<HistoryEntry[]>([]);
+  const [entries, setEntries] = createStore<UIEntry[]>([]);
   const [isStreaming, setIsStreaming] = createSignal(false);
   const [contextUsage, setContextUsage] = createSignal<ContextUsage | undefined>(undefined);
 
@@ -100,20 +109,32 @@ export const ChatView: Component<Props> = (props) => {
         // Add a new streaming assistant entry.
         setEntries((es) => [
           ...es,
-          { type: "assistant", id: "streaming", content: "", isStreaming: true } as HistoryEntry,
+          { type: "assistant", id: "streaming", content: "", isStreaming: true, reasoning: "" },
         ]);
         break;
-      case "text-delta":
-        // Append text to the last streaming assistant entry.
-        setEntries((es) => {
-          const idx = lastStreamingAssistantIdx(es);
-          if (idx === -1) return es;
-          return es.map((e, i) => {
-            if (i !== idx || e.type !== "assistant") return e;
+      case "reasoning-delta": {
+        // Accumulate reasoning text while streaming using granular store mutation.
+        const ridx = lastStreamingAssistantIdx(entries);
+        if (ridx !== -1) {
+          setEntries(ridx, (e) => {
+            const r = "reasoning" in e ? (e as { reasoning: string }).reasoning : "";
+            return { ...e, reasoning: r + event.delta };
+          });
+        }
+        break;
+      }
+      case "text-delta": {
+        // Append text using granular store mutation. Reasoning is preserved —
+        // the ReasoningBlock component collapses it when isStreaming flips to false.
+        const tidx = lastStreamingAssistantIdx(entries);
+        if (tidx !== -1) {
+          setEntries(tidx, (e) => {
+            if (e.type !== "assistant") return e;
             return { ...e, content: e.content + event.delta };
           });
-        });
+        }
         break;
+      }
       case "tool-call":
         setEntries((es) => [
           ...es,
@@ -153,7 +174,7 @@ export const ChatView: Component<Props> = (props) => {
     }
   }
 
-  function lastStreamingAssistantIdx(es: readonly HistoryEntry[]): number {
+  function lastStreamingAssistantIdx(es: readonly UIEntry[]): number {
     for (let i = es.length - 1; i >= 0; i--) {
       if (es[i]?.type === "assistant" && (es[i] as { isStreaming: boolean }).isStreaming) return i;
     }

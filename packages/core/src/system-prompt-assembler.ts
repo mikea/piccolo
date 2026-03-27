@@ -27,12 +27,12 @@ export class SystemPromptAssembler {
    *                   → tool-guidelines → footer
    * Priority within each section: lower number = earlier. Default: 100.
    */
-  assemble(
+  async assemble(
     base: string,
     additions: SystemPromptAddition[],
     activeTools: ITool[],
     override?: string,
-  ): string {
+  ): Promise<string> {
     if (override) return override;
 
     // 1. Group additions by section
@@ -51,21 +51,24 @@ export class SystemPromptAssembler {
       bucket.sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100));
     }
 
-    // 3. "Available Tools" section — one line per tool that declares a promptSnippet
-    const toolsWithSnippets = activeTools.filter((tool) => tool.descriptor.promptSnippet);
+    // 3. Resolve all descriptors once (each is an RPC call over JSRPC)
+    const descriptors = await Promise.all(activeTools.map((t) => t.getDescriptor()));
+
+    // 4. "Available Tools" section — one line per tool that declares a promptSnippet
+    const toolsWithSnippets = descriptors.filter((d) => d.promptSnippet);
     const availableToolsSection =
       toolsWithSnippets.length > 0
-        ? `## Available Tools\n\n${toolsWithSnippets.map((tool) => `- **${tool.descriptor.name}**: ${tool.descriptor.promptSnippet}`).join("\n")}`
+        ? `## Available Tools\n\n${toolsWithSnippets.map((d) => `- **${d.name}**: ${d.promptSnippet}`).join("\n")}`
         : "";
 
-    // 4. "Tool Guidelines" section — bullet list from all active tools' promptGuidelines
-    const guidelineLines = activeTools
-      .flatMap((tool) => tool.descriptor.promptGuidelines ?? [])
+    // 5. "Tool Guidelines" section — bullet list from all active tools' promptGuidelines
+    const guidelineLines = descriptors
+      .flatMap((d) => d.promptGuidelines ?? [])
       .map((g) => `- ${g}`);
     const toolGuidelinesSection =
       guidelineLines.length > 0 ? `## Tool Guidelines\n\n${guidelineLines.join("\n")}` : "";
 
-    // 5. Assemble in spec order:
+    // 6. Assemble in spec order:
     //    base → context → skills → available-tools → guidelines → tool-guidelines → footer
     const parts = [
       base,

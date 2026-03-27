@@ -33,42 +33,28 @@ class UserImpl extends RpcTarget implements IUser {
 
   async newSession(options?: NewSessionOptions): Promise<ISession> {
     const sessionId = crypto.randomUUID();
-    console.debug(`[core] newSession userId=${this.#userId} options=${JSON.stringify(options)}`);
     const stub = this.#getDoStub(sessionId);
-    // Initialize the DO; ignore the returned ISession since the stub itself is the ISession.
     await stub._init(sessionId, this.#userId, options);
-    console.debug(`[core] newSession done sessionId=${sessionId}`);
     return asRpcStub(stub).getSession();
   }
 
   async getSession(sessionId: string): Promise<ISession> {
-    console.debug(`[core] getSession sessionId=${sessionId} userId=${this.#userId}`);
     const row = await dbGetSession(this.#env.SESSIONS_DB, sessionId);
-    // row is null for sessions that haven't been prompted yet (lazy D1 commit).
-    // Only enforce ownership when a row exists.
     if (row !== null && row.user_id !== this.#userId) {
-      console.debug("[core] user id mismatch", this.#userId, JSON.stringify(row));
       throw new Error("Forbidden");
     }
     const stub = this.#getDoStub(sessionId);
-    // Ensure the DO is initialized — _init is idempotent so safe to call always.
-    // This handles the case where the DO is cold and was never _init'd
-    // (e.g. loading a session URL directly before the first prompt).
     await stub._init(sessionId, this.#userId);
     return asRpcStub(stub).getSession();
   }
 
   async listSessions(): Promise<ISession[]> {
-    console.debug(`[core] listSessions userId=${this.#userId}`);
     const infos = await dbListSessions(this.#userId, this.#env.SESSIONS_DB);
-    console.debug(`[core] listSessions found ${infos.length} sessions`);
     return Promise.all(infos.map(async (info) => asRpcStub(this.#getDoStub(info.id)).getSession()));
   }
 
   async listModels(): Promise<string[]> {
-    const models = parseModels(this.#env.MODELS);
-    console.debug("[core] listModels →", models);
-    return models;
+    return parseModels(this.#env.MODELS);
   }
 
   #getDoStub(sessionId: string): DurableObjectStub<AgentSessionDO> {
@@ -90,7 +76,6 @@ export class PiccoloCore extends WorkerEntrypoint<Env> implements IPiccoloCore {
    * Spec ref: specs/api.md §IPiccoloCore.getUser
    */
   getUser(userId: string): IUser {
-    console.debug(`[core] getUser userId=${userId}`);
     return new UserImpl(userId, this.env);
   }
 }

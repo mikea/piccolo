@@ -214,33 +214,13 @@ export class Agent extends ObservableImpl<AgentEvent> {
   private async _runStream(signal: AbortSignal): Promise<void> {
     this._error = undefined;
 
-    // ── Debug logging ──────────────────────────────────────────────────────────
-    console.debug(
-      "[agent] _runStream start — model=%s systemPrompt=%d chars messages=%d",
-      typeof this._model === "object" && this._model !== null && "modelId" in this._model
-        ? String((this._model as { modelId: string }).modelId)
-        : String(this._model),
-      this._systemPrompt.length,
-      this._messages.length,
-    );
-    for (let i = 0; i < this._messages.length; i++) {
-      const msg = this._messages[i];
-      if (msg === undefined) continue;
-      const contentPreview =
-        typeof msg.content === "string"
-          ? msg.content.slice(0, 120)
-          : JSON.stringify(msg.content).slice(0, 120);
-      console.debug("[agent]   msg[%d] role=%s content=%s", i, msg.role, contentPreview);
-    }
-    // ──────────────────────────────────────────────────────────────────────────
-
     this.emit({ type: "start" });
 
     const ctx = this._ctx;
     if (ctx === null) {
       throw new Error("Agent context not set. Call setContext() before prompt().");
     }
-    const toolSet = toAiSdkTools(this._tools, ctx);
+    const toolSet = await toAiSdkTools(this._tools, ctx);
     let aborted = false;
     let finalUsage: LanguageModelUsage = {
       inputTokens: 0,
@@ -304,7 +284,6 @@ export class Agent extends ObservableImpl<AgentEvent> {
         },
 
         onStepFinish: ({ stepNumber, finishReason, usage, content }) => {
-          console.debug("[agent] onStepFinish step=%d reason=%s", stepNumber, finishReason);
           for (const part of content) {
             if (part.type === "tool-error") {
               const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
@@ -326,42 +305,31 @@ export class Agent extends ObservableImpl<AgentEvent> {
         },
 
         onFinish: ({ totalUsage, response }) => {
-          console.debug("[agent] onFinish messages=%d", response.messages.length);
           finalUsage = totalUsage;
           this._messages.push(...response.messages);
         },
 
         onError: ({ error }) => {
           const message = error instanceof Error ? error.message : String(error);
-          console.debug("[agent] onError message=%s", message);
           this._error = message;
           this._currentTurn = null;
           this.emit({ type: "error", message });
         },
 
         onAbort: () => {
-          console.debug("[agent] onAbort");
           aborted = true;
         },
       });
 
-      console.debug("[agent] consumeStream starting");
       await result.consumeStream();
-      console.debug("[agent] consumeStream done");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      console.debug("[agent] catch: %s", message);
       if (!aborted) {
         this._error = message;
         this._currentTurn = null;
         this.emit({ type: "error", message });
       }
     } finally {
-      console.debug(
-        "[agent] finally aborted=%s currentTurn=%s",
-        aborted,
-        this._currentTurn !== null,
-      );
       this._currentTurn = null;
       if (!aborted) {
         this.emit({ type: "finish", totalUsage: finalUsage });

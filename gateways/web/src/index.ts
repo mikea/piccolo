@@ -50,7 +50,7 @@ export default {
       if (!userId) {
         return new Response("Unauthorized", { status: 401 });
       }
-      console.debug(`[gateway] /rpc userId=${userId}`);
+
       const core = env.CORE as unknown as IPiccoloCore;
       return newWorkersRpcResponse(request, new WebGatewayImpl(core, userId));
     }

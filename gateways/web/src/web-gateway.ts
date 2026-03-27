@@ -22,7 +22,6 @@ export class WebGatewayImpl extends RpcTarget implements IWebGateway {
   }
 
   getUser(): IUser {
-    console.debug("[gateway] getUser userId=%s", this.#userId);
     return this.#core.getUser(this.#userId);
   }
 }

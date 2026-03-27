@@ -75,7 +75,7 @@ type JsonSchema7 = Record<string, unknown>;
 
 // ToolDescriptor — pure data, no logic.
 // Describes the tool to the LLM and to the piccolo core.
-// Placed as a static property on every ITool Worker class.
+// Returned by ITool.getDescriptor(). Typically a module-level constant.
 // See tools.md for full authoring guidance.
 interface ToolDescriptor {
   // Identifier the LLM uses to call this tool. Snake_case, unique within a session.
@@ -101,11 +101,27 @@ interface ToolDescriptor {
 }
 
 // ITool — the full interface every tool Worker must implement.
-// No base IAgentTool type — all fields live directly here.
-// Tool Workers extend WorkerEntrypoint and implement ITool.
+// No base IAgentTool type — all methods live directly here.
+// Tool Workers extend RpcTarget (not WorkerEntrypoint — WorkerEntrypoint cannot
+// be returned as a capability over JSRPC) and implement ITool.
+// The WorkerEntrypoint extension class calls getTools() and returns ITool instances.
 // See tools.md for the complete authoring guide.
+//
+// All members are methods — JSRPC does not support property access on RpcTarget
+// subclasses; properties would appear as inaccessible async calls at the call site.
+// IAbortSignal — JSRPC-serializable cancellation token.
+// The platform AbortSignal is not transferable across JSRPC boundaries.
+// piccolo-core wraps the real AbortSignal in an RpcTarget implementing this
+// interface and passes it to tool execute() calls. Tool implementations poll
+// isAborted() and drive their own AbortController accordingly.
+interface IAbortSignal {
+  isAborted(): Promise<boolean>;
+}
+
 interface ITool {
-  readonly descriptor: ToolDescriptor;
+  // Returns the descriptor for this tool. Called once by ExtensionRunner at
+  // session start; the result is cached in SafeToolWrapper and never re-fetched.
+  getDescriptor(): Promise<ToolDescriptor>;
 
   // Called by the core when the LLM invokes this tool.
   // Throw to signal failure — the core sets isError: true automatically.
@@ -113,7 +129,7 @@ interface ITool {
     toolCallId: string,
     params: unknown,               // validated against descriptor.inputSchema before this is called
     ctx: ISession,
-    signal?: AbortSignal,
+    signal?: IAbortSignal,         // JSRPC-safe cancellation; convert to AbortController locally
   ): Promise<ToolResult>;
 
   // Optional. Called by a gateway before rendering a tool call or result.
@@ -627,7 +643,9 @@ interface ICommand {
 
 ### Tool Contract (`ITool` and `ToolDescriptor`)
 
-Every tool Worker implements `ITool` (defined in Shared Types above). `ToolDescriptor` is the pure-data, logic-free description portion of `ITool` — it is what the core reads to register the tool with the agent and build the LLM system prompt. The `execute` method is the runtime logic.
+Every tool Worker implements `ITool` (defined in Shared Types above). `ToolDescriptor` is the pure-data, logic-free description of the tool — returned by `getDescriptor()` and used by the core to register the tool with the agent and build the LLM system prompt. The `execute` method is the runtime logic.
+
+**JSRPC property rule:** All members of `ITool` (and every other JSRPC interface) must be methods, not properties. Properties on `RpcTarget` subclasses are not accessible over JSRPC — the runtime raises `"does not implement the method"`. Use `getDescriptor()` not `descriptor`.
 
 Full authoring guide in [tools.md](tools.md). Provided tool specs: [r2_tool.md](r2_tool.md), [d1_tool.md](d1_tool.md). Gateway UI integration: [web_gateway.md](web_gateway.md), [telegram_gateway.md](telegram_gateway.md).
 

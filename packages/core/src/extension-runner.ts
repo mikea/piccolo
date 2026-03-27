@@ -22,15 +22,96 @@ import type {
   BeforeStartResult,
   ContextResult,
   ExtensionEvent,
+  GatewayId,
+  IAbortSignal,
   ICommand,
   IExtensionWorker,
   InputResult,
   ISession,
+  ITextUI,
   ITool,
   SystemPromptAddition,
   ToolCallResult,
+  ToolDescriptor,
   ToolResultOverride,
 } from "@piccolo/api";
+
+// ─── SafeToolWrapper ──────────────────────────────────────────────────────────
+
+/**
+ * Wraps a remote ITool stub (received over JSRPC from an extension Worker) so
+ * that any RPC failure in getDescriptor(), execute(), or getGatewayUI() is
+ * caught here and never propagates to the browser.
+ *
+ * The descriptor is resolved once at construction time (callers must use the
+ * static factory). Tools whose descriptor cannot be fetched are dropped by
+ * ExtensionRunner.initialize() before they are ever stored.
+ */
+class SafeToolWrapper implements ITool {
+  readonly #remote: ITool;
+  readonly #extensionName: string;
+  readonly #cachedDescriptor: ToolDescriptor;
+
+  private constructor(remote: ITool, extensionName: string, cachedDescriptor: ToolDescriptor) {
+    this.#remote = remote;
+    this.#extensionName = extensionName;
+    this.#cachedDescriptor = cachedDescriptor;
+  }
+
+  /**
+   * Resolve the descriptor once. Returns null if the RPC call fails so the
+   * caller can skip this tool rather than storing a broken wrapper.
+   */
+  static async create(
+    remote: ITool,
+    extensionName: string,
+    safeCall: <T>(
+      extensionName: string,
+      operation: string,
+      fn: () => Promise<T | undefined> | undefined,
+    ) => Promise<T | undefined>,
+  ): Promise<SafeToolWrapper | null> {
+    const desc = await safeCall(extensionName, "getDescriptor", () => remote.getDescriptor());
+    if (desc === undefined) return null;
+    return new SafeToolWrapper(remote, extensionName, desc);
+  }
+
+  getDescriptor(): Promise<ToolDescriptor> {
+    return Promise.resolve(this.#cachedDescriptor);
+  }
+
+  async execute(toolCallId: string, params: unknown, ctx: ISession, signal?: IAbortSignal) {
+    try {
+      return await this.#remote.execute(toolCallId, params, ctx, signal);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#extensionName} tool=${this.#cachedDescriptor.name} execute failed error=${formatError(error)}`,
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Tool "${this.#cachedDescriptor.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  async getGatewayUI(gatewayId: GatewayId): Promise<ITextUI | undefined> {
+    if (!this.#remote.getGatewayUI) return undefined;
+    try {
+      return await this.#remote.getGatewayUI(gatewayId);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#extensionName} tool=${this.#cachedDescriptor.name} getGatewayUI failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
+}
+
 // ─── ExtensionEventResult ─────────────────────────────────────────────────────
 
 /**
@@ -128,8 +209,6 @@ export class ExtensionRunner implements IExtensionRunner {
     extensions: DispatchNamespace,
     _modelId?: string,
   ): Promise<void> {
-    console.debug("[extensions] initialize start");
-
     let names: string[] = [];
     try {
       const raw = await kv.get("extensions:registry");
@@ -144,12 +223,7 @@ export class ExtensionRunner implements IExtensionRunner {
       names = [];
     }
 
-    if (names.length === 0) {
-      console.debug("[extensions] initialize skipped (empty registry)");
-      return;
-    }
-
-    console.debug(`[extensions] registry size=${names.length} names=${JSON.stringify(names)}`);
+    if (names.length === 0) return;
 
     const results = await Promise.all(
       names.map(async (name) => {
@@ -164,16 +238,24 @@ export class ExtensionRunner implements IExtensionRunner {
         }
 
         // Pass ctx to remote workers — they receive it as an RPC capability.
-        const [tools, commands, additions] = await Promise.all([
-          this.#safeCall(name, "getTools", () => {
-            console.debug("[extensions] getTools", worker, ctx);
-            return worker.getTools?.(ctx);
-          }),
+        const [rawTools, commands, additions] = await Promise.all([
+          this.#safeCall(name, "getTools", () => worker.getTools?.(ctx)),
           this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
           this.#safeCall(name, "getSystemPromptAdditions", () =>
             worker.getSystemPromptAdditions?.(ctx),
           ),
         ]);
+
+        // Wrap each remote ITool stub so that RPC errors in getDescriptor/execute
+        // never propagate to the browser. Tools whose descriptor fails to resolve
+        // are dropped here rather than stored in a broken state.
+        const tools = rawTools
+          ? (
+              await Promise.all(
+                rawTools.map((t) => SafeToolWrapper.create(t, name, this.#safeCall.bind(this))),
+              )
+            ).filter((w): w is SafeToolWrapper => w !== null)
+          : undefined;
 
         return { name, worker, tools, commands, additions };
       }),
@@ -186,9 +268,6 @@ export class ExtensionRunner implements IExtensionRunner {
       if (tools) this.#tools.push(...tools);
       if (commands) this.#commands.push(...commands);
       if (additions) this.#systemPromptAdditions.push(...additions);
-      console.debug(
-        `[extensions] loaded extension=${name} tools=${tools?.length ?? 0} commands=${commands?.length ?? 0} additions=${additions?.length ?? 0}`,
-      );
     }
 
     // Call init(ctx) on each extension so they can subscribe to the session observable.
@@ -198,9 +277,7 @@ export class ExtensionRunner implements IExtensionRunner {
       ),
     );
 
-    console.debug(
-      `[extensions] initialize done loaded=${this.#extensions.length} tools=${this.#tools.length} commands=${this.#commands.length} additions=${this.#systemPromptAdditions.length}`,
-    );
+    console.log(`[extensions] loaded=${this.#extensions.length} tools=${this.#tools.length}`);
   }
 
   async #safeCall<T>(
