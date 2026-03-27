@@ -3,13 +3,15 @@
   "name": "ext-r2-tool",
   "main": "src/index.ts",
   "compatibility_date": "2026-03-24",
+  "compatibility_flags": [],
 
   // ── R2 ─────────────────────────────────────────────────────────────────
   "r2_buckets": [
     {
       // The R2 bucket this tool exposes to the agent.
+      // Change "piccolo-workspace" to match the bucket you created in the deployment step.
       "binding": "BUCKET",
-      "bucket_name": "piccolo-assets"
+      "bucket_name": "piccolo-workspace"
     }
   ]
 }

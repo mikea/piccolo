@@ -10,11 +10,16 @@
     "test:watch": "vitest",
     "build": "wrangler deploy --dry-run",
     "deploy": "wrangler deploy",
-    "types": "wrangler types",
+    "types": "wrangler types src/worker-configuration.d.ts",
     "preview": "wrangler dev"
+  },
+  "dependencies": {
+    "@piccolo/api": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.4",
+    "@piccolo/core": "workspace:*",
     "@vitest/coverage-istanbul": "^4.1.1",
     "vitest": "*",
     "wrangler": "^4.77.0"

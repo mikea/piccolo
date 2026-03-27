@@ -1,4 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "test/**/*"]
+  "compilerOptions": {
+    "types": ["./src/worker-configuration.d.ts"],
+    // Extensions depend on @piccolo/api, not @piccolo/core.
+    "paths": {
+      "@piccolo/api": ["../../packages/api/src/index.ts"]
+    },
+    // skipLibCheck is required: test files use `cloudflare:test` ambient module which
+    // is not a true ES module and triggers verbatimModuleSyntax violations.
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
 }
