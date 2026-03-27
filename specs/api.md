@@ -321,8 +321,6 @@ interface ISession extends IObservable<AgentEvent> {
 
   // Returns descriptors of all currently active tools.
   getActiveTools(): Promise<ToolDescriptor[]>;
-  // Accepts ITool RpcTargets directly over JSRPC.
-  setActiveTools(tools: ITool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────
 

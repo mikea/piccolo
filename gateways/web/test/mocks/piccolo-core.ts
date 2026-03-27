@@ -68,7 +68,6 @@ export function createMockSession(
     setModel: vi.fn().mockResolvedValue(undefined),
     listModels: vi.fn().mockResolvedValue([DEFAULT_MODEL]),
     getActiveTools: vi.fn().mockResolvedValue([]),
-    setActiveTools: vi.fn().mockResolvedValue(undefined),
     appendCustomMessage: vi.fn().mockResolvedValue(undefined),
     appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     getEntries: vi.fn().mockResolvedValue([]),

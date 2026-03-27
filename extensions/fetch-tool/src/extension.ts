@@ -87,9 +87,9 @@ const fetchParamsSchema = z.object({
   maxBytes: z
     .int()
     .min(1)
-    .default(1_048_576)
+    .default(1024 * 10)
     .describe(
-      "Maximum response body size in bytes to include in the result. Default: 1 MiB. Larger responses are truncated.",
+      "Maximum response body size in bytes to include in the result. Default: 10K. Larger responses are truncated, se byteStart/byteEnd.",
     ),
 });
 
@@ -117,7 +117,7 @@ Parameters:
                If provided, sends a Range: bytes=byteStart-byteEnd request header.
   byteEnd?   : Last byte of the range to fetch, inclusive (0-based). "get" only.
                If byteStart is set and byteEnd is omitted, fetches from byteStart to end of file.
-  maxBytes?  : Maximum response body size to return in bytes (default: 1 048 576 = 1 MiB).
+  maxBytes?  : Maximum response body size to return in bytes (default: 10K).
                Applies after range slicing. Surplus is truncated with a notice appended.
 
 Response body is returned as UTF-8 text. Binary responses are base64-encoded and noted as such.

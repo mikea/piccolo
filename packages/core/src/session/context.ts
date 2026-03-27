@@ -11,7 +11,7 @@
  * Spec ref: specs/core.md §Context Reconstruction
  */
 
-import type { ModelMessage } from "ai";
+import { type ModelMessage, modelMessageSchema } from "ai";
 import type {
   AnyEntry,
   BranchSummaryEntry,
@@ -20,6 +20,23 @@ import type {
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
+
+// ─── Message schema validation ────────────────────────────────────────────────
+
+/**
+ * Check a ModelMessage against the AI SDK schema, logging an error if invalid.
+ * The message is never dropped — this is diagnostic only.
+ */
+function checkMessage(msg: ModelMessage, entryId: string): void {
+  const result = modelMessageSchema.safeParse(msg);
+  if (!result.success) {
+    console.error(
+      `[context] invalid ModelMessage in entry ${entryId}:`,
+      JSON.stringify(msg),
+      result.error.issues,
+    );
+  }
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -159,13 +176,19 @@ export function buildSessionContext(
       const entry = path[i];
       if (entry === undefined || entry.type === "compaction") continue;
       const msg = entryToMessage(entry);
-      if (msg !== undefined) messages.push(msg);
+      if (msg !== undefined) {
+        checkMessage(msg, entry.id);
+        messages.push(msg);
+      }
     }
   } else {
     // No compaction — emit all entries on the path.
     for (const entry of path) {
       const msg = entryToMessage(entry);
-      if (msg !== undefined) messages.push(msg);
+      if (msg !== undefined) {
+        checkMessage(msg, entry.id);
+        messages.push(msg);
+      }
     }
   }
 

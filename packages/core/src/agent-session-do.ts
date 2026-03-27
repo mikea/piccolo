@@ -133,9 +133,6 @@ export class SessionTarget extends RpcTarget implements ISession {
   getActiveTools(): Promise<ToolDescriptor[]> {
     return this.#do.getActiveTools();
   }
-  setActiveTools(tools: ITool[]): Promise<void> {
-    return this.#do.setActiveTools(tools);
-  }
   appendCustomMessage(customType: string, content: string, display: boolean): Promise<void> {
     return this.#do.appendCustomMessage(customType, content, display);
   }
@@ -215,6 +212,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #extensionRunner!: ExtensionRunner;
   #assembler!: SystemPromptAssembler;
   #assembledSystemPrompt = "";
+  #tools: ITool[] | undefined;
   // The JSRPC-serialisable RpcTarget for this DO. Created once and reused for
   // every emit() call so extension workers always receive the same capability.
   // DurableObject instances cannot be used as `this` in JSRPC calls — a proper
@@ -252,7 +250,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async #initialize(): Promise<void> {
-    const t0 = Date.now();
     // 1. Read sessionId and modelId from DO storage
     const sessionId = (await this.ctx.storage.get<string>("sessionId")) ?? "";
     const storedModelId = await this.ctx.storage.get<string>("modelId");
@@ -313,24 +310,14 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     });
 
     // 4. Set up extension runner and system prompt infrastructure.
-    // Extensions are initialised here (inside blockConcurrencyWhile) since
-    // getTools/getCommands/getSystemPromptAdditions do not call back into ctx.
-    // The system prompt assembly is deferred to #ensureSystemPrompt() (called
-    // from prompt()) so that any reverse RPC into ctx from extensions happens
-    // outside the concurrency block.
+    // initialize() only reads the registry and builds worker stubs — it does
+    // NOT call getTools/getCommands/getSystemPromptAdditions, which would make
+    // reverse RPC calls back into this DO and deadlock inside blockConcurrencyWhile.
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
     this.#rpcCtx = new SessionTarget(this);
 
-    await this.#extensionRunner.initialize(
-      this.#rpcCtx,
-      this.env.CONFIG,
-      this.env.EXTENSIONS,
-      this.#modelId,
-    );
-    this.#agent.setTools(this.#extensionRunner.getTools());
-
-    void t0; // suppress unused-variable warning
+    await this.#extensionRunner.initialize(this.env.CONFIG, this.env.EXTENSIONS, this.#rpcCtx);
   }
 
   // ─── Test-only helpers ────────────────────────────────────────────────────
@@ -647,11 +634,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── ISession: Tools ──────────────────────────────────────────────────────
 
   async getActiveTools(): Promise<ToolDescriptor[]> {
-    return Promise.all(this.#agent.state.tools.map((t) => t.getDescriptor()));
-  }
-
-  async setActiveTools(tools: ITool[]): Promise<void> {
-    this.#agent.setTools(tools);
+    const tools = await this.#ensureTools();
+    return Promise.all(tools.map((t) => t.getDescriptor()));
   }
 
   // ─── ISession: Custom entries ─────────────────────────────────────────────
@@ -714,17 +698,23 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
 
+  async #ensureTools(): Promise<ITool[]> {
+    if (this.#tools) return this.#tools;
+    this.#tools = await this.#extensionRunner.getTools(this.#rpcCtx);
+    this.#agent.setTools(this.#tools);
+    return this.#tools;
+  }
+
   async #ensureSystemPrompt(): Promise<void> {
-    if (!this.#assembledSystemPrompt) {
-      const basePrompt = buildBasePrompt(this.env.AGENT_NAME);
-      const extensionTools = this.#extensionRunner.getTools();
-      this.#assembledSystemPrompt = await this.#assembler.assemble(
-        basePrompt,
-        this.#extensionRunner.getSystemPromptAdditions(),
-        extensionTools,
-      );
-      this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
-    }
+    if (this.#assembledSystemPrompt) return;
+    const tools = await this.#ensureTools();
+    const additions = await this.#extensionRunner.getSystemPromptAdditions(this.#rpcCtx);
+    this.#assembledSystemPrompt = await this.#assembler.assemble(
+      buildBasePrompt(this.env.AGENT_NAME),
+      additions,
+      tools,
+    );
+    this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
   }
 
   async getSystemPrompt(): Promise<string> {

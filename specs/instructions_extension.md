@@ -89,7 +89,9 @@ Priority 10 places instructions near the top of the `context` section, before mo
 
 ## Tool: `instructions`
 
-One tool with an `action` discriminator. Registered via `getTools(ctx)`.
+One tool with an `action` discriminator. Registered via `getTools()`.
+
+`ISession` is **not** stored in the tool at construction time. It is received as the `ctx` parameter on every `execute()` call and forwarded to the action implementations that need it (`list`, `add`). The `remove` action does not need session identity and ignores `ctx`.
 
 ### Descriptor
 

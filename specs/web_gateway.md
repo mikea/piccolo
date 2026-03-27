@@ -6,7 +6,9 @@ The web gateway is a Cloudflare Worker that:
 1. Serves the SolidJS SPA as static assets.
 2. Accepts a WebSocket connection at `/rpc` and exposes `IWebGateway` via Cap'n Web RPC.
 
-The browser calls `newWebSocketRpcSession<IWebGateway>(url)` once, calls `getUser()` to obtain an `IUser` stub bound to the authenticated userId, then uses `IUser` and `ISession` directly for all operations.
+The browser constructs the `WebSocket` directly, attaches `error` and `close` listeners that set a SolidJS signal, then passes the socket to `newWebSocketRpcSession<IWebGateway>(ws)`. `getUser()` returns an `IUser` stub bound to the authenticated userId; `IUser` and `ISession` are used for all subsequent operations.
+
+WebSocket-level errors and unexpected disconnections surface as a fixed error banner at the top of the page (rendered by `App.tsx` via the `wsError` signal). A clean close (`event.wasClean === true`) is not treated as an error.
 
 ---
 

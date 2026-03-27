@@ -20,7 +20,7 @@
 
 import type { AgentEvent, ISession, ITool } from "@piccolo/api";
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
-import { stepCountIs, streamText } from "ai";
+import { modelMessageSchema, stepCountIs, streamText } from "ai";
 import { toAiSdkTools } from "./agent-tools.ts";
 import { ObservableImpl } from "./observable-impl.ts";
 
@@ -238,6 +238,14 @@ export class Agent extends ObservableImpl<AgentEvent> {
     };
 
     try {
+      for (let i = 0; i < this._messages.length; i++) {
+        const check = modelMessageSchema.safeParse(this._messages[i]);
+        if (!check.success) {
+          const msg = `[agent] invalid ModelMessage at index ${i}: ${JSON.stringify(this._messages[i])} — ${JSON.stringify(check.error.issues)}`;
+          console.error(msg);
+          this.emit({ type: "error", message: msg });
+        }
+      }
       const result = streamText({
         model: this._model,
         system: this._systemPrompt,

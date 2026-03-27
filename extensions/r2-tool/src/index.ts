@@ -1,1 +1,1 @@
-export { R2Tool, R2ToolExtension as default } from "./extension.ts";
+export { R2ToolExtension as default } from "./extension.ts";

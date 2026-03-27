@@ -1,9 +1,10 @@
 /**
  * ExtensionRunner — discovers, initialises, and dispatches to extension Workers.
  *
- * On session start (initialize()), reads the extension registry from CONFIG KV,
- * obtains a dispatch stub for each extension name, and collects tools, commands,
- * and system prompt additions.
+ * initialize() reads the extension registry from CONFIG KV and obtains a
+ * dispatch stub for each extension name. It does NOT call getTools(),
+ * getCommands(), or getSystemPromptAdditions() — those are driven by the caller
+ * (AgentSessionDO) outside blockConcurrencyWhile, passing ISession at call time.
  *
  * Extensions implement IExtensionWorker.onEvent(). The ExtensionRunner handles
  * all merge semantics internally, keyed on event.type.
@@ -45,7 +46,7 @@ import type {
  *
  * The descriptor is resolved once at construction time (callers must use the
  * static factory). Tools whose descriptor cannot be fetched are dropped by
- * ExtensionRunner.initialize() before they are ever stored.
+ * getTools() before they are ever returned to the caller.
  */
 class SafeToolWrapper implements ITool {
   readonly #remote: ITool;
@@ -136,14 +137,19 @@ export type ExtensionEventResult =
  * IExtensionRunner — core-internal interface for dispatching to extensions.
  * Implemented by ExtensionRunner. NOT part of the JSRPC API surface.
  *
+ * Registration methods (getTools, getCommands, getSystemPromptAdditions) are
+ * async and receive ISession at call time — they call into remote extension
+ * workers on demand. The caller (AgentSessionDO) invokes these outside
+ * blockConcurrencyWhile to avoid deadlocks on reverse RPC into the session DO.
+ *
  * A single emit() handles all event types. The merge semantics are
  * determined by event.type inside the implementation.
  */
 export interface IExtensionRunner {
   emit(event: ExtensionEvent, ctx: ISession): Promise<ExtensionEventResult>;
-  getSystemPromptAdditions(): SystemPromptAddition[];
-  getCommands(): ICommand[];
-  getTools(): ITool[];
+  getTools(ctx: ISession): Promise<ITool[]>;
+  getCommands(ctx: ISession): Promise<ICommand[]>;
+  getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -184,31 +190,27 @@ export function parseCommand(
  * Real ExtensionRunner — reads the extension registry from CONFIG KV and
  * dispatches to extension Workers via the EXTENSIONS dispatch namespace.
  *
+ * initialize() only loads workers; it does not call getTools/getCommands/
+ * getSystemPromptAdditions. Those are driven by the caller with ISession.
+ *
  * Spec ref: specs/core.md §ExtensionRunner
  */
 export class ExtensionRunner implements IExtensionRunner {
   static readonly CALL_TIMEOUT_MS = 5000;
 
   #extensions: Array<{ name: string; worker: IExtensionWorker }> = [];
-  #commands: ICommand[] = [];
-  #systemPromptAdditions: SystemPromptAddition[] = [];
-  #tools: ITool[] = [];
 
   /**
-   * Load the extension registry and bootstrap all extensions for a session.
+   * Load the extension registry, build worker stubs, and fire init(ctx) on each.
    *
-   * `ctx` is the JSRPC-serialisable `SessionTarget` (`RpcTarget` subclass) for
-   * this DO. It is used for both local identity reads (sessionId, userId) and
-   * as the capability passed to remote extension workers over JSRPC.
+   * Does NOT call getTools(), getCommands(), or getSystemPromptAdditions() —
+   * those pass ISession to remote workers which may call back into the session DO.
+   * The caller (AgentSessionDO) drives those explicitly outside blockConcurrencyWhile
+   * via #ensureTools() and #ensureSystemPrompt().
    *
    * Spec ref: specs/core.md §ExtensionRunner §initialize
    */
-  async initialize(
-    ctx: ISession,
-    kv: KVNamespace,
-    extensions: DispatchNamespace,
-    _modelId?: string,
-  ): Promise<void> {
+  async initialize(kv: KVNamespace, extensions: DispatchNamespace, ctx: ISession): Promise<void> {
     let names: string[] = [];
     try {
       const raw = await kv.get("extensions:registry");
@@ -225,59 +227,25 @@ export class ExtensionRunner implements IExtensionRunner {
 
     if (names.length === 0) return;
 
-    const results = await Promise.all(
-      names.map(async (name) => {
-        let worker: IExtensionWorker;
-        try {
-          worker = extensions.get(name) as unknown as IExtensionWorker;
-        } catch (error) {
-          console.warn(
-            `[extensions] dispatch lookup failed extension=${name} error=${formatError(error)}`,
-          );
-          return null;
-        }
-
-        // Pass ctx to remote workers — they receive it as an RPC capability.
-        const [rawTools, commands, additions] = await Promise.all([
-          this.#safeCall(name, "getTools", () => worker.getTools?.(ctx)),
-          this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
-          this.#safeCall(name, "getSystemPromptAdditions", () =>
-            worker.getSystemPromptAdditions?.(ctx),
-          ),
-        ]);
-
-        // Wrap each remote ITool stub so that RPC errors in getDescriptor/execute
-        // never propagate to the browser. Tools whose descriptor fails to resolve
-        // are dropped here rather than stored in a broken state.
-        const tools = rawTools
-          ? (
-              await Promise.all(
-                rawTools.map((t) => SafeToolWrapper.create(t, name, this.#safeCall.bind(this))),
-              )
-            ).filter((w): w is SafeToolWrapper => w !== null)
-          : undefined;
-
-        return { name, worker, tools, commands, additions };
-      }),
-    );
-
-    for (const result of results) {
-      if (result === null) continue;
-      const { name, worker, tools, commands, additions } = result;
-      this.#extensions.push({ name, worker });
-      if (tools) this.#tools.push(...tools);
-      if (commands) this.#commands.push(...commands);
-      if (additions) this.#systemPromptAdditions.push(...additions);
+    for (const name of names) {
+      try {
+        const worker = extensions.get(name) as unknown as IExtensionWorker;
+        console.debug("[extensions] ", worker, Object.keys(worker));
+        this.#extensions.push({ name, worker });
+      } catch (error) {
+        console.warn(
+          `[extensions] dispatch lookup failed extension=${name} error=${formatError(error)}`,
+        );
+      }
     }
 
-    // Call init(ctx) on each extension so they can subscribe to the session observable.
     await Promise.all(
       this.#extensions.map(({ name, worker }) =>
         this.#safeCall(name, "session_start", () => worker.init?.(ctx)),
       ),
     );
 
-    console.log(`[extensions] loaded=${this.#extensions.length} tools=${this.#tools.length}`);
+    console.log(`[extensions] loaded=${this.#extensions.length}`);
   }
 
   async #safeCall<T>(
@@ -320,18 +288,55 @@ export class ExtensionRunner implements IExtensionRunner {
     }
   }
 
-  // ─── Accessors ────────────────────────────────────────────────────────────
+  // ─── Registration methods (caller-driven, ctx passed at call time) ─────────
 
-  getSystemPromptAdditions(): SystemPromptAddition[] {
-    return this.#systemPromptAdditions;
+  /**
+   * Collect tools from all extensions. Wraps each remote ITool stub in
+   * SafeToolWrapper so RPC failures in execute() are isolated per tool.
+   * Tools whose descriptor cannot be fetched are dropped.
+   *
+   * Must be called outside blockConcurrencyWhile.
+   */
+  async getTools(ctx: ISession): Promise<ITool[]> {
+    const perExtension = await Promise.all(
+      this.#extensions.map(async ({ name, worker }) => {
+        const rawTools = await this.#safeCall(name, "getTools", () => worker.getTools?.(ctx));
+        if (!rawTools) return [];
+        const wrapped = await Promise.all(
+          rawTools.map((t) => SafeToolWrapper.create(t, name, this.#safeCall.bind(this))),
+        );
+        return wrapped.filter((w): w is SafeToolWrapper => w !== null);
+      }),
+    );
+    return perExtension.flat();
   }
 
-  getCommands(): ICommand[] {
-    return this.#commands;
+  /**
+   * Collect commands from all extensions.
+   * Must be called outside blockConcurrencyWhile.
+   */
+  async getCommands(ctx: ISession): Promise<ICommand[]> {
+    const perExtension = await Promise.all(
+      this.#extensions.map(({ name, worker }) =>
+        this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
+      ),
+    );
+    return perExtension.flatMap((cmds) => cmds ?? []);
   }
 
-  getTools(): ITool[] {
-    return this.#tools;
+  /**
+   * Collect system prompt additions from all extensions.
+   * Must be called outside blockConcurrencyWhile.
+   */
+  async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]> {
+    const perExtension = await Promise.all(
+      this.#extensions.map(({ name, worker }) =>
+        this.#safeCall(name, "getSystemPromptAdditions", () =>
+          worker.getSystemPromptAdditions?.(ctx),
+        ),
+      ),
+    );
+    return perExtension.flatMap((additions) => additions ?? []);
   }
 
   // ─── emit ─────────────────────────────────────────────────────────────────
@@ -380,7 +385,16 @@ export class ExtensionRunner implements IExtensionRunner {
     event: Extract<ExtensionEvent, { type: "input" }>,
     ctx: ISession,
   ): Promise<InputResult> {
-    const parsed = parseCommand(event.text, this.#commands);
+    // Commands list is built on demand from the current extensions.
+    // For routing we need the full list — call synchronously from each worker.
+    const commandsPerExtension = await Promise.all(
+      this.#extensions.map(({ name, worker }) =>
+        this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
+      ),
+    );
+    const commands = commandsPerExtension.flatMap((cmds) => cmds ?? []);
+
+    const parsed = parseCommand(event.text, commands);
     const enrichedEvent: Extract<ExtensionEvent, { type: "input" }> = parsed
       ? { ...event, commandName: parsed.commandName, commandArgs: parsed.commandArgs }
       : event;

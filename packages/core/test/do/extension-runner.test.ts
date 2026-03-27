@@ -99,7 +99,7 @@ async function makeRunner(
 ): Promise<ExtensionRunner> {
   const names = registryNames ?? Object.keys(stubs);
   const runner = new ExtensionRunner();
-  await runner.initialize(ctx, createMockKv(names), createMockDispatchNamespace(stubs));
+  await runner.initialize(createMockKv(names), createMockDispatchNamespace(stubs), ctx);
   return runner;
 }
 
@@ -159,26 +159,24 @@ describe("parseCommand()", () => {
 describe("initialize()", () => {
   it("empty registry → no stubs, empty commands and additions", async () => {
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, createMockKv([]), createMockDispatchNamespace({}));
-    expect(runner.getCommands()).toEqual([]);
-    expect(runner.getSystemPromptAdditions()).toEqual([]);
-    expect(runner.getTools()).toEqual([]);
+    await runner.initialize(createMockKv([]), createMockDispatchNamespace({}), ctx);
+    expect(await runner.getCommands(ctx)).toEqual([]);
+    expect(await runner.getSystemPromptAdditions(ctx)).toEqual([]);
+    expect(await runner.getTools(ctx)).toEqual([]);
   });
 
   it("absent KV key → treated as empty registry", async () => {
     const runner = new ExtensionRunner();
-    // No registry key set
-    await runner.initialize(ctx, createMockKv(undefined), createMockDispatchNamespace({}));
-    expect(runner.getCommands()).toEqual([]);
+    await runner.initialize(createMockKv(undefined), createMockDispatchNamespace({}), ctx);
+    expect(await runner.getCommands(ctx)).toEqual([]);
   });
 
   it("malformed KV JSON → treated as empty registry", async () => {
     const runner = new ExtensionRunner();
     const kv = createMockKv(undefined);
-    // Manually override with invalid JSON
     await kv.put("extensions:registry", "not-json");
-    await runner.initialize(ctx, kv, createMockDispatchNamespace({}));
-    expect(runner.getCommands()).toEqual([]);
+    await runner.initialize(kv, createMockDispatchNamespace({}), ctx);
+    expect(await runner.getCommands(ctx)).toEqual([]);
   });
 
   it("single extension: commands, additions, and tools collected", async () => {
@@ -196,11 +194,11 @@ describe("initialize()", () => {
       ],
     });
     const runner = await makeRunner({ "ext-a": ext });
-    expect(runner.getCommands()).toEqual([{ name: "status", description: "Show status" }]);
-    expect(runner.getSystemPromptAdditions()).toEqual([
+    expect(await runner.getCommands(ctx)).toEqual([{ name: "status", description: "Show status" }]);
+    expect(await runner.getSystemPromptAdditions(ctx)).toEqual([
       { section: "guidelines", content: "Be concise" },
     ]);
-    expect(runner.getTools()).toHaveLength(1);
+    expect(await runner.getTools(ctx)).toHaveLength(1);
   });
 
   it("multiple extensions: commands and additions from all are merged", async () => {
@@ -215,18 +213,18 @@ describe("initialize()", () => {
       systemPromptAdditions: [{ section: "context", content: "Context B" }],
     });
     const runner = await makeRunner({ "ext-a": extA, "ext-b": extB });
-    const cmds = runner.getCommands().map((c) => c.name);
+    const cmds = (await runner.getCommands(ctx)).map((c) => c.name);
     expect(cmds).toContain("cmd-a");
     expect(cmds).toContain("cmd-b");
-    const sections = runner.getSystemPromptAdditions().map((a) => a.section);
+    const sections = (await runner.getSystemPromptAdditions(ctx)).map((a) => a.section);
     expect(sections).toContain("skills");
     expect(sections).toContain("context");
   });
 
-  it("init() is called on all stubs after initialize", async () => {
+  it("init() is called on all stubs by initialize()", async () => {
     const extA = createMockExtension({ name: "ext-a" });
     const extB = createMockExtension({ name: "ext-b" });
-    await makeRunner({ "ext-a": extA, "ext-b": extB });
+    const runner = await makeRunner({ "ext-a": extA, "ext-b": extB });
     expect(extA.calls.onInit).toHaveLength(1);
     expect(extB.calls.onInit).toHaveLength(1);
   });
@@ -239,11 +237,11 @@ describe("initialize()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(
-      ctx,
       createMockKv(["bad", "good"]),
       createMockDispatchNamespace({ bad: throwing, good }),
+      ctx,
     );
-    const names = runner.getCommands().map((c) => c.name);
+    const names = (await runner.getCommands(ctx)).map((c) => c.name);
     expect(names).toContain("cmd-good");
   });
 
@@ -255,11 +253,11 @@ describe("initialize()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(
-      ctx,
       createMockKv(["bad", "good"]),
       createMockDispatchNamespace({ bad: throwing, good }),
+      ctx,
     );
-    expect(runner.getSystemPromptAdditions()).toHaveLength(1);
+    expect(await runner.getSystemPromptAdditions(ctx)).toHaveLength(1);
   });
 });
 
@@ -321,9 +319,8 @@ describe("emitInput()", () => {
         return { action: "continue" };
       },
     });
-    // Runner must be initialized with this extension's commands already loaded
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
+    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), ctx);
     const result = await emitInput(runner, inputEvent("/my-cmd extra args"), ctx);
     expect(result.action).toBe("handled");
   });
@@ -339,7 +336,7 @@ describe("emitInput()", () => {
       },
     });
     const runner = new ExtensionRunner();
-    await runner.initialize(ctx, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
+    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), ctx);
     await emitInput(runner, inputEvent("/skill:test arg1 arg2"), ctx);
     expect(capturedArgs).toBe("arg1 arg2");
   });
@@ -683,7 +680,6 @@ describe("createMockSession() — all methods reachable", () => {
     await expect(s.setModel("x")).resolves.toBeUndefined();
     expect(await s.listModels()).toEqual([]);
     expect(await s.getActiveTools()).toEqual([]);
-    await expect(s.setActiveTools([])).resolves.toBeUndefined();
     await expect(s.appendCustomMessage("t", "c", false)).resolves.toBeUndefined();
     await expect(s.appendCustomEntry("t")).resolves.toBeUndefined();
     expect(await s.getEntries()).toEqual([]);
@@ -699,13 +695,12 @@ describe("createMockSession() — all methods reachable", () => {
 // ─── initialize() — init(ctx) propagation ────────────────────────────────────
 
 describe("initialize() — init(ctx) propagation", () => {
-  it("init() is called with the session ctx", async () => {
+  it("init() is called with the session ctx passed to initialize()", async () => {
     const ext = createMockExtension({ name: "a" });
     const session = createMockSession({ sessionId: "real-sid", userId: "real-uid" });
     const runner = new ExtensionRunner();
-    await runner.initialize(session, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
+    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), session);
     expect(ext.calls.onInit).toHaveLength(1);
-    // The ctx passed to init() is the session itself (or its RpcTarget wrapper)
     expect(ext.calls.onInit[0]).toBeDefined();
   });
 });

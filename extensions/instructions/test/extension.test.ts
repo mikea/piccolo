@@ -50,7 +50,6 @@ function makeSession(userId = "user-1", sessionId = "session-1"): ISession {
     setModel: async () => {},
     listModels: async () => [],
     getActiveTools: async () => [],
-    setActiveTools: async () => {},
     appendCustomMessage: async () => {},
     appendCustomEntry: async () => {},
     getEntries: async () => [],
@@ -145,7 +144,7 @@ describe("db: removeInstruction", () => {
 describe("InstructionsTool.getDescriptor", () => {
   it("returns descriptor with name=instructions", async () => {
     const ctx = makeSession();
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const desc = await tool.getDescriptor();
     expect(desc.name).toBe("instructions");
     expect(desc.promptSnippet).toBeDefined();
@@ -156,7 +155,7 @@ describe("InstructionsTool.getDescriptor", () => {
 describe("InstructionsTool: list action", () => {
   it("returns empty-state message when no instructions exist", async () => {
     const ctx = makeSession("u-list-empty", "s-list-empty");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const result = await tool.execute("c1", { action: "list" }, ctx);
     const text = (result.content[0] as { type: "text"; text: string }).text;
     expect(text).toContain("No instructions");
@@ -165,7 +164,7 @@ describe("InstructionsTool: list action", () => {
 
   it("shows instructions after they are added", async () => {
     const ctx = makeSession("u-list-show", "s-list-show");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     await tool.execute("c1", { action: "add", scope_type: "session", content: "Be concise." }, ctx);
     const result = await tool.execute("c2", { action: "list" }, ctx);
     const text = (result.content[0] as { type: "text"; text: string }).text;
@@ -177,7 +176,7 @@ describe("InstructionsTool: list action", () => {
 describe("InstructionsTool: add action", () => {
   it("adds a session-scoped instruction and resolves scope_id from ctx", async () => {
     const ctx = makeSession("u-add-s", "s-add-s");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const result = await tool.execute(
       "c1",
       { action: "add", scope_type: "session", content: "Session rule." },
@@ -193,7 +192,7 @@ describe("InstructionsTool: add action", () => {
 
   it("adds a user-scoped instruction and resolves scope_id from ctx", async () => {
     const ctx = makeSession("u-add-u", "s-add-u");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const result = await tool.execute(
       "c1",
       { action: "add", scope_type: "user", content: "User rule." },
@@ -206,7 +205,7 @@ describe("InstructionsTool: add action", () => {
 
   it("adds an everyone-scoped instruction with empty scope_id", async () => {
     const ctx = makeSession("u-add-e", "s-add-e");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const result = await tool.execute(
       "c1",
       { action: "add", scope_type: "everyone", content: "Global rule." },
@@ -219,13 +218,13 @@ describe("InstructionsTool: add action", () => {
 
   it("throws on invalid params (missing scope_type)", async () => {
     const ctx = makeSession();
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     await expect(tool.execute("c1", { action: "add", content: "no scope" }, ctx)).rejects.toThrow();
   });
 
   it("throws on empty content", async () => {
     const ctx = makeSession();
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     await expect(
       tool.execute("c1", { action: "add", scope_type: "session", content: "" }, ctx),
     ).rejects.toThrow();
@@ -235,7 +234,7 @@ describe("InstructionsTool: add action", () => {
 describe("InstructionsTool: remove action", () => {
   it("removes instruction and returns confirmation", async () => {
     const ctx = makeSession("u-remove", "s-remove");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
 
     const addResult = await tool.execute(
       "c1",
@@ -257,7 +256,7 @@ describe("InstructionsTool: remove action", () => {
 
   it("throws for a non-existent id", async () => {
     const ctx = makeSession("u-remove-err", "s-remove-err");
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     await expect(
       tool.execute("c1", { action: "remove", id: crypto.randomUUID() }, ctx),
     ).rejects.toThrow("Instruction not found");
@@ -265,7 +264,7 @@ describe("InstructionsTool: remove action", () => {
 
   it("throws on invalid uuid format", async () => {
     const ctx = makeSession();
-    const tool = new InstructionsTool(env.INSTRUCTIONS_DB, ctx);
+    const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     await expect(tool.execute("c1", { action: "remove", id: "not-a-uuid" }, ctx)).rejects.toThrow();
   });
 });

@@ -469,26 +469,30 @@ Manages dispatch to all installed extension Workers.
 
 ### Initialization (per session start)
 
+`initialize()` only reads the registry and builds worker stubs. It does **not** call
+`getTools()`, `getCommands()`, or `getSystemPromptAdditions()` on extensions — those
+calls pass `ISession` (an RPC stub) to remote Workers, which may call back into the
+session DO. Calling them inside `blockConcurrencyWhile` would deadlock.
+
+The caller (`AgentSessionDO`) drives registration explicitly, outside `blockConcurrencyWhile`:
+
 ```typescript
 class ExtensionRunner {
-  async initialize(ctx: SessionImpl, ctxStub: ISession, kv: KVNamespace, extensions: DispatchNamespace, modelId?: string): Promise<void> {
-    // Two session references are required:
-    //   ctx     — the real local session object. Used only to read sessionId()/userId()
-    //             without going through the RPC Proxy, which would fail on private-field
-    //             brand checks.
-    //   ctxStub — the RPC-serialisable Proxy stub. Passed to remote extension workers
-    //             so they can call back into the session over JSRPC.
-    //
-    // Logs start/end and per-extension bootstrap failures at [extensions] scope.
+  // Only reads the registry and builds dispatch stubs. No ISession involved.
+  async initialize(kv: KVNamespace, extensions: DispatchNamespace): Promise<void> {
     // 1. Read extensions:registry from CONFIG KV → string[]
-    // 2. For each name:
-    //    worker = env.EXTENSIONS.get(name)
-    //    tools = await worker.getTools(ctxStub)
-    //    commands = await worker.getCommands(ctxStub)  // store for onInput routing
-    //    sysPromptAdditions = await worker.getSystemPromptAdditions(ctxStub)
-    // 3. Store tools directly as ITool[], plus commands and sysPromptAdditions
-    // 4. Fire session_start using identity from ctx (not ctxStub), pass ctxStub to extensions
+    // 2. For each name: worker = extensions.get(name); push to #extensions list
   }
+
+  // Called by AgentSessionDO outside blockConcurrencyWhile.
+  // ISession is passed at call time — not stored.
+  async getTools(ctx: ISession): Promise<ITool[]>
+  async getCommands(ctx: ISession): Promise<ICommand[]>
+  async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]>
+
+  // Fires init(ctx) on all loaded extension workers.
+  // Called by AgentSessionDO outside blockConcurrencyWhile.
+  async init(ctx: ISession): Promise<void>
 }
 ```
 
@@ -826,20 +830,29 @@ function buildSessionContext(
     ? path.filter(e => e.id === lastCompaction.id || comesAfter(e, lastCompaction, path))
     : path;
 
-  // 4. Convert to ModelMessage[]
+  // 4. Convert to ModelMessage[], checking each against modelMessageSchema (log only)
   const messages: ModelMessage[] = [];
   for (const entry of relevant) {
+    let msg: ModelMessage | undefined;
     if (entry.type === "compaction") {
       // Replace all summarised history with a single synthetic user message
-      messages.push({ role: "user", content: `[Conversation Summary]\n\n${entry.data.summary}` });
+      msg = { role: "user", content: `[Conversation Summary]\n\n${entry.data.summary}` };
     } else if (entry.type === "message") {
-      messages.push(entry.data as ModelMessage);
+      msg = entry.data as ModelMessage;
     } else if (entry.type === "custom_message" && entry.data.display) {
-      messages.push({ role: "user", content: entry.data.content });
+      msg = { role: "user", content: entry.data.content };
     } else if (entry.type === "branch_summary") {
-      messages.push({ role: "assistant", content: `[Previous branch summary]\n\n${entry.data.summary}` });
+      msg = { role: "assistant", content: `[Previous branch summary]\n\n${entry.data.summary}` };
     }
     // All other entry types skipped
+    if (msg !== undefined) {
+      // Check against AI SDK schema for diagnostics; messages are never dropped.
+      const result = modelMessageSchema.safeParse(msg);
+      if (!result.success) {
+        console.error(`[context] invalid ModelMessage in entry ${entry.id}:`, msg, result.error.issues);
+      }
+      messages.push(msg);
+    }
   }
 
   // 5. Extract most recent modelId from model_change entries
@@ -1020,6 +1033,8 @@ private _startTurn(): AgentTurn {
 ```
 
 `_runStream()` calls `streamText(...)` from the `ai` package, enqueues events via `controller.enqueue()`, and in the `finally` block sets `_currentTurn = null` and calls `controller.close()`.
+
+Before passing `this._messages` to `streamText`, `_runStream()` calls `checkMessages()` which validates every message against the AI SDK's `modelMessageSchema` and logs any failures as errors. Messages are **never dropped** — the check is diagnostic only, to surface format mismatches (e.g. messages stored in an older schema) in server logs.
 
 ### `StreamBroadcaster<T>`
 

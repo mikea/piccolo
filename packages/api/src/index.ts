@@ -344,7 +344,6 @@ export interface ISession extends IObservable<AgentEvent> {
   // ─── Tools ───────────────────────────────────────────────────────────────────
 
   getActiveTools(): Promise<ToolDescriptor[]>;
-  setActiveTools(tools: ITool[]): Promise<void>;
 
   // ─── Custom session entries ───────────────────────────────────────────────────
 

@@ -284,7 +284,6 @@ export function createMockSession(
     setModel: async () => {},
     listModels: async () => [],
     getActiveTools: async () => [],
-    setActiveTools: async () => {},
     appendCustomMessage: async () => {},
     appendCustomEntry: async () => {},
     getEntries: async () => [],
