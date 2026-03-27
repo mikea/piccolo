@@ -234,7 +234,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    this.emit({ type: "agent_start" });
+    this.emit({ type: "start" });
 
     const ctx = this._ctx;
     if (ctx === null) {
@@ -267,6 +267,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
         abortSignal: signal,
 
         prepareStep: ({ stepNumber, messages }) => {
+          this.emit({ type: "step-start", stepNumber });
           if (stepNumber > 0 && this._steeringQueue.length > 0) {
             const steering = this._dequeueSteer();
             return Promise.resolve({ messages: [...messages, ...steering] });
@@ -277,14 +278,14 @@ export class Agent extends ObservableImpl<AgentEvent> {
         onChunk: ({ chunk }) => {
           switch (chunk.type) {
             case "text-delta":
-              this.emit({ type: "text_delta", delta: chunk.text });
+              this.emit({ type: "text-delta", delta: chunk.text });
               break;
             case "reasoning-delta":
-              this.emit({ type: "reasoning_delta", delta: chunk.text });
+              this.emit({ type: "reasoning-delta", delta: chunk.text });
               break;
             case "tool-call":
               this.emit({
-                type: "tool_start",
+                type: "tool-call",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
                 input: chunk.input,
@@ -292,7 +293,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
               break;
             case "tool-result":
               this.emit({
-                type: "tool_end",
+                type: "tool-result",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
                 output: chunk.output,
@@ -308,7 +309,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
             if (part.type === "tool-error") {
               const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
               this.emit({
-                type: "tool_end",
+                type: "tool-result",
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 output: errMsg,
@@ -317,7 +318,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
             }
           }
           this.emit({
-            type: "turn_end",
+            type: "step-finish",
             stepNumber,
             finishReason: finishReason as FinishReason,
             usage,
@@ -334,6 +335,7 @@ export class Agent extends ObservableImpl<AgentEvent> {
           const message = error instanceof Error ? error.message : String(error);
           console.debug("[agent] onError message=%s", message);
           this._error = message;
+          this._currentTurn = null;
           this.emit({ type: "error", message });
         },
 
@@ -348,17 +350,22 @@ export class Agent extends ObservableImpl<AgentEvent> {
       console.debug("[agent] consumeStream done");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      console.debug("[agent] consumeStream catch: %s", message);
+      console.debug("[agent] catch: %s", message);
       if (!aborted) {
         this._error = message;
+        this._currentTurn = null;
         this.emit({ type: "error", message });
       }
     } finally {
-      console.debug("[agent] finally aborted=%s", aborted);
-      if (!aborted) {
-        this.emit({ type: "agent_end", totalUsage: finalUsage });
-      }
+      console.debug(
+        "[agent] finally aborted=%s currentTurn=%s",
+        aborted,
+        this._currentTurn !== null,
+      );
       this._currentTurn = null;
+      if (!aborted) {
+        this.emit({ type: "finish", totalUsage: finalUsage });
+      }
     }
   }
 

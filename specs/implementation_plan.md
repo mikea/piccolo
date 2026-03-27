@@ -137,7 +137,7 @@ The `ai` v6 package's `.d.ts` files have known incompatibilities with `exactOpti
 
 #### ai v6 API differences from spec
 
-1. **`onChunk` does not include `tool-error`** — Tool errors must be detected from `onStepFinish`'s `content` array. The `_runStream()` method iterates `content` in `onStepFinish` and emits `tool_end` with `isError: true` for `tool-error` parts.
+1. **`onChunk` does not include `tool-error`** — Tool errors must be detected from `onStepFinish`'s `content` array. The `_runStream()` method iterates `content` in `onStepFinish` and emits `tool-result` with `isError: true` for `tool-error` parts.
 
 2. **`LanguageModelUsage` fields** — v6 uses `inputTokens`/`outputTokens`/`totalTokens` (not `promptTokens`/`completionTokens`).
 
@@ -284,7 +284,7 @@ The Durable Object that owns a live session. Wires `piccolo-agent` to persistenc
 
 **`TransformStream` streaming**: `prompt()` returns a `ReadableStream<AgentEvent>` constructed via `TransformStream`. The agent's `subscribe()` listener writes events to the writable side; the readable side is returned to the caller. Compatible with Cloudflare DO JSRPC `ReadableStream` return values.
 
-**Context usage**: Computed as `lastInputTokens + heuristicDelta`. `lastInputTokens` is updated from the real AI SDK `totalUsage` on `agent_end`. `heuristicDelta` estimates tokens for any messages added since the last turn using chars/4.
+**Context usage**: Computed as `lastInputTokens + heuristicDelta`. `lastInputTokens` is updated from the real AI SDK `totalUsage` on `finish`. `heuristicDelta` estimates tokens for any messages added since the last turn using chars/4.
 
 **`compaction.ts` no-op guard**: If `agentCompact` returns `summary: ""` (nothing to summarize — `toSummarize` was empty), `compact()` returns without writing a `CompactionEntry`. This prevents spurious entries on over-large `keepRecentTokens` budgets.
 
@@ -392,7 +392,7 @@ extension handler call and every tool `execute()` call. Eliminates the former
 - `Agent.setContext(ctx: IAgentSession)` + `toAiSdkTools(tools, ctx)` — threads session into tool execute calls
 - `ISession extends IAgentSession` in `packages/core/src/types.ts` — full unified surface; all extension-specific methods merged in (`sendUserMessage`, `appendCustomMessage`, `appendCustomEntry`, `getEntries`, `getSystemPrompt`, `listModels`, `getActiveTools`, `setActiveTools`)
 - `packages/core/src/do/do-state.ts` — extracted `DOState` interface; adds `branchEntries: AnyEntry[]` and `session: ISession | null`
-- `packages/core/src/do/context.ts` — `SessionImpl extends RpcTarget implements ISession`; holds live `DOState` reference; delegates all methods; no D1 flush (flush at `agent_end`)
+- `packages/core/src/do/context.ts` — `SessionImpl extends RpcTarget implements ISession`; holds live `DOState` reference; delegates all methods; no D1 flush (flush at `finish`)
 - `ExtensionRunner` stores `ITool[]` directly from extensions (no adapter layer)
 - `AgentSessionDO` wired: creates `SessionImpl` before `extensionRunner.initialize()`, stores in `doState.session`, calls `agent.setContext(session)` at start of each `prompt()`
 - `doState.branchEntries` populated from D1 on cold start; `appendCustomEntry`/`appendCustomMessage` append to both `pendingEntries` and `branchEntries`; `getEntries()` reads from `branchEntries` (no D1 roundtrip)
@@ -403,7 +403,7 @@ extension handler call and every tool `execute()` call. Eliminates the former
 - **No `*Impl` references in public signatures** — all call sites use `ISession`; only `context.ts` knows `SessionImpl`
 - **`ISession` = gateway context = extension context = tool context** — one interface, passed by JSRPC across Worker boundaries
 - **`DOState` extracted** to `do-state.ts` to break the `agent-session.ts` ↔ `context.ts` circular import
-- **`followUp()` queues to `doState.followUpQueue`** — drained by `AgentSessionDO` at `agent_end` (not by `SessionImpl` directly)
+- **`followUp()` queues to `doState.followUpQueue`** — drained by `AgentSessionDO` at `finish` (not by `SessionImpl` directly)
 
 **Spec refs:** [core.md — `ISession`](core.md), [api.md §2](api.md), [agent.md §IAgentSession](agent.md)
 
@@ -503,7 +503,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 - `WebGatewayImpl extends RpcTarget` implementing `IWebGateway` — returns `IUser` stub via `getUser()`
 
 
-- `AgentEvent` enrichment: call `tool.getGatewayUI("web")` per tool and attach `WebComponentDescriptor` to `tool_start`/`tool_end` events
+- `AgentEvent` enrichment: call `tool.getGatewayUI("web")` per tool and attach `WebComponentDescriptor` to `tool-call`/`tool-result` events
 
 - Static file serving: `GET /` → SPA shell, `GET /components/{id}.js` → component modules from R2
 - `wrangler.template.jsonc` for web gateway with `CORE` service binding and `USER_ID` var
@@ -582,11 +582,11 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
   - `Header.tsx` — session name + model picker
   - `EmptyState.tsx` — no session selected, "New Chat" CTA
 - AgentEvent handling in store:
-  - `agent_start` → add empty assistant message, set `isStreaming: true`
-  - `text_delta` → append delta to last assistant message (fine-grained, no re-render)
-  - `agent_end` → set `isStreaming: false`, clear `activeTurn`
+  - `start` → add empty assistant message, set `isStreaming: true`
+  - `text-delta` → append delta to last assistant message (fine-grained, no re-render)
+  - `finish` → set `isStreaming: false`, clear `activeTurn`
   - `error` → add error message, set `isStreaming: false`
-  - `tool_start`/`tool_end` → plain text lines in M1 (rich UI in M2)
+  - `tool-call`/`tool-result` → plain text lines in M1 (rich UI in M2)
 - `gateways/web/package.json` scripts: `build:app` (vite build), `build` (build:app + wrangler dry-run), `deploy` (build:app + wrangler deploy)
 - `wrangler.template.jsonc` updated: `"assets": { "directory": "./dist", "html_handling": "single-page-application" }`
 
@@ -620,7 +620,7 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
 
 **No global store**: All state is owned by the component that needs it. `IUser` and `ISession` are passed as plain props — no `RpcStub<X>` types in components (only `main.tsx` uses `capnweb`). `ISession` stubs are stored in `createSignal` since SolidJS should not track RpcTarget internals.
 
-**Fine-grained streaming**: `text_delta` events use `setStore("messages", idx, "content", c => c + delta)` — SolidJS's fine-grained reactivity updates only the text node, not the full message list.
+**Fine-grained streaming**: `text-delta` events use `setStore("messages", idx, "content", c => c + delta)` — SolidJS's fine-grained reactivity updates only the text node, not the full message list.
 
 **`SessionInfo` / `ModelInfo` re-exports**: `gateways/web/src/types.ts` was extended to re-export these shared core types so `app/` can import them without depending on `@piccolo/core` directly.
 
@@ -633,10 +633,10 @@ Output: `gateways/web/dist/` — served by Wrangler native static assets (`html_
 Adds tool call rendering and interactive gateway callbacks. Requires `ext-fetch-tool` or another tool to be deployed to see real output.
 
 **Deliverables:**
-- `tool_start` event: render tool name + collapsible JSON input block; show "running…" spinner
-- `tool_end` event: collapse to summary line; show result or error text from `ITextUI`
+- `tool-call` event: render tool name + collapsible JSON input block; show "running…" spinner
+- `tool-result` event: collapse to summary line; show result or error text from `ITextUI`
 - `tool_update` event: update the in-progress tool call with intermediate text
-- `WebComponentDescriptor` support: if `tool_start`/`tool_end` event carries `component` field, dynamically `import()` from `/components/{componentId}.js` and mount as React component with supplied `props`
+- `WebComponentDescriptor` support: if `tool-call`/`tool-result` event carries `component` field, dynamically `import()` from `/components/{componentId}.js` and mount as React component with supplied `props`
 - Component fallback: if dynamic import fails, render default text block
 - `IGatewayCallback` browser implementation:
   - `requestSelect` → modal with checkbox/radio list, returns selected options
@@ -756,7 +756,7 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 - `piccolo-telegram-gateway` Worker with webhook handler at `POST /webhook/{token-hash}`
 - `ITelegramChatDO` — `handleUpdate()` serialising concurrent updates per chat
 - Chat → session mapping in KV: first message creates session, subsequent messages look up
-- `AgentEvent` → Telegram message adaptation: typing indicator, throttled edits, message splitting, `tool_start`/`tool_end` status lines
+- `AgentEvent` → Telegram message adaptation: typing indicator, throttled edits, message splitting, `tool-call`/`tool-result` status lines
 - `IGatewayCallback` implementation: inline keyboards for `requestSelect`, `requestConfirm`; message-wait for `requestInput`
 - `ITelegramUI` lookup: call `tool.getGatewayUI("telegram")` before rendering tool calls/results
 - All gateway slash commands: `/new`, `/model`, `/models`, `/abort`, `/status`, `/compact`, `/help`

@@ -113,19 +113,19 @@ async function runPrompt(
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("AgentSessionDO — prompt() pipeline", () => {
-  it("emits agent_start, text_delta(s), turn_end, agent_end for a simple turn", async () => {
+  it("emits start, text-delta(s), step-finish, finish for a simple turn", async () => {
     const sid = uniqueId();
     const events = await runPrompt(sid, "hello", "Hi there");
 
-    expect(events.find((e) => e.type === "agent_start")).toBeDefined();
-    expect(events.find((e) => e.type === "agent_end")).toBeDefined();
-    const textDeltas = events.filter((e) => e.type === "text_delta");
+    expect(events.find((e) => e.type === "start")).toBeDefined();
+    expect(events.find((e) => e.type === "finish")).toBeDefined();
+    const textDeltas = events.filter((e) => e.type === "text-delta");
     expect(textDeltas.length).toBeGreaterThan(0);
     const fullText = textDeltas
-      .map((e) => (e as { type: "text_delta"; delta: string }).delta)
+      .map((e) => (e as { type: "text-delta"; delta: string }).delta)
       .join("");
     expect(fullText).toBe("Hi there");
-    expect(events.find((e) => e.type === "turn_end")).toBeDefined();
+    expect(events.find((e) => e.type === "step-finish")).toBeDefined();
   });
 
   it("does not emit error event on a successful turn", async () => {
@@ -145,14 +145,14 @@ describe("AgentSessionDO — prompt() pipeline", () => {
     });
     // With a valid mock model, the stream is NOT empty — this confirms the
     // extension stub defaults to "continue" (not "handled").
-    expect(events.find((e) => e.type === "agent_start")).toBeDefined();
+    expect(events.find((e) => e.type === "start")).toBeDefined();
   });
 
   it("extension stub defaults to action: continue (not handled)", async () => {
     const sid = uniqueId();
     const events = await runPrompt(sid, "any input", "any response");
     // If extension stub wrongly returned "handled", stream would be empty
-    expect(events.find((e) => e.type === "agent_end")).toBeDefined();
+    expect(events.find((e) => e.type === "finish")).toBeDefined();
   });
 });
 
@@ -451,7 +451,7 @@ describe("AgentSessionDO — system prompt", () => {
 });
 
 describe("AgentSessionDO — tool events", () => {
-  it("emits tool_start and tool_end events when a tool call occurs", async () => {
+  it("emits tool-call and tool-result events when a tool call occurs", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
 
@@ -469,8 +469,8 @@ describe("AgentSessionDO — tool events", () => {
       return ev;
     });
 
-    expect(events.find((e) => e.type === "tool_start")).toBeDefined();
-    expect(events.find((e) => e.type === "tool_end")).toBeDefined();
+    expect(events.find((e) => e.type === "tool-call")).toBeDefined();
+    expect(events.find((e) => e.type === "tool-result")).toBeDefined();
   });
 });
 
@@ -547,8 +547,8 @@ describe("AgentSessionDO — context overflow retry", () => {
       return ev;
     });
 
-    // Context overflow produces an agent_end (after retry exhaustion or recovery)
-    expect(events.some((e) => e.type === "agent_end" || e.type === "error")).toBe(true);
+    // Context overflow produces an finish (after retry exhaustion or recovery)
+    expect(events.some((e) => e.type === "finish" || e.type === "error")).toBe(true);
   });
 });
 
@@ -574,7 +574,7 @@ describe("AgentSessionDO — getCurrentTurn and TurnImpl", () => {
       await instance._init(sid, "user-1");
       return drainTurn(instance, "hello");
     });
-    expect(events.some((e) => e.type === "agent_end")).toBe(true);
+    expect(events.some((e) => e.type === "finish")).toBe(true);
   });
 });
 
@@ -770,6 +770,6 @@ describe("AgentSessionDO — getCurrentTurn reconnect", () => {
       return ev;
     });
 
-    expect(events.some((e) => e.type === "agent_end")).toBe(true);
+    expect(events.some((e) => e.type === "finish")).toBe(true);
   });
 });

@@ -267,8 +267,6 @@ class FetchTool extends RpcTarget implements ITool {
 // ── FetchTool ─────────────────────────────────────────────────────────────────
 
 export class FetchToolExtension extends WorkerEntrypoint implements IExtensionWorker {
-  readonly descriptor: ToolDescriptor = descriptor;
-
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }

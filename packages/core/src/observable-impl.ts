@@ -1,105 +1,134 @@
 /**
  * ObservableImpl<T> — a generic RpcTarget implementing IObservable<T>.
  *
- * Purpose: fan out values to multiple IObserver<T> subscribers while fully
- * isolating the source from observer errors. If any observer throws or rejects
- * from onNext / onComplete / onError it is silently removed from the subscriber
- * set and never called again. It cannot disrupt other subscribers or the source.
- *
- * Delivery ordering:
- *   emit(value)   — synchronous enqueue; returns void. Dispatches to all current
- *                   subscribers by chaining onto an internal promise queue, so
- *                   deliveries are ordered and never overlap.
- *   complete()    — returns a Promise that resolves only after all pending emit()
- *                   deliveries have finished, then signals onComplete to all subscribers.
- *   error(reason) — same as complete() but signals onError.
- *
- * Late subscribers miss values emitted before subscribe() was called.
- * The caller is responsible for subscribing before any values are emitted.
- *
  * Spec ref: specs/api.md §IObservable
  */
 
 import { RpcTarget } from "cloudflare:workers";
-import type { IObservable, IObserver } from "@piccolo/api";
+import type { IDisposable, IObservable, IObserver, ISubscription } from "@piccolo/api";
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * Call [Symbol.dispose]() on a value if the method exists.
+ * Safe to call on any value — no-op if Symbol.dispose is not present.
+ */
+export function tryDispose(value: unknown): void {
+  const d = (value as Record<symbol, unknown>)?.[Symbol.dispose];
+  if (typeof d === "function") {
+    (d as () => void).call(value);
+  }
+}
+
+/**
+ * Dup a value if it is a capnweb/Workers RpcStub, otherwise return it as-is.
+ *
+ * capnweb auto-releases capabilities passed as RPC call arguments once the
+ * call returns. When a remote IObserver is passed to subscribe(), we must
+ * retain our own reference so the server can call back onNext/onError/onComplete
+ * across multiple turns for the session lifetime.
+ *
+ * RpcStubs expose a .dup() method that increments the refcount and returns a
+ * new stub pointing at the same target. The caller's original stub is
+ * auto-released; the dup we hold keeps the remote capability alive until we
+ * explicitly dispose it (via tryDispose) on unsubscribe.
+ *
+ * Duck-typed: any object with a .dup() method is treated as a stub. Plain
+ * local objects (e.g. in tests) have no .dup() and are returned unchanged.
+ */
+export function dupIfRpcStub<T>(value: T): T {
+  const asStub = value as unknown as { dup?: () => unknown };
+  return typeof asStub?.dup === "function" ? (asStub.dup() as T) : value;
+}
+
+// ─── Internal types ───────────────────────────────────────────────────────────
+
+interface Subscriber<T> {
+  readonly observer: IObserver<T>;
+  readonly unsubscribe: () => void;
+}
+
+// ─── ObservableImpl ───────────────────────────────────────────────────────────
 
 export class ObservableImpl<T> extends RpcTarget implements IObservable<T> {
-  readonly #subscribers = new Set<IObserver<T>>();
+  readonly #subscribers = new Set<Subscriber<T>>();
   #done = false;
   #hasError = false;
   #doneError: unknown = undefined;
 
-  // Internal promise queue — each emit/complete/error chains onto this so
-  // deliveries are strictly ordered and never overlap.
   #queue: Promise<void> = Promise.resolve();
 
   // ─── Source-side API ────────────────────────────────────────────────────────
 
-  /** Enqueue a value for delivery to all current subscribers. Returns void. */
   emit(value: T): void {
-    this.#queue = this.#queue.then(() => this.#dispatch((sub) => sub.onNext(value)));
+    this.#queue = this.#queue.then(() => this.#dispatch((sub) => sub.observer.onNext(value)));
   }
 
-  /**
-   * Wait for all pending emit() deliveries, then signal onComplete to all
-   * subscribers. Returns a Promise that resolves when all onComplete calls finish.
-   */
   async complete(): Promise<void> {
     if (this.#done) return;
     this.#done = true;
     await this.#queue;
-    await this.#dispatch((sub) => sub.onComplete());
-    this.#subscribers.clear();
+    await this.#dispatch((sub) => sub.observer.onComplete());
+    this.#resolveAll();
   }
 
-  /**
-   * Wait for all pending emit() deliveries, then signal onError to all
-   * subscribers. Returns a Promise that resolves when all onError calls finish.
-   */
   async error(reason: unknown): Promise<void> {
     if (this.#done) return;
     this.#done = true;
     this.#hasError = true;
     this.#doneError = reason;
     await this.#queue;
-    await this.#dispatch((sub) => sub.onError(reason));
-    this.#subscribers.clear();
+    await this.#dispatch((sub) => sub.observer.onError(reason));
+    this.#resolveAll();
   }
 
   // ─── IObservable<T> ─────────────────────────────────────────────────────────
 
-  async subscribe(observer: IObserver<T>): Promise<void> {
+  async subscribe(observer: IObserver<T>): Promise<ISubscription> {
     if (this.#done) {
-      try {
-        if (this.#hasError) {
-          await observer.onError(this.#doneError);
-        } else {
-          await observer.onComplete();
-        }
-      } catch {
-        // observer error on terminal signal — ignore
-      }
-      return;
+      const p = this.#hasError ? observer.onError(this.#doneError) : observer.onComplete();
+      await p.catch(() => {});
+      const noop: IDisposable = { [Symbol.dispose]() {} };
+      return noop;
     }
-    this.#subscribers.add(observer);
+
+    // Dup if observer is an RpcStub so subscribe() can return immediately while
+    // we retain our own reference for the subscription lifetime.
+    const held = dupIfRpcStub(observer);
+
+    let sub: Subscriber<T>;
+    let disposed = false;
+    const subscription: ISubscription = {
+      [Symbol.dispose]: () => {
+        if (disposed) return;
+        disposed = true;
+        this.#subscribers.delete(sub);
+        // Dispose the dup when unsubscribing; no-op for plain local observers.
+        if (held !== observer) tryDispose(held);
+      },
+    };
+    sub = { observer: held, unsubscribe: subscription[Symbol.dispose].bind(subscription) };
+    this.#subscribers.add(sub);
+    return subscription;
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  /**
-   * Call fn(subscriber) on every current subscriber concurrently.
-   * Any subscriber that throws or rejects is silently removed.
-   */
-  async #dispatch(fn: (sub: IObserver<T>) => Promise<void>): Promise<void> {
+  async #dispatch(fn: (sub: Subscriber<T>) => Promise<void>): Promise<void> {
     const calls: Promise<void>[] = [];
     for (const sub of this.#subscribers) {
       calls.push(
         fn(sub).catch((e) => {
-          console.warn("[observer] subscriber error, deleting", sub, e);
-          this.#subscribers.delete(sub);
+          console.warn("[observer] subscriber error, removing", sub.observer, e);
+          sub.unsubscribe();
         }),
       );
     }
     await Promise.all(calls);
+  }
+
+  #resolveAll(): void {
+    for (const sub of this.#subscribers) sub.unsubscribe();
+    this.#subscribers.clear();
   }
 }

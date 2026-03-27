@@ -7,10 +7,12 @@
 import type {
   AgentEvent,
   ContextUsage,
+  IDisposable,
   IObservable,
   IObserver,
   IPiccoloCore,
   ISession,
+  ISubscription,
   ITurn,
   IUser,
 } from "@piccolo/api";
@@ -21,13 +23,16 @@ const DEFAULT_USER_ID = "test-user-id";
 const DEFAULT_MODEL = "test/model";
 
 /** Create an IObservable<AgentEvent> that emits the given events then completes. */
+const noopSubscription: IDisposable = { [Symbol.dispose]() {} };
+
 export function createEventObservable(events: AgentEvent[]): IObservable<AgentEvent> {
   return {
-    async subscribe(observer: IObserver<AgentEvent>): Promise<void> {
+    async subscribe(observer: IObserver<AgentEvent>): Promise<ISubscription> {
       for (const event of events) {
         await observer.onNext(event);
       }
       await observer.onComplete();
+      return noopSubscription;
     },
   };
 }
@@ -57,7 +62,7 @@ export function createMockSession(
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     abort: vi.fn().mockResolvedValue(undefined),
-    subscribe: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockResolvedValue(noopSubscription),
     getCurrentTurn: vi.fn().mockResolvedValue(undefined),
     getModel: vi.fn().mockResolvedValue(DEFAULT_MODEL),
     setModel: vi.fn().mockResolvedValue(undefined),

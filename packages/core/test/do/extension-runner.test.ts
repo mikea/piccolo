@@ -9,7 +9,7 @@
  *   1. parseCommand()
  *   2. initialize() — empty registry, single, multiple, error isolation
  *   3. emitInput() — merge rules
- *   4. emitBeforeAgentStart() — merge rules
+ *   4. emitBeforeStart() — merge rules
  *   5. emitContext() — last wins
  *   6. emitToolCall() — first block wins
  *   7. emitToolResult() — chaining
@@ -20,8 +20,8 @@
  */
 
 import type {
-  BeforeAgentStartResult,
   BeforeCompactResult,
+  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   InputResult,
@@ -49,12 +49,12 @@ async function emitInput(
   return (await runner.emit(event, session)) as InputResult;
 }
 
-async function emitBeforeAgentStart(
+async function emitBeforeStart(
   runner: ExtensionRunner,
-  event: Extract<ExtensionEvent, { type: "before_agent_start" }>,
+  event: Extract<ExtensionEvent, { type: "before_start" }>,
   session: ISession,
-): Promise<BeforeAgentStartResult> {
-  return (await runner.emit(event, session)) as BeforeAgentStartResult;
+): Promise<BeforeStartResult> {
+  return (await runner.emit(event, session)) as BeforeStartResult;
 }
 
 async function emitContext(
@@ -345,11 +345,11 @@ describe("emitInput()", () => {
   });
 });
 
-// ─── 4. emitBeforeAgentStart() ───────────────────────────────────────────────
+// ─── 4. emitBeforeStart() ───────────────────────────────────────────────
 
-describe("emitBeforeAgentStart()", () => {
+describe("emitBeforeStart()", () => {
   const baseEvent = {
-    type: "before_agent_start" as const,
+    type: "before_start" as const,
     text: "hello",
     attachments: [] as never[],
     systemPrompt: "base",
@@ -357,7 +357,7 @@ describe("emitBeforeAgentStart()", () => {
 
   it("no extensions → empty result", async () => {
     const runner = await makeRunner({});
-    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
+    const result = await emitBeforeStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toEqual([]);
     expect(result.systemPrompt).toBeUndefined();
   });
@@ -365,12 +365,12 @@ describe("emitBeforeAgentStart()", () => {
   it("one extension returns contextMessages → included", async () => {
     const ext = createMockExtension({
       name: "a",
-      onBeforeAgentStart: () => ({
+      onBeforeStart: () => ({
         contextMessages: [{ role: "user", content: "ctx msg" }],
       }),
     });
     const runner = await makeRunner({ a: ext });
-    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
+    const result = await emitBeforeStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(1);
     expect(result.contextMessages?.[0]).toMatchObject({ content: "ctx msg" });
   });
@@ -378,48 +378,48 @@ describe("emitBeforeAgentStart()", () => {
   it("two extensions both return contextMessages → arrays concatenated", async () => {
     const extA = createMockExtension({
       name: "a",
-      onBeforeAgentStart: () => ({
+      onBeforeStart: () => ({
         contextMessages: [{ role: "user", content: "from A" }],
       }),
     });
     const extB = createMockExtension({
       name: "b",
-      onBeforeAgentStart: () => ({
+      onBeforeStart: () => ({
         contextMessages: [{ role: "user", content: "from B" }],
       }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
+    const result = await emitBeforeStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(2);
   });
 
   it("two extensions return systemPrompt → last one wins", async () => {
     const extA = createMockExtension({
       name: "a",
-      onBeforeAgentStart: () => ({ systemPrompt: "prompt from A" }),
+      onBeforeStart: () => ({ systemPrompt: "prompt from A" }),
     });
     const extB = createMockExtension({
       name: "b",
-      onBeforeAgentStart: () => ({ systemPrompt: "prompt from B" }),
+      onBeforeStart: () => ({ systemPrompt: "prompt from B" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
+    const result = await emitBeforeStart(runner, baseEvent, ctx);
     expect(result.systemPrompt).toBe("prompt from B");
   });
 
   it("first returns contextMessages; second returns systemPrompt → both included", async () => {
     const extA = createMockExtension({
       name: "a",
-      onBeforeAgentStart: () => ({
+      onBeforeStart: () => ({
         contextMessages: [{ role: "user", content: "ctx" }],
       }),
     });
     const extB = createMockExtension({
       name: "b",
-      onBeforeAgentStart: () => ({ systemPrompt: "override" }),
+      onBeforeStart: () => ({ systemPrompt: "override" }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeAgentStart(runner, baseEvent, ctx);
+    const result = await emitBeforeStart(runner, baseEvent, ctx);
     expect(result.contextMessages).toHaveLength(1);
     expect(result.systemPrompt).toBe("override");
   });

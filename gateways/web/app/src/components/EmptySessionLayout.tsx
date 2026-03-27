@@ -28,7 +28,7 @@ export const EmptySessionLayout: Component<Props> = (props) => {
       const session = (await user.newSession()) as ISession;
       const id = await session.sessionId();
       console.debug(`[nav] newSession -> navigating to /sessions/${id}`);
-      refetchSessions();
+      await refetchSessions();
       navigate(`/sessions/${id}`);
     } catch (err) {
       console.error("[rpc] newSession error:", err);

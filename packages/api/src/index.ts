@@ -57,15 +57,21 @@ export interface NewSessionOptions {
  * Spec ref: specs/api.md §Shared Types §AgentEvent
  */
 export type AgentEvent =
-  | { type: "agent_start" }
-  | { type: "agent_end"; totalUsage: LanguageModelUsage }
-  | { type: "turn_start"; stepNumber: number }
-  | { type: "turn_end"; stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
-  | { type: "text_delta"; delta: string }
-  | { type: "reasoning_delta"; delta: string }
-  | { type: "tool_start"; toolCallId: string; toolName: string; input: unknown }
-  | { type: "tool_end"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
-  | { type: "error"; message: string };
+  | { type: "start" }
+  | { type: "finish"; totalUsage: LanguageModelUsage }
+  | { type: "step-start"; stepNumber: number }
+  | {
+      type: "step-finish";
+      stepNumber: number;
+      finishReason: FinishReason;
+      usage: LanguageModelUsage;
+    }
+  | { type: "text-delta"; delta: string }
+  | { type: "reasoning-delta"; delta: string }
+  | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
+  | { type: "error"; message: string }
+  | { type: "usage"; inputTokens: number };
 
 /**
  * SessionEvent — superset of AgentEvent, plus lifecycle events fired by the DO.
@@ -206,12 +212,29 @@ export interface IObserver<T> {
 }
 
 /**
+ * IDisposable — anything that can be explicitly released.
+ * Integrates with JavaScript's explicit resource management (`using` declarations).
+ * Spec ref: specs/api.md §IDisposable
+ */
+export interface IDisposable {
+  [Symbol.dispose](): void;
+}
+
+/**
+ * ISubscription — returned by IObservable.subscribe().
+ * Dispose it (via [Symbol.dispose]() or a `using` declaration) to unsubscribe.
+ * Spec ref: specs/api.md §ISubscription
+ */
+export type ISubscription = IDisposable;
+
+/**
  * IObservable<T> — a push-based sequence of values.
  * Call subscribe() to start receiving values via an IObserver<T>.
+ * Returns an ISubscription that must be disposed to unsubscribe.
  * Spec ref: specs/api.md §IObservable
  */
 export interface IObservable<T> {
-  subscribe(observer: IObserver<T>): Promise<void>;
+  subscribe(observer: IObserver<T>): Promise<ISubscription>;
 }
 
 // ─── ITurn — Active turn context ──────────────────────────────────────────────
@@ -396,7 +419,7 @@ export type ExtensionEvent =
       commandName?: string;
       commandArgs?: string;
     }
-  | { type: "before_agent_start"; text: string; attachments: Attachment[]; systemPrompt: string }
+  | { type: "before_start"; text: string; attachments: Attachment[]; systemPrompt: string }
   | { type: "context"; messages: ModelMessage[] }
   | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
   | {
@@ -416,7 +439,7 @@ export interface InputResult {
   text?: string;
 }
 
-export interface BeforeAgentStartResult {
+export interface BeforeStartResult {
   systemPrompt?: string;
   contextMessages?: ModelMessage[];
 }
@@ -442,7 +465,7 @@ export interface BeforeCompactResult {
 /**
  * IExtensionListener — interception event handler implemented by extensions.
  *
- * onEvent receives only interception events (input, before_agent_start, context,
+ * onEvent receives only interception events (input, before_start, context,
  * tool_call, tool_result, before_compact) that require a structured return value.
  *
  * For observing AgentEvents, extensions subscribe to ISession via init(ctx).
@@ -455,7 +478,7 @@ export interface IExtensionListener {
     ctx: ISession,
   ): Promise<
     | InputResult
-    | BeforeAgentStartResult
+    | BeforeStartResult
     | ContextResult
     | ToolCallResult
     | ToolResultOverride

@@ -338,7 +338,7 @@ interface DOState {
   messageToEntryId: Map<ModelMessage, string>;
 
   // Token counts from the last completed agent turn.
-  // lastInputTokens: updated from agent_end.totalUsage; used for compaction threshold.
+  // lastInputTokens: updated from finish.totalUsage; used for compaction threshold.
   lastInputTokens: number;
 
   // Count of agent.state.messages at the start of the current prompt() call.
@@ -387,7 +387,7 @@ async newSession(
    e. Reconstruct the `LanguageModel` via `createModel(env, modelId)`.
 2. Return `getSession(userId)` — the DO's own `SessionImpl` RpcTarget.
 
-The D1 `sessions` row is **not** written here — it is written lazily on the first `agent_end` (see §Lazy session creation).
+The D1 `sessions` row is **not** written here — it is written lazily on the first `finish` (see §Lazy session creation).
 
 ---
 
@@ -434,7 +434,7 @@ off when the RPC call frame completes.
 
 #### Per-message append
 
-When `AgentEvent.type === "agent_end"` fires:
+When `AgentEvent.type === "finish"` fires:
 
 ```
 1. For each new ModelMessage in agent.state.messages since last flush:
@@ -737,7 +737,7 @@ async function compact(
 
 ## `ISession` — Core-Side Implementation
 
-`SessionImpl extends RpcTarget` holds a **live reference to `DOState`**. All mutations (model changes, custom entries, etc.) write directly into `doState.pendingEntries` / `doState.branchEntries`. No D1 flush happens here — flushing occurs at `agent_end` as usual.
+`SessionImpl extends RpcTarget` holds a **live reference to `DOState`**. All mutations (model changes, custom entries, etc.) write directly into `doState.pendingEntries` / `doState.branchEntries`. No D1 flush happens here — flushing occurs at `finish` as usual.
 
 One instance is created per `prompt()` call and stored in `doState.session` (typed as `ISession`). It is also passed to `agent.setContext(session)` so the agent can inject it into every tool `execute()` call. `DOState.session` is always typed as `ISession` — no code outside `session-impl.ts` references `SessionImpl` directly.
 
@@ -757,11 +757,11 @@ class SessionImpl extends RpcTarget implements ISession {
   }
   async appendCustomMessage(customType, content, display) {
     // Creates CustomMessageEntry, pushes to pendingEntries + branchEntries, updates leafId.
-    // No D1 flush — flush happens at agent_end.
+    // No D1 flush — flush happens at finish.
   }
   async appendCustomEntry(customType, data?) {
     // Creates CustomEntry, pushes to pendingEntries + branchEntries, updates leafId.
-    // No D1 flush — flush happens at agent_end.
+    // No D1 flush — flush happens at finish.
   }
   async getEntries(customType?) {
     // Filter doState.branchEntries by type === "custom" and optional customType match.
@@ -1044,7 +1044,7 @@ class StreamBroadcaster<T> extends TransformStream<T, T> {
 Called synchronously for every event as the DO drains the turn stream. Contains all four peek reasons:
 
 1. **In-flight history** — accumulates `#streamingAssistantText` and `#streamingToolCalls` for `getHistory()` mid-turn
-2. **Token counts** — updates `#lastInputTokens` from `turn_end.usage` and `agent_end.totalUsage`
+2. **Token counts** — updates `#lastInputTokens` from `step-finish.usage` and `finish.totalUsage`
 3. **Extension dispatch** — `extensionRunner.emit(event.type, event, ctx)` fire-and-forget
 
 ### `AgentSessionDO.#onTurnClose()`

@@ -59,14 +59,14 @@ interface Attachment {
 // Pushed from AgentSessionDO → gateways via IObservable<AgentEvent>.
 // Also dispatched to extensions via ExtensionRunner.
 type AgentEvent =
-  | { type: "agent_start" }
-  | { type: "agent_end";       totalUsage: LanguageModelUsage }
-  | { type: "turn_start";      stepNumber: number }
-  | { type: "turn_end";        stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
-  | { type: "text_delta";      delta: string }
-  | { type: "reasoning_delta"; delta: string }
-  | { type: "tool_start";      toolCallId: string; toolName: string; input: unknown }
-  | { type: "tool_end";        toolCallId: string; toolName: string; output: unknown; isError: boolean }
+  | { type: "start" }
+  | { type: "finish";       totalUsage: LanguageModelUsage }
+  | { type: "step-start";      stepNumber: number }
+  | { type: "step-finish";        stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
+  | { type: "text-delta";      delta: string }
+  | { type: "reasoning-delta"; delta: string }
+  | { type: "tool-call";      toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool-result";        toolCallId: string; toolName: string; output: unknown; isError: boolean }
   | { type: "error";           message: string };
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
@@ -555,7 +555,7 @@ All methods are optional.
 type ExtensionEvent =
   | { type: "input"; text: string; attachments: Attachment[]; source: "user";
       commandName?: string; commandArgs?: string }
-  | { type: "before_agent_start"; text: string; attachments: Attachment[]; systemPrompt: string }
+  | { type: "before_start"; text: string; attachments: Attachment[]; systemPrompt: string }
   | { type: "context"; messages: ModelMessage[] }
   | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool_result"; toolCallId: string; toolName: string;

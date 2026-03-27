@@ -15,8 +15,8 @@
  */
 
 import type {
-  BeforeAgentStartResult,
   BeforeCompactResult,
+  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   ICommand,
@@ -35,7 +35,7 @@ export type { SystemPromptAddition } from "@piccolo/api";
 // ── Narrow event types for handler callbacks ──────────────────────────────────
 
 type InputEv = Extract<ExtensionEvent, { type: "input" }>;
-type BeforeAgentStartEv = Extract<ExtensionEvent, { type: "before_agent_start" }>;
+type BeforeStartEv = Extract<ExtensionEvent, { type: "before_start" }>;
 type ContextEv = Extract<ExtensionEvent, { type: "context" }>;
 type ToolCallEv = Extract<ExtensionEvent, { type: "tool_call" }>;
 type ToolResultEv = Extract<ExtensionEvent, { type: "tool_result" }>;
@@ -62,8 +62,8 @@ export interface MockExtensionOptions {
   systemPromptAdditions?: SystemPromptAddition[];
   /** Handler for input events. Return undefined to behave as not-implemented. */
   onInput?: (event: InputEv) => InputResult | undefined;
-  /** Handler for before_agent_start events. */
-  onBeforeAgentStart?: (event: BeforeAgentStartEv) => BeforeAgentStartResult | undefined;
+  /** Handler for before_start events. */
+  onBeforeStart?: (event: BeforeStartEv) => BeforeStartResult | undefined;
   /** Handler for context events. */
   onContext?: (event: ContextEv) => ContextResult | undefined;
   /** Handler for tool_call events. */
@@ -83,7 +83,7 @@ export interface MockExtensionOptions {
   calls?: {
     onInit: ISession[];
     onInput: InputEv[];
-    onBeforeAgentStart: BeforeAgentStartEv[];
+    onBeforeStart: BeforeStartEv[];
     onContext: ContextEv[];
     onToolCall: ToolCallEv[];
     onToolResult: ToolResultEv[];
@@ -122,7 +122,7 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
   const calls: NonNullable<MockExtensionOptions["calls"]> = options.calls ?? {
     onInit: [],
     onInput: [],
-    onBeforeAgentStart: [],
+    onBeforeStart: [],
     onContext: [],
     onToolCall: [],
     onToolResult: [],
@@ -176,9 +176,9 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
           calls.onInput.push(event);
           return options.onInput?.(event);
 
-        case "before_agent_start":
-          calls.onBeforeAgentStart.push(event);
-          return options.onBeforeAgentStart?.(event);
+        case "before_start":
+          calls.onBeforeStart.push(event);
+          return options.onBeforeStart?.(event);
 
         case "context":
           calls.onContext.push(event);

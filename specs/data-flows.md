@@ -55,18 +55,18 @@ AgentEvents stream back up through AgentSessionDO → gateway:
 Events emitted by `piccolo-agent` during a single turn:
 
 ```
-agent_start
+start
 
-  turn_start (stepNumber=0)
-    text_delta  [0..N per step]
-    reasoning_delta  [0..N, optional]
-    tool_start  [0..N per step]
-    tool_end    [0..N per step]
-  turn_end (stepNumber=0, finishReason, usage)
+  step-start (stepNumber=0)
+    text-delta  [0..N per step]
+    reasoning-delta  [0..N, optional]
+    tool-call  [0..N per step]
+    tool-result    [0..N per step]
+  step-finish (stepNumber=0, finishReason, usage)
 
-  [turn_start / turn_end repeat for each tool-calling step]
+  [step-start / step-finish repeat for each tool-calling step]
 
-agent_end (totalUsage)
+finish (totalUsage)
 
   OR on error:
 error (message)

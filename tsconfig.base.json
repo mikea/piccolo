@@ -3,14 +3,13 @@
   // Every package tsconfig.json extends this file.
   // See specs/code.md for the rationale behind each setting.
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2024",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    // ES2022 only — Workers packages get all runtime types (Web APIs + CF bindings)
-    // from `wrangler types`-generated worker-configuration.d.ts. Pure library
-    // packages (packages/agent) override this with ["ES2022", "WebWorker"] in their
-    // own tsconfig.json so they still get Web API types without a wrangler dependency.
-    "lib": ["ES2022"],
+    // ES2024 — includes Symbol.dispose and other modern features.
+    // Workers packages get runtime types from wrangler types-generated worker-configuration.d.ts.
+    // Pure library packages override lib to add WebWorker globals.
+    "lib": ["ES2024", "esnext.disposable"],
 
     // Strictness — all enabled
     "strict": true,

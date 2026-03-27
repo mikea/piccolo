@@ -21,7 +21,7 @@ import { jsonSchema, tool } from "ai";
  *
  * The tool name (descriptor.name) becomes the record key.
  * Tool execution errors are caught by the AI SDK and delivered as tool-error
- * stream parts; the agent translates these to tool_end events with isError: true.
+ * stream parts; the agent translates these to tool-result events with isError: true.
  */
 export function toAiSdkTools(tools: ITool[], ctx: ISession): ToolSet {
   return Object.fromEntries(

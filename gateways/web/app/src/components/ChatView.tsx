@@ -12,7 +12,14 @@
  * at component init — never pass it into SolidJS reactive primitives.
  */
 
-import type { AgentEvent, HistoryEntry, IObserver, ISession } from "@piccolo/api";
+import type {
+  AgentEvent,
+  ContextUsage,
+  HistoryEntry,
+  IDisposable,
+  IObserver,
+  ISession,
+} from "@piccolo/api";
 import { RpcTarget } from "capnweb";
 import { type Component, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
@@ -30,13 +37,16 @@ export const ChatView: Component<Props> = (props) => {
   const session = props.session;
 
   const [entries, setEntries] = createStore<HistoryEntry[]>([]);
-  // isStreaming tracks whether we're actively consuming a stream (client-side only, for UI controls).
   const [isStreaming, setIsStreaming] = createSignal(false);
+  const [contextUsage, setContextUsage] = createSignal<ContextUsage | undefined>(undefined);
 
   let aborted = false;
+  let subscription: IDisposable | undefined;
 
   onCleanup(() => {
     aborted = true;
+    subscription?.[Symbol.dispose]();
+    subscription = undefined;
     setEntries([]);
     setIsStreaming(false);
   });
@@ -46,7 +56,7 @@ export const ChatView: Component<Props> = (props) => {
   /**
    * Subscribe to the session observable once on mount and run for the session
    * lifetime. All AgentEvents from all turns flow through this single subscription.
-   * isStreaming is driven by agent_start / agent_end events.
+   * isStreaming is driven by start (true) / finish (false).
    */
   async function subscribeToSession(): Promise<void> {
     // Must extend RpcTarget so capnweb serializes this as a callable RPC
@@ -56,12 +66,15 @@ export const ChatView: Component<Props> = (props) => {
       async onNext(event: AgentEvent): Promise<void> {
         if (aborted) return;
         console.debug("[session] event: %o", event);
-        if (event.type === "turn_start") {
+        if (event.type === "start") {
           setIsStreaming(true);
-          console.debug("[ui] isStreaming → true (turn_start)");
-        } else if (event.type === "turn_end") {
+          console.debug("[ui] isStreaming → true (start)");
+        } else if (event.type === "finish") {
           setIsStreaming(false);
-          console.debug("[ui] isStreaming → false (turn_end)");
+          console.debug("[ui] isStreaming → false (finish)");
+        } else if (event.type === "usage") {
+          setContextUsage({ inputTokens: event.inputTokens });
+          console.debug("[ui] contextUsage →", event.inputTokens, "tokens");
         }
         applyEvent(event);
       }
@@ -76,23 +89,21 @@ export const ChatView: Component<Props> = (props) => {
       }
     }
 
-    console.debug("[stream] subscribe:", session);
-    await session.subscribe(new SessionObserver()).catch((err: unknown) => {
-      console.error("[stream] subscribe error:", err);
-    });
+    console.debug("[stream] subscribing to session");
+    subscription = await session.subscribe(new SessionObserver());
   }
 
   function applyEvent(event: AgentEvent): void {
     console.debug("[ui] applyEvent type=%s", event.type);
     switch (event.type) {
-      case "agent_start":
+      case "start":
         // Add a new streaming assistant entry.
         setEntries((es) => [
           ...es,
           { type: "assistant", id: "streaming", content: "", isStreaming: true } as HistoryEntry,
         ]);
         break;
-      case "text_delta":
+      case "text-delta":
         // Append text to the last streaming assistant entry.
         setEntries((es) => {
           const idx = lastStreamingAssistantIdx(es);
@@ -103,7 +114,7 @@ export const ChatView: Component<Props> = (props) => {
           });
         });
         break;
-      case "tool_start":
+      case "tool-call":
         setEntries((es) => [
           ...es,
           {
@@ -117,7 +128,7 @@ export const ChatView: Component<Props> = (props) => {
           } as HistoryEntry,
         ]);
         break;
-      case "tool_end":
+      case "tool-result":
         setEntries((es) =>
           es.map((e) => {
             if (e.type !== "tool" || e.id !== event.toolCallId) return e;
@@ -125,7 +136,7 @@ export const ChatView: Component<Props> = (props) => {
           }),
         );
         break;
-      case "agent_end":
+      case "finish":
         finishStreamingEntry();
         break;
       case "error":
@@ -165,13 +176,19 @@ export const ChatView: Component<Props> = (props) => {
     void (async () => {
       try {
         // Subscribe to session observable first so no events are missed.
-        await subscribeToSession();
+        void subscribeToSession();
 
-        // Load history and active turn state in parallel.
-        console.debug("[rpc] getHistory + getCurrentTurn calling...");
-        const [history, turn] = await Promise.all([session.getHistory(), session.getCurrentTurn()]);
+        // Load history, active turn, and usage in parallel.
+        console.debug("[rpc] getHistory + getCurrentTurn + getContextUsage calling...");
+        const [history, turn, usage] = await Promise.all([
+          session.getHistory(),
+          session.getCurrentTurn(),
+          session.getContextUsage(),
+        ]);
         console.debug("[rpc] getHistory →", history.length, "entries");
+        console.debug("[rpc] getContextUsage →", usage.inputTokens, "tokens");
         setEntries(history);
+        setContextUsage(usage);
 
         // If a turn is already active on mount (e.g. page reload mid-turn), set isStreaming.
         if (turn !== undefined) {
@@ -199,7 +216,7 @@ export const ChatView: Component<Props> = (props) => {
       console.debug("[rpc] prompt calling... text=%s", text.slice(0, 60));
       await session.prompt(text);
       console.debug("[rpc] prompt returned — events arriving via session subscription");
-      // isStreaming will be set to true by agent_start and false by agent_end
+      // isStreaming will be set to true by start and false by finish
       // flowing through the session subscription.
     } catch (err) {
       console.error("[rpc] prompt error:", err);
@@ -223,7 +240,7 @@ export const ChatView: Component<Props> = (props) => {
 
   return (
     <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
-      <Header session={session} />
+      <Header session={session} contextUsage={contextUsage()} />
       <MessageList entries={entries} />
       <ChatInput
         isStreaming={isStreaming()}

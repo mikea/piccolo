@@ -25,11 +25,11 @@ Defined in [api.md §3](api.md). Tools return an `ITelegramUI` stub from `getGat
 ```typescript
 interface ITelegramUI extends ITextUI {
   // Return custom MarkdownV2 text for the in-progress tool call message.
-  // Called when tool_start arrives. Return undefined for default "⚙️ Running: {toolName}".
+  // Called when tool-call arrives. Return undefined for default "⚙️ Running: {toolName}".
   formatCall(toolName: string, input: unknown): Promise<string | undefined>;
 
   // Return custom MarkdownV2 text for the completed tool result message.
-  // Called when tool_end arrives. Return undefined to fall back to ITextUI.showResult().
+  // Called when tool-result arrives. Return undefined to fall back to ITextUI.showResult().
   formatResult(toolName: string, output: unknown, isError: boolean): Promise<string | undefined>;
 
   // Return an inline keyboard to attach to the result message.
@@ -117,12 +117,12 @@ Telegram does not support true streaming. The gateway adapts `AgentEvent` to Tel
 
 | Event | Action |
 |---|---|
-| `agent_start` | Send `sendMessage("…")` as typing indicator; record `message_id` |
-| `text_delta` | Accumulate text; call `editMessageText` at most once per 2 s (rate limit) |
-| `reasoning_delta` | Accumulate separately; omit from output by default (opt-in setting shows as blockquote) |
-| `tool_start` | Call `ITelegramUI.formatCall()` or default `"⚙️ Running: {toolName}"`; send or edit |
-| `tool_end` | Call `ITelegramUI.formatResult()` or default summary; attach `getInlineKeyboard()` result |
-| `agent_end` | Final `editMessageText` with complete assistant text; delete typing indicator |
+| `start` | Send `sendMessage("…")` as typing indicator; record `message_id` |
+| `text-delta` | Accumulate text; call `editMessageText` at most once per 2 s (rate limit) |
+| `reasoning-delta` | Accumulate separately; omit from output by default (opt-in setting shows as blockquote) |
+| `tool-call` | Call `ITelegramUI.formatCall()` or default `"⚙️ Running: {toolName}"`; send or edit |
+| `tool-result` | Call `ITelegramUI.formatResult()` or default summary; attach `getInlineKeyboard()` result |
+| `finish` | Final `editMessageText` with complete assistant text; delete typing indicator |
 | `error` | Edit indicator to `"❌ {message.error}"` |
 
 **Message splitting:** If the final accumulated text exceeds 4096 characters, split into multiple sequential `sendMessage` calls.

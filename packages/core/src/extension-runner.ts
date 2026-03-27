@@ -18,8 +18,8 @@
  */
 
 import type {
-  BeforeAgentStartResult,
   BeforeCompactResult,
+  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   ICommand,
@@ -37,12 +37,12 @@ import type {
  * The union of all possible return values from emit().
  * Callers narrow by knowing which event type they dispatched.
  *
- * For fire-and-forget events (agent_start, agent_end, turn_*, tool_*, compact,
+ * For fire-and-forget events (start, finish, turn_*, tool_*, compact,
  * session_start, session_shutdown) the result is always undefined.
  */
 export type ExtensionEventResult =
   | InputResult
-  | BeforeAgentStartResult
+  | BeforeStartResult
   | ContextResult
   | ToolCallResult
   | ToolResultOverride
@@ -126,7 +126,7 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
     kv: KVNamespace,
     extensions: DispatchNamespace,
-    modelId?: string,
+    _modelId?: string,
   ): Promise<void> {
     console.debug("[extensions] initialize start");
 
@@ -264,14 +264,14 @@ export class ExtensionRunner implements IExtensionRunner {
    *
    * Merge semantics by event type:
    *   input            — first non-continue InputResult wins; default { action: "continue" }
-   *   before_agent_start — contextMessages concatenated; last systemPrompt wins
+   *   before_start — contextMessages concatenated; last systemPrompt wins
    *   context          — last non-void ContextResult wins
    *   tool_call        — first block=true wins; default { block: false }
    *   tool_result      — chained: each extension sees previous output
    *   before_compact   — first cancel=true wins; else first summary wins; else {}
    *   all others       — fire-and-forget (results discarded); returns undefined
    *
-   * AgentEvent variants (agent_start, agent_end, turn_*, tool_*, error) are
+   * AgentEvent variants (start, finish, turn_*, tool_*, error) are
    * valid ExtensionEvents and fire-and-forget.
    *
    * Spec ref: specs/core.md §Dispatch and merge rules
@@ -280,8 +280,8 @@ export class ExtensionRunner implements IExtensionRunner {
     switch (event.type) {
       case "input":
         return this.#dispatchInput(event, ctx);
-      case "before_agent_start":
-        return this.#dispatchBeforeAgentStart(event, ctx);
+      case "before_start":
+        return this.#dispatchBeforeStart(event, ctx);
       case "context":
         return this.#dispatchContext(event, ctx);
       case "tool_call":
@@ -324,18 +324,18 @@ export class ExtensionRunner implements IExtensionRunner {
     return winner ?? { action: "continue" };
   }
 
-  /** before_agent_start — contextMessages concatenated; last systemPrompt wins. */
-  async #dispatchBeforeAgentStart(
-    event: Extract<ExtensionEvent, { type: "before_agent_start" }>,
+  /** before_start — contextMessages concatenated; last systemPrompt wins. */
+  async #dispatchBeforeStart(
+    event: Extract<ExtensionEvent, { type: "before_start" }>,
     ctx: ISession,
-  ): Promise<BeforeAgentStartResult> {
+  ): Promise<BeforeStartResult> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "before_agent_start", () => worker.onEvent?.(event, ctx)),
+        this.#safeCall(name, "before_start", () => worker.onEvent?.(event, ctx)),
       ),
     );
     const typed = results.filter(
-      (r): r is BeforeAgentStartResult =>
+      (r): r is BeforeStartResult =>
         r !== undefined &&
         r !== null &&
         typeof r === "object" &&
@@ -343,7 +343,7 @@ export class ExtensionRunner implements IExtensionRunner {
     );
     const contextMessages = typed.flatMap((r) => r.contextMessages ?? []);
     const lastSystemPrompt = typed.filter((r) => r.systemPrompt != null).at(-1)?.systemPrompt;
-    const merged: BeforeAgentStartResult = { contextMessages };
+    const merged: BeforeStartResult = { contextMessages };
     if (lastSystemPrompt != null) merged.systemPrompt = lastSystemPrompt;
     return merged;
   }

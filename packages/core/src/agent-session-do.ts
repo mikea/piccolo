@@ -22,11 +22,12 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import type {
   AgentEvent,
   Attachment,
-  BeforeAgentStartResult,
+  BeforeStartResult,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
   HistoryEntry,
+  IDisposable,
   IGatewayCallback,
   InputResult,
   IObserver,
@@ -147,7 +148,7 @@ export class SessionTarget extends RpcTarget implements ISession {
   getHistory(): Promise<HistoryEntry[]> {
     return this.#do.getHistory();
   }
-  subscribe(observer: IObserver<AgentEvent>): Promise<void> {
+  subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
     return this.#do.subscribe(observer);
   }
   getContextUsage(): Promise<ContextUsage> {
@@ -234,7 +235,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Live streaming state (for getHistory / subscribe) ────────────────────
   // Tracks in-flight assistant content so getHistory() can return it before
-  // the turn completes and commits to D1. Cleared on agent_end / error.
+  // the turn completes and commits to D1. Cleared on finish / error.
   #streamingAssistantText = "";
   #streamingToolCalls: Map<string, { toolName: string; input: unknown }> = new Map();
 
@@ -311,7 +312,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       onNext: async (event) => {
         this.#onTurnEvent(event);
         this.#observable.emit(event);
-        if (event.type === "agent_end") {
+        if (event.type === "finish") {
           this.ctx.waitUntil(this.#onAgentEnd());
         }
       },
@@ -465,16 +466,16 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#leafId = userEntryId;
     this.#messageToEntryId.set(userMessage, userEntryId);
 
-    // emitBeforeAgentStart
+    // emitBeforeStart
     const beforeStart = (await this.#extensionRunner.emit(
       {
-        type: "before_agent_start",
+        type: "before_start",
         text: effectiveText,
         attachments: attachments ?? [],
         systemPrompt: this.#assembledSystemPrompt,
       },
       ctx,
-    )) as BeforeAgentStartResult;
+    )) as BeforeStartResult;
     if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
       this.#agent.appendMessages(beforeStart.contextMessages);
     }
@@ -523,7 +524,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const isStreaming = this.#currentTurn !== null;
 
     // Walk committed messages to build history entries.
-    // #messages are the ModelMessage[] currently held in the agent (committed after agent_end).
+    // #messages are the ModelMessage[] currently held in the agent (committed after finish).
     // We also need a map from toolCallId → entry index to fill in tool results.
     const toolEntryIndex = new Map<string, number>();
 
@@ -619,7 +620,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return entries;
   }
 
-  async subscribe(observer: IObserver<AgentEvent>): Promise<void> {
+  async subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
     console.debug(`[session:${this.#sessionId}] subscribe`, observer);
     return this.#observable.subscribe(observer);
   }
@@ -833,32 +834,40 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #onTurnEvent(event: AgentEvent): void {
     // 1. In-flight history tracking
     switch (event.type) {
-      case "agent_start":
+      case "start":
         this.#streamingAssistantText = "";
         this.#streamingToolCalls.clear();
         break;
-      case "text_delta":
+      case "text-delta":
         this.#streamingAssistantText += event.delta;
         break;
-      case "tool_start":
+      case "tool-call":
         this.#streamingToolCalls.set(event.toolCallId, {
           toolName: event.toolName,
           input: event.input,
         });
         break;
-      case "tool_end":
+      case "tool-result":
         this.#streamingToolCalls.delete(event.toolCallId);
         break;
-      case "turn_end":
+      case "step-finish":
         // 2. Token count from per-step usage
         this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
         this.#streamingAssistantText = "";
+        this.#observable.emit({
+          type: "usage",
+          inputTokens: this.#computeContextUsage().inputTokens,
+        });
         break;
-      case "agent_end":
+      case "finish":
         // 2. Token count from total usage
         this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
         this.#streamingAssistantText = "";
         this.#streamingToolCalls.clear();
+        this.#observable.emit({
+          type: "usage",
+          inputTokens: this.#computeContextUsage().inputTokens,
+        });
         break;
       case "error":
         this.#streamingAssistantText = "";
@@ -871,7 +880,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   /**
-   * Called via ctx.waitUntil when agent_end fires on the agent subscription.
+   * Called via ctx.waitUntil when finish fires on the agent subscription.
    * Persists messages, runs any queued follow-up turns, then fires turn_flushed.
    * Follow-up turns also emit through the agent subscription — they trigger
    * #onAgentEnd again when they finish, processing the queue recursively.
@@ -938,6 +947,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async #persistNewMessages(): Promise<void> {
     const newMessages = this.#agent.state.messages.slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
+      if (this.#messageToEntryId.has(msg)) continue; // already tracked (e.g. user message)
       const entryId = generateEntryId();
       const entry: MessageEntry = {
         id: entryId,

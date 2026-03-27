@@ -48,14 +48,14 @@ function makeTool(
 }
 
 /**
- * Subscribe to agent, call prompt(), collect all events until agent_end or error.
+ * Subscribe to agent, call prompt(), collect all events until finish or error.
  * Must subscribe before prompt() to avoid missing early events.
  */
 async function drainAgent(
   agent: Agent,
   input: string | ModelMessage[],
   images?: ImagePart[],
-  afterPrompt?: () => void,
+  afterPrompt?: (resolve: () => void) => void,
 ): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
   let resolve!: () => void;
@@ -65,7 +65,14 @@ async function drainAgent(
   const observer: IObserver<AgentEvent> = {
     async onNext(event) {
       events.push(event);
-      if (event.type === "agent_end" || event.type === "error") resolve();
+      console.debug(
+        "[test] onNext type=%s currentTurn=%s",
+        event.type,
+        agent.getCurrentTurn() !== null,
+      );
+      if (event.type === "finish" || event.type === "error" || agent.getCurrentTurn() === null) {
+        resolve();
+      }
     },
     async onError() {
       resolve();
@@ -74,15 +81,14 @@ async function drainAgent(
       resolve();
     },
   };
-  // Must await subscribe before prompt() so the subscriber is registered
-  // before any events are emitted.
-  await agent.subscribe(observer);
+  void agent.subscribe(observer);
+  await Promise.resolve();
   if (typeof input === "string") {
     agent.prompt(input, images);
   } else {
     agent.prompt(input);
   }
-  afterPrompt?.();
+  afterPrompt?.(resolve);
   await done;
   return events;
 }
@@ -92,31 +98,35 @@ async function drainAgent(
 describe("Agent — basic streaming", () => {
   it("prompt() returns an AgentTurn", async () => {
     const agent = makeAgent();
-    const draining = drainAgent(agent, "hi");
+    const draining = drainAgent(agent, "hi"); // subscribes first, then prompts
+    // After drainAgent's internal await Promise.resolve(), prompt() is called.
+    // Advance past that one microtask so prompt() has run.
+    await Promise.resolve();
+    await Promise.resolve();
     expect(agent.getCurrentTurn()).not.toBeNull();
     await draining;
   });
 
-  it("emits agent_start and agent_end events", async () => {
+  it("emits start and finish events", async () => {
     const agent = makeAgent();
     const events = await drainAgent(agent, "hi");
-    expect(events.some((e) => e.type === "agent_start")).toBe(true);
-    expect(events.some((e) => e.type === "agent_end")).toBe(true);
+    expect(events.some((e) => e.type === "start")).toBe(true);
+    expect(events.some((e) => e.type === "finish")).toBe(true);
   });
 
-  it("emits text_delta events that reconstruct the response", async () => {
+  it("emits text-delta events that reconstruct the response", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "Hello world" }) });
     const events = await drainAgent(agent, "hi");
     const deltas = events
-      .filter((e) => e.type === "text_delta")
-      .map((e) => (e.type === "text_delta" ? e.delta : ""));
+      .filter((e) => e.type === "text-delta")
+      .map((e) => (e.type === "text-delta" ? e.delta : ""));
     expect(deltas.join("")).toBe("Hello world");
   });
 
-  it("emits turn_end event", async () => {
+  it("emits step-finish event", async () => {
     const agent = makeAgent();
     const events = await drainAgent(agent, "hi");
-    expect(events.some((e) => e.type === "turn_end")).toBe(true);
+    expect(events.some((e) => e.type === "step-finish")).toBe(true);
   });
 
   it("getCurrentTurn() is null after drain", async () => {
@@ -145,10 +155,13 @@ describe("Agent — basic streaming", () => {
 // ─── getCurrentTurn ───────────────────────────────────────────────────────────
 
 describe("Agent — getCurrentTurn", () => {
-  it("getCurrentTurn() returns the AgentTurn while streaming", () => {
+  it("getCurrentTurn() returns the AgentTurn while streaming", async () => {
     const agent = makeAgent();
-    void drainAgent(agent, "hi");
+    const draining = drainAgent(agent, "hi");
+    await Promise.resolve();
+    await Promise.resolve();
     expect(agent.getCurrentTurn()).not.toBeNull();
+    await draining;
   });
 
   it("getCurrentTurn() returns null after turn completes", async () => {
@@ -157,10 +170,13 @@ describe("Agent — getCurrentTurn", () => {
     expect(agent.getCurrentTurn()).toBeNull();
   });
 
-  it("prompt() throws if a turn is already active", () => {
+  it("prompt() throws if a turn is already active", async () => {
     const agent = makeAgent();
-    void drainAgent(agent, "first");
+    const draining = drainAgent(agent, "first");
+    await Promise.resolve();
+    await Promise.resolve();
     expect(() => agent.prompt("second")).toThrow("turn is already in progress");
+    await draining;
   });
 });
 
@@ -238,22 +254,31 @@ describe("Agent — state mutations", () => {
 // ─── Abort ────────────────────────────────────────────────────────────────────
 
 describe("Agent — abort", () => {
-  it("turn.abort() stops streaming and suppresses agent_end", async () => {
+  it("turn.abort() stops streaming and suppresses finish", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
-    const events = await drainAgent(agent, "go", undefined, () => agent.abort());
+    const events = await drainAgent(agent, "go", undefined, (resolve) => {
+      agent.abort();
+      setTimeout(resolve, 50);
+    });
     expect(agent.getCurrentTurn()).toBeNull();
-    expect(events.some((e) => e.type === "agent_end")).toBe(false);
+    expect(events.some((e) => e.type === "finish")).toBe(false);
   });
 
   it("agent.abort() delegates to current turn", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
-    const events = await drainAgent(agent, "go", undefined, () => agent.abort());
-    expect(events.some((e) => e.type === "agent_end")).toBe(false);
+    const events = await drainAgent(agent, "go", undefined, (resolve) => {
+      agent.abort();
+      setTimeout(resolve, 50);
+    });
+    expect(events.some((e) => e.type === "finish")).toBe(false);
   });
 
   it("getCurrentTurn() is null after abort", async () => {
     const agent = makeAgent();
-    await drainAgent(agent, "go", undefined, () => agent.abort());
+    await drainAgent(agent, "go", undefined, (resolve) => {
+      agent.abort();
+      setTimeout(resolve, 50);
+    });
     expect(agent.getCurrentTurn()).toBeNull();
   });
 });
@@ -280,7 +305,7 @@ describe("Agent — steering queue", () => {
 // ─── Tool execution ───────────────────────────────────────────────────────────
 
 describe("Agent — tool execution", () => {
-  it("emits tool_start and tool_end events for a tool call", async () => {
+  it("emits tool-call and tool-result events for a tool call", async () => {
     const t = makeTool("my_tool");
     const agent = makeAgent({
       model: createMockModel({
@@ -290,11 +315,11 @@ describe("Agent — tool execution", () => {
       tools: [t],
     });
     const events = await drainAgent(agent, "use tool");
-    expect(events.some((e) => e.type === "tool_start" && e.toolName === "my_tool")).toBe(true);
-    expect(events.some((e) => e.type === "tool_end" && e.toolName === "my_tool")).toBe(true);
+    expect(events.some((e) => e.type === "tool-call" && e.toolName === "my_tool")).toBe(true);
+    expect(events.some((e) => e.type === "tool-result" && e.toolName === "my_tool")).toBe(true);
   });
 
-  it("tool_end has isError: false for successful tool", async () => {
+  it("tool-result has isError: false for successful tool", async () => {
     const t = makeTool("ok_tool");
     const agent = makeAgent({
       model: createMockModel({
@@ -304,9 +329,9 @@ describe("Agent — tool execution", () => {
       tools: [t],
     });
     const events = await drainAgent(agent, "go");
-    const toolEnd = events.find((e) => e.type === "tool_end");
+    const toolEnd = events.find((e) => e.type === "tool-result");
     expect(toolEnd).toBeDefined();
-    if (toolEnd?.type === "tool_end") {
+    if (toolEnd?.type === "tool-result") {
       expect(toolEnd.isError).toBe(false);
     }
   });

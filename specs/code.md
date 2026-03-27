@@ -258,7 +258,7 @@ describe("Agent", () => {
   it("streams a text response", async () => {
     const agent = new Agent({ modelId: "openai/gpt-4o", systemPrompt: "You are helpful." });
     const events: string[] = [];
-    agent.subscribe(e => { if (e.type === "text_delta") events.push(e.delta); });
+    agent.subscribe(e => { if (e.type === "text-delta") events.push(e.delta); });
     await agent.prompt("Hi");
     expect(events.join("")).toBe("Hello, world!");
   });
