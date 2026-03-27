@@ -56,13 +56,7 @@ async function runPromptViaDoInstance(
       };
       instance.addListener(listener);
     });
-    const turn = await instance.prompt(text);
-    const stream = await turn.getStream();
-    const reader = stream.getReader();
-    while (true) {
-      const { done } = await reader.read();
-      if (done) break;
-    }
+    await instance.prompt(text);
     await flushed;
   });
 }

@@ -56,7 +56,7 @@ interface Attachment {
 
 // ─── Agent Events ─────────────────────────────────────────────────────────────
 
-// Streamed from AgentSessionDO → gateways over JSRPC ReadableStream.
+// Pushed from AgentSessionDO → gateways via IObservable<AgentEvent>.
 // Also dispatched to extensions via ExtensionRunner.
 type AgentEvent =
   | { type: "agent_start" }
@@ -242,7 +242,10 @@ An `RpcTarget` stub returned by `IPiccoloCore.newSession()` and `IPiccoloCore.ge
 `ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type.
 
 ```typescript
-interface ISession {
+// ISession extends IObservable<AgentEvent>: all AgentEvents from all turns flow
+// through the session's subscribe() method. Gateways subscribe once on mount
+// and receive events for the full session lifetime.
+interface ISession extends IObservable<AgentEvent> {
 
   // ─── Identity ─────────────────────────────────────────────────────────────
 
@@ -262,12 +265,9 @@ interface ISession {
 
   // ─── Conversation ─────────────────────────────────────────────────────────
 
-  // Start a new agent turn. Returns an ITurn that owns the event stream for
-  // this turn. Callers consume ITurn.getStream() to receive AgentEvents.
+  // Start a new agent turn. Returns an ITurn carrying the optional callback for
+  // interactive mid-turn prompts. AgentEvents are delivered via ISession.subscribe().
   // callback is the gateway's IGatewayCallback stub (see api.md §5).
-  // It is stored on the turn for the duration of the prompt so tools can
-  // call requestSelect / requestConfirm / requestInput mid-turn via ITurn.getCallback().
-  // Pass undefined (or omit) when no interactive callback is available.
   prompt(text: string, attachments?: Attachment[], callback?: IGatewayCallback): Promise<ITurn>;
 
   // Inject a user-role message into the conversation (visible to the LLM).
@@ -288,8 +288,9 @@ interface ISession {
 
   // Return the active turn context (if a turn is in progress), or undefined if idle.
   // Gateways call this after getHistory() to reconnect to an in-progress turn
-  // (e.g. after a page reload): call ITurn.getStream() on the result to receive
-  // the remaining AgentEvents. Use ITurn.getCallback() for interactive mid-turn prompts.
+  // Returns undefined when idle; non-undefined means a turn is in progress.
+  // Use ITurn.getCallback() for interactive mid-turn prompts.
+  // AgentEvents always arrive via ISession.subscribe() regardless of turn state.
   // A non-undefined return value also means a turn is currently streaming —
   // gateways should use this check instead of a separate isStreaming flag.
   getCurrentTurn(): Promise<ITurn | undefined>;
@@ -354,17 +355,26 @@ interface ISession {
   delete(): Promise<void>;
 }
 
-// ITurn — active turn context accessible from tool/extension execute() calls.
-// Owns the AgentEvent stream for the turn and the optional gateway callback.
-// The callback is a property of the turn (not the session) since it is bound
-// to a specific prompt() invocation and is ephemeral.
-// For refresh support, the active turn is also available via
-// ISession.getCurrentTurn(), which returns undefined between turns.
-interface ITurn {
-  // Return the ReadableStream<AgentEvent> for this turn.
-  // The stream emits all events for the turn in progress.
-  getStream(): Promise<ReadableStream<AgentEvent>>;
+// IObserver<T> / IObservable<T> — push-based event delivery over JSRPC.
+// Using IObservable instead of ReadableStream avoids the Workers RPC restriction
+// that only byte-oriented streams can be transferred across RPC boundaries.
+interface IObserver<T> {
+  onNext(value: T): Promise<void>;
+  onError(error: unknown): Promise<void>;
+  onComplete(): Promise<void>;
+}
 
+interface IObservable<T> {
+  // Subscribe to receive events. Already-emitted events are replayed to late
+  // subscribers (supports reconnect after page reload).
+  subscribe(observer: IObserver<T>): Promise<void>;
+}
+
+// ITurn — returned by ISession.prompt(). Carries only the optional gateway
+// callback for interactive mid-turn prompts. AgentEvents are delivered via
+// ISession.subscribe() — the session is the observable, not the turn.
+// getCurrentTurn() returns undefined between turns; non-undefined means active.
+interface ITurn {
   // Return the gateway's IGatewayCallback stub for this turn (if any).
   // Tools call this to request interactive input mid-turn (select, confirm, input).
   // Returns undefined if the gateway did not supply a callback for this turn.
@@ -482,7 +492,7 @@ interface IWebGateway {
 ```
 
 The browser calls `getUser()` once and then uses `IUser` and `ISession` directly.
-`ISession.prompt()` returns an `ITurn`; the browser calls `ITurn.getStream()` to consume the `ReadableStream<AgentEvent>`.
+`ISession extends IObservable<AgentEvent>`: the browser calls `session.subscribe(observer)` once on mount and receives all `AgentEvent`s for the session lifetime. `ISession.prompt()` returns an `ITurn` carrying only the optional callback.
 
 ---
 
@@ -510,76 +520,47 @@ Implemented by each extension Worker. Called by `ExtensionRunner` inside `piccol
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
 
+// IExtensionListener — handles interception events that require return values.
+// AgentEvents are no longer dispatched here; extensions observe them by calling
+// ctx.subscribe() inside init().
 interface IExtensionListener {
-  onSessionStart(event: SessionStartEvent, ctx: ISession): Promise<void>;
-  onSessionShutdown(event: SessionShutdownEvent, ctx: ISession): Promise<void>;
-  onBeforeAgentStart(event: BeforeAgentStartEvent, ctx: ISession): Promise<BeforeAgentStartResult | void>;
-  onAgentStart(event: AgentStartEvent, ctx: ISession): Promise<void>;
-  onAgentEnd(event: AgentEndEvent, ctx: ISession): Promise<void>;
-  onTurnStart(event: TurnStartEvent, ctx: ISession): Promise<void>;
-  onTurnEnd(event: TurnEndEvent, ctx: ISession): Promise<void>;
-  onToolStart(event: ToolStartEvent, ctx: ISession): Promise<void>;
-  onToolEnd(event: ToolEndEvent, ctx: ISession): Promise<void>;
-  onContext(event: ContextEvent, ctx: ISession): Promise<ContextResult | void>;
-  onToolCall(event: ToolCallEvent, ctx: ISession): Promise<ToolCallResult | void>;
-  onToolResult(event: ToolResultEvent, ctx: ISession): Promise<ToolResultOverride | void>;
-  onInput(event: InputEvent, ctx: ISession): Promise<InputResult | void>;
-  onBeforeCompact(event: BeforeCompactEvent, ctx: ISession): Promise<BeforeCompactResult | void>;
-  onCompact(event: CompactEvent, ctx: ISession): Promise<void>;
+  onEvent?(event: ExtensionEvent, ctx: ISession): Promise<
+    | InputResult | BeforeAgentStartResult | ContextResult
+    | ToolCallResult | ToolResultOverride | BeforeCompactResult
+    | undefined
+  >;
 }
 
 class IExtensionWorker extends WorkerEntrypoint implements IExtensionListener {
-  // Called once at session start. Returns the ITool instances this extension provides.
-  getTools(ctx: ISession): Promise<ITool[] | void>;
+  // Called once at session start with the full ISession.
+  // Extension may call ctx.subscribe() to observe AgentEvents for the session lifetime.
+  init?(ctx: ISession): Promise<void>;
 
-  // Called once during system prompt assembly (at session start and after /reload).
-  getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[] | void>;
+  // Called once at session start. Returns ITool instances this extension provides.
+  getTools?(ctx: ISession): Promise<ITool[] | undefined>;
+
+  // Called once during system prompt assembly. Returns additions to the system prompt.
+  getSystemPromptAdditions?(ctx: ISession): Promise<SystemPromptAddition[] | undefined>;
 
   // Called at session start. Returns commands this extension exposes.
-  getCommands(ctx: ISession): Promise<ICommand[] | void>;
+  getCommands?(ctx: ISession): Promise<ICommand[] | undefined>;
 }
 ```
 
-All methods are optional. The core checks method existence before dispatching.
+All methods are optional.
 
-### Extension Event Types
+### ExtensionEvent — interception only
 
 ```typescript
-// ─── Lifecycle ────────────────────────────────────────────────────────────────
-
-interface SessionStartEvent    { sessionId: string; userId: string; modelId: string }
-interface SessionShutdownEvent { sessionId: string }
-
-// ─── Agent loop ───────────────────────────────────────────────────────────────
-
-interface BeforeAgentStartEvent { text: string; attachments: Attachment[]; systemPrompt: string }
-interface AgentStartEvent       { sessionId: string }
-interface AgentEndEvent         { sessionId: string; messages: ModelMessage[]; totalUsage: LanguageModelUsage }
-interface TurnStartEvent        { stepNumber: number }
-interface TurnEndEvent          { stepNumber: number; finishReason: FinishReason; usage: LanguageModelUsage }
-interface ToolStartEvent        { toolCallId: string; toolName: string; input: unknown }
-interface ToolEndEvent          { toolCallId: string; toolName: string; output: unknown; isError: boolean }
-
-// ─── Interception ─────────────────────────────────────────────────────────────
-
-interface ContextEvent          { messages: ModelMessage[] }
-interface ToolCallEvent         { toolCallId: string; toolName: string; input: unknown }
-interface ToolResultEvent       { toolCallId: string; toolName: string; input: unknown; output: unknown; isError: boolean }
-interface InputEvent {
-  text: string;
-  attachments: Attachment[];
-  source: "user";
-  // Set when input starts with /{name} matching a registered ICommand.
-  // Extension onInput handlers use this to route command invocations.
-  commandName?: string;
-  // Arguments following the command name, if commandName is set.
-  commandArgs?: string;
-}
-
-// ─── Compaction ───────────────────────────────────────────────────────────────
-
-interface BeforeCompactEvent    { messages: ModelMessage[]; keepRecentTokens: number }
-interface CompactEvent          { summary: string; keptMessageCount: number }
+type ExtensionEvent =
+  | { type: "input"; text: string; attachments: Attachment[]; source: "user";
+      commandName?: string; commandArgs?: string }
+  | { type: "before_agent_start"; text: string; attachments: Attachment[]; systemPrompt: string }
+  | { type: "context"; messages: ModelMessage[] }
+  | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool_result"; toolCallId: string; toolName: string;
+      input: unknown; output: unknown; isError: boolean }
+  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number };
 ```
 
 ### Extension Result Types

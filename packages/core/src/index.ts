@@ -29,8 +29,8 @@ export type {
   IGatewayCallback,
   ImagePart,
   InputResult,
-  IPiccoloCore,
-  ISession,
+  IObservable,
+  IObserver,
   ISessionListener,
   ITextUI,
   ITool,
@@ -56,6 +56,7 @@ export { AgentSessionDO } from "./agent-session-do.ts";
 // IExtensionRunner and ExtensionEventResult are core-internal (not in @piccolo/api)
 // but exported for callers that interact with the runner directly.
 export type { ExtensionEventResult, IExtensionRunner } from "./extension-runner.ts";
+export { ObservableImpl } from "./observable-impl.ts";
 // ── Worker entrypoint ─────────────────────────────────────────────────────────
 export { PiccoloCore as default } from "./piccolo-core.ts";
 // ── Public library API ────────────────────────────────────────────────────────

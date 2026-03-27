@@ -4,25 +4,37 @@
  * Spec ref: specs/api.md §IPiccoloCore, §IUser, §ISession
  */
 
-import type { AgentEvent, ContextUsage, IPiccoloCore, ISession, ITurn, IUser } from "@piccolo/api";
+import type {
+  AgentEvent,
+  ContextUsage,
+  IObservable,
+  IObserver,
+  IPiccoloCore,
+  ISession,
+  ITurn,
+  IUser,
+} from "@piccolo/api";
 import { vi } from "vitest";
 
 const DEFAULT_SESSION_ID = "test-session-id";
 const DEFAULT_USER_ID = "test-user-id";
 const DEFAULT_MODEL = "test/model";
 
-function emptyStream(): ReadableStream<AgentEvent> {
-  return new ReadableStream<AgentEvent>({
-    start(c) {
-      c.close();
+/** Create an IObservable<AgentEvent> that emits the given events then completes. */
+export function createEventObservable(events: AgentEvent[]): IObservable<AgentEvent> {
+  return {
+    async subscribe(observer: IObserver<AgentEvent>): Promise<void> {
+      for (const event of events) {
+        await observer.onNext(event);
+      }
+      await observer.onComplete();
     },
-  });
+  };
 }
 
 function emptyTurn(): ITurn {
-  const stream = emptyStream();
   return {
-    getStream: vi.fn().mockResolvedValue(stream),
+    getObservable: vi.fn().mockResolvedValue(createEventObservable([])),
     getCallback: vi.fn().mockResolvedValue(undefined),
   } as unknown as ITurn;
 }
@@ -45,6 +57,7 @@ export function createMockSession(
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
     abort: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockResolvedValue(undefined),
     getCurrentTurn: vi.fn().mockResolvedValue(undefined),
     getModel: vi.fn().mockResolvedValue(DEFAULT_MODEL),
     setModel: vi.fn().mockResolvedValue(undefined),
@@ -80,13 +93,4 @@ export function createMockCore(user?: IUser): IPiccoloCore {
   return {
     getUser: vi.fn().mockReturnValue(mockUser),
   };
-}
-
-export function createEventStream(events: AgentEvent[]): ReadableStream<AgentEvent> {
-  return new ReadableStream<AgentEvent>({
-    start(controller) {
-      for (const event of events) controller.enqueue(event);
-      controller.close();
-    },
-  });
 }

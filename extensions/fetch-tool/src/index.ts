@@ -146,14 +146,7 @@ Errors:
  * target directly; RpcTarget subclasses can.
  */
 class FetchTool extends RpcTarget implements ITool {
-  readonly #tool: FetchToolExtension;
-  readonly descriptor: ToolDescriptor;
-
-  constructor(tool: FetchToolExtension) {
-    super();
-    this.#tool = tool;
-    this.descriptor = tool.descriptor;
-  }
+  readonly descriptor = descriptor;
 
   async execute(
     _toolCallId: string,
@@ -275,16 +268,14 @@ class FetchTool extends RpcTarget implements ITool {
 
 export class FetchToolExtension extends WorkerEntrypoint implements IExtensionWorker {
   readonly descriptor: ToolDescriptor = descriptor;
-  readonly tool = new FetchTool(this);
 
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }
 
   async getTools(_session: ISession): Promise<ITool[]> {
-    // WorkerEntrypoint cannot be passed as a JSRPC target directly.
-    // Wrap in a RpcTarget subclass so piccolo-core can hold it as a capability.
-    return [this.tool];
+    console.debug("[fetch] getTools");
+    return [new FetchTool()];
   }
 }
 

@@ -12,7 +12,8 @@
  * at component init — never pass it into SolidJS reactive primitives.
  */
 
-import type { AgentEvent, HistoryEntry, ISession } from "@piccolo/api";
+import type { AgentEvent, HistoryEntry, IObserver, ISession } from "@piccolo/api";
+import { RpcTarget } from "capnweb";
 import { type Component, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore } from "solid-js/store";
 import { ChatInput } from "./ChatInput.tsx";
@@ -40,45 +41,45 @@ export const ChatView: Component<Props> = (props) => {
     setIsStreaming(false);
   });
 
-  // ─── Stream consumption ────────────────────────────────────────────────────
+  // ─── Session observable subscription ──────────────────────────────────────
 
   /**
-   * Consume a ReadableStream<AgentEvent> and update entries reactively.
-   * Handles both prompt() streams and getCurrentTurn() reconnect streams.
-   *
-   * `setStreaming` controls whether we call setIsStreaming(true/false).
-   * For getCurrentTurn() reconnects we only flip isStreaming if the stream is
-   * actually live (i.e. we receive at least one event before done).
+   * Subscribe to the session observable once on mount and run for the session
+   * lifetime. All AgentEvents from all turns flow through this single subscription.
+   * isStreaming is driven by agent_start / agent_end events.
    */
-  async function consumeStream(
-    stream: ReadableStream<AgentEvent>,
-    setStreaming = true,
-  ): Promise<void> {
-    console.debug("[stream] consumeStream start, setStreaming=%s", setStreaming);
-    let streamingSet = false;
-    let eventCount = 0;
-    try {
-      for await (const event of stream) {
-        if (aborted) break;
-        console.debug("[stream] event: type=%s aborted=%s", event?.type ?? "—", aborted);
-        eventCount++;
-        if (setStreaming && !streamingSet) {
+  async function subscribeToSession(): Promise<void> {
+    // Must extend RpcTarget so capnweb serializes this as a callable RPC
+    // capability (not a plain JSON value). The server calls back onNext/onError/
+    // onComplete on this stub over the WebSocket.
+    class SessionObserver extends RpcTarget implements IObserver<AgentEvent> {
+      async onNext(event: AgentEvent): Promise<void> {
+        if (aborted) return;
+        console.debug("[session] event: %o", event);
+        if (event.type === "turn_start") {
           setIsStreaming(true);
-          streamingSet = true;
-          console.debug("[ui] isStreaming → true (from stream)");
+          console.debug("[ui] isStreaming → true (turn_start)");
+        } else if (event.type === "turn_end") {
+          setIsStreaming(false);
+          console.debug("[ui] isStreaming → false (turn_end)");
         }
         applyEvent(event);
       }
-    } catch (err) {
-      console.error("[stream] read error:", err);
-      finishStreamingEntry();
-    } finally {
-      console.debug("[stream] consumeStream done, eventCount=%d", eventCount);
-      if (!aborted && streamingSet) {
+      async onError(err: unknown): Promise<void> {
+        console.error("[stream] session error:", err);
+        finishStreamingEntry();
         setIsStreaming(false);
-        console.debug("[ui] isStreaming → false (from stream)");
+      }
+      async onComplete(): Promise<void> {
+        console.debug("[stream] session observable complete");
+        setIsStreaming(false);
       }
     }
+
+    console.debug("[stream] subscribe:", session);
+    await session.subscribe(new SessionObserver()).catch((err: unknown) => {
+      console.error("[stream] subscribe error:", err);
+    });
   }
 
   function applyEvent(event: AgentEvent): void {
@@ -163,17 +164,19 @@ export const ChatView: Component<Props> = (props) => {
   onMount(() => {
     void (async () => {
       try {
-        // Load history and active turn in parallel.
+        // Subscribe to session observable first so no events are missed.
+        await subscribeToSession();
+
+        // Load history and active turn state in parallel.
         console.debug("[rpc] getHistory + getCurrentTurn calling...");
         const [history, turn] = await Promise.all([session.getHistory(), session.getCurrentTurn()]);
         console.debug("[rpc] getHistory →", history.length, "entries");
         setEntries(history);
 
-        // getCurrentTurn() returns undefined when idle — non-undefined means streaming.
+        // If a turn is already active on mount (e.g. page reload mid-turn), set isStreaming.
         if (turn !== undefined) {
-          console.debug("[rpc] getCurrentTurn → active turn, reconnecting stream");
-          const stream = await turn.getStream();
-          void consumeStream(stream);
+          console.debug("[rpc] getCurrentTurn → active turn in progress");
+          setIsStreaming(true);
         } else {
           console.debug("[rpc] getCurrentTurn → no active turn");
         }
@@ -190,28 +193,20 @@ export const ChatView: Component<Props> = (props) => {
       console.debug("[ui] handleSend blocked — already streaming");
       return;
     }
-    console.debug("[rpc] prompt calling... text=%s", text.slice(0, 60));
     const userId = Math.random().toString(36).slice(2);
     setEntries((es) => [...es, { type: "user", id: userId, content: text } as HistoryEntry]);
-    setIsStreaming(true);
-    console.debug("[ui] isStreaming → true");
     try {
-      const turn = await session.prompt(text);
-      const stream = await turn.getStream();
-      console.debug(
-        "[rpc] prompt returned turn+stream, type=%s",
-        Object.prototype.toString.call(stream),
-      );
-      // Pass setStreaming=false — isStreaming is already true above.
-      await consumeStream(stream, false);
-      console.debug("[rpc] consumeStream finished");
+      console.debug("[rpc] prompt calling... text=%s", text.slice(0, 60));
+      await session.prompt(text);
+      console.debug("[rpc] prompt returned — events arriving via session subscription");
+      // isStreaming will be set to true by agent_start and false by agent_end
+      // flowing through the session subscription.
     } catch (err) {
-      console.error("[rpc] prompt/stream error:", err);
+      console.error("[rpc] prompt error:", err);
       finishStreamingEntry();
-    } finally {
       if (!aborted) {
         setIsStreaming(false);
-        console.debug("[ui] isStreaming → false");
+        console.debug("[ui] isStreaming → false (prompt error)");
       }
     }
   }

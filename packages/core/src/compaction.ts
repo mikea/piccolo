@@ -122,10 +122,4 @@ export async function compact(
     content: `[Conversation Summary]\n\n${summary}`,
   };
   agent.replaceMessages([summaryMessage, ...keptMessages]);
-
-  // 6. Notify extensions (fire-and-forget)
-  await state.extensionRunner.emit(
-    { type: "compact", summary, keptMessageCount: keptMessages.length },
-    ctx,
-  );
 }

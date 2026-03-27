@@ -25,7 +25,7 @@ interface IWebGateway extends RpcTarget {
 
 Defined in `@piccolo/core` — see `specs/api.md §IUser` and `specs/api.md §ISession`.
 
-`prompt()` returns an `ITurn`; the browser calls `ITurn.getStream()` to consume the `ReadableStream<AgentEvent>` directly.
+`ISession extends IObservable<AgentEvent>` — the browser calls `session.subscribe(observer)` once on mount and receives all `AgentEvent`s for the session lifetime. `prompt()` returns an `ITurn` carrying only the optional callback.
 
 ---
 
@@ -77,7 +77,8 @@ Static assets are served from `gateways/web/app/static` (configured as Vite `pub
 The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:
 
 1. Calls `ISession.getHistory()`, `ISession.getModel()`, `ISession.getName()`, and `ISession.getCurrentTurn()` in parallel on mount.
-2. If `getCurrentTurn()` returns a turn (non-undefined), a turn is in progress — calls `ITurn.getStream()` to consume the remaining `ReadableStream<AgentEvent>`. The undefined/non-undefined result replaces any separate `isStreaming` flag.
-3. On user send: calls `ISession.prompt(text)`, then calls `ITurn.getStream()` on the returned `ITurn` and reads the `ReadableStream<AgentEvent>` to update the UI incrementally.
+2. Calls `session.subscribe(observer)` once — all `AgentEvent`s from all turns arrive through this single subscription. `isStreaming` is driven by `agent_start` / `agent_end` events.
+3. Calls `ISession.getCurrentTurn()` on mount — non-undefined means a turn is already in progress (e.g. page reload mid-turn); set `isStreaming=true` immediately.
+4. On user send: calls `ISession.prompt(text)`. Events arrive via the existing session subscription. No per-turn observable needed.
 
 This means reloading the page while a turn is streaming reconnects and displays the correct live state without any lost content.

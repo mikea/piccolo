@@ -40,8 +40,6 @@ type ContextEv = Extract<ExtensionEvent, { type: "context" }>;
 type ToolCallEv = Extract<ExtensionEvent, { type: "tool_call" }>;
 type ToolResultEv = Extract<ExtensionEvent, { type: "tool_result" }>;
 type BeforeCompactEv = Extract<ExtensionEvent, { type: "before_compact" }>;
-type CompactEv = Extract<ExtensionEvent, { type: "compact" }>;
-type SessionStartEv = Extract<ExtensionEvent, { type: "session_start" }>;
 
 export interface MockExtensionOptions {
   /** Extension name (informational, for debugging). */
@@ -74,8 +72,8 @@ export interface MockExtensionOptions {
   onToolResult?: (event: ToolResultEv) => ToolResultOverride | undefined;
   /** Handler for before_compact events. */
   onBeforeCompact?: (event: BeforeCompactEv) => BeforeCompactResult | undefined;
-  /** Handler for compact events (fire-and-forget). */
-  onCompact?: (event: CompactEv) => void;
+  /** Called when init(ctx) is invoked. */
+  onInit?: (ctx: ISession) => void;
   /**
    * If true, onEvent throws "MockExtension error" instead of executing handlers.
    * Used for error-isolation tests.
@@ -83,14 +81,13 @@ export interface MockExtensionOptions {
   shouldThrow?: boolean;
   /** Track calls made to the mock for assertion in tests. */
   calls?: {
-    onSessionStart: SessionStartEv[];
+    onInit: ISession[];
     onInput: InputEv[];
     onBeforeAgentStart: BeforeAgentStartEv[];
     onContext: ContextEv[];
     onToolCall: ToolCallEv[];
     onToolResult: ToolResultEv[];
     onBeforeCompact: BeforeCompactEv[];
-    onCompact: CompactEv[];
     emit: ExtensionEvent[];
   };
 }
@@ -123,14 +120,13 @@ export interface MockExtension extends IExtensionWorker {
 
 export function createMockExtension(options: MockExtensionOptions): MockExtension {
   const calls: NonNullable<MockExtensionOptions["calls"]> = options.calls ?? {
-    onSessionStart: [],
+    onInit: [],
     onInput: [],
     onBeforeAgentStart: [],
     onContext: [],
     onToolCall: [],
     onToolResult: [],
     onBeforeCompact: [],
-    onCompact: [],
     emit: [],
   };
 
@@ -164,17 +160,18 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
       return options.systemPromptAdditions ?? [];
     },
 
+    async init(ctx: ISession) {
+      if (options.shouldThrow) maybeThrow();
+      calls.onInit.push(ctx);
+      options.onInit?.(ctx);
+    },
+
     async onEvent(event: ExtensionEvent, _ctx: ISession) {
       if (options.shouldThrow) maybeThrow();
 
-      // Track all events
       calls.emit.push(event);
 
       switch (event.type) {
-        case "session_start":
-          calls.onSessionStart.push(event);
-          return undefined;
-
         case "input":
           calls.onInput.push(event);
           return options.onInput?.(event);
@@ -198,14 +195,6 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
         case "before_compact":
           calls.onBeforeCompact.push(event);
           return options.onBeforeCompact?.(event);
-
-        case "compact":
-          calls.onCompact.push(event);
-          options.onCompact?.(event);
-          return undefined;
-
-        default:
-          return undefined;
       }
     },
   };

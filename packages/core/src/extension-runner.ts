@@ -31,7 +31,6 @@ import type {
   ToolCallResult,
   ToolResultOverride,
 } from "@piccolo/api";
-
 // ─── ExtensionEventResult ─────────────────────────────────────────────────────
 
 /**
@@ -167,7 +166,7 @@ export class ExtensionRunner implements IExtensionRunner {
         // Pass ctx to remote workers — they receive it as an RPC capability.
         const [tools, commands, additions] = await Promise.all([
           this.#safeCall(name, "getTools", () => {
-            console.debug("[extensions] getTools", worker, ctx)
+            console.debug("[extensions] getTools", worker, ctx);
             return worker.getTools?.(ctx);
           }),
           this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
@@ -192,16 +191,11 @@ export class ExtensionRunner implements IExtensionRunner {
       );
     }
 
-    // Read identity from the real local ctx (not the Proxy) to avoid private-field errors.
-    // Fire session_start so extensions can call back into the session via ctx.
-    await this.emit(
-      {
-        type: "session_start",
-        sessionId: await ctx.sessionId(),
-        userId: await ctx.userId(),
-        modelId: modelId ?? "",
-      },
-      ctx,
+    // Call init(ctx) on each extension so they can subscribe to the session observable.
+    await Promise.all(
+      this.#extensions.map(({ name, worker }) =>
+        this.#safeCall(name, "session_start", () => worker.init?.(ctx)),
+      ),
     );
 
     console.debug(
@@ -296,14 +290,6 @@ export class ExtensionRunner implements IExtensionRunner {
         return this.#dispatchToolResult(event, ctx);
       case "before_compact":
         return this.#dispatchBeforeCompact(event, ctx);
-      default:
-        // Fire-and-forget: dispatch concurrently, discard results
-        await Promise.all(
-          this.#extensions.map(({ name, worker }) =>
-            this.#safeCall(name, event.type, () => worker.onEvent?.(event, ctx)),
-          ),
-        );
-        return undefined;
     }
   }
 

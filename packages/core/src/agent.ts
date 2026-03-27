@@ -8,6 +8,10 @@
  * No Workers-specific globals. No gateway or session concepts.
  * Suitable for use inside Durable Objects or any async context.
  *
+ * Agent extends ObservableImpl<AgentEvent> — it IS the observable. Subscribers
+ * receive all AgentEvents for all turns for the agent's lifetime. The DO
+ * subscribes once in _init and forwards events to the session observable.
+ *
  * The caller (piccolo-core AgentSessionDO) is responsible for constructing
  * the LanguageModel (via createModel() from gateway.ts or a mock in tests).
  *
@@ -18,6 +22,7 @@ import type { AgentEvent, ISession, ITool } from "@piccolo/api";
 import type { FinishReason, ImagePart, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
 import { toAiSdkTools } from "./agent-tools.ts";
+import { ObservableImpl } from "./observable-impl.ts";
 
 // ─── AgentTurn ────────────────────────────────────────────────────────────────
 
@@ -25,13 +30,10 @@ import { toAiSdkTools } from "./agent-tools.ts";
  * A handle to the currently active agent turn.
  * Returned synchronously by Agent.prompt().
  * Internal to piccolo-core — not part of the JSRPC API surface.
- * The JSRPC-facing turn is ITurn (in @piccolo/api), which wraps this stream.
  *
  * Spec ref: specs/core.md §Agent Loop §AgentTurn
  */
 export interface AgentTurn {
-  /** The AgentEvent stream for this turn. Single-consumer. */
-  readonly stream: ReadableStream<AgentEvent>;
   /** Abort this turn immediately. No-op after the turn completes. */
   abort(): void;
 }
@@ -41,7 +43,7 @@ export interface AgentTurn {
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_STEERING_MODE = "one-at-a-time" as const;
 
-export class Agent {
+export class Agent extends ObservableImpl<AgentEvent> {
   private readonly _maxSteps: number;
   private readonly _steeringMode: "one-at-a-time" | "all";
 
@@ -50,7 +52,6 @@ export class Agent {
   private _systemPrompt: string;
   private _tools: ITool[];
   private _messages: ModelMessage[];
-  private _isStreaming: boolean;
   private _error: string | undefined;
 
   private _steeringQueue: ModelMessage[] = [];
@@ -70,13 +71,13 @@ export class Agent {
     maxSteps?: number;
     steeringMode?: "one-at-a-time" | "all";
   }) {
+    super();
     this._maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     this._steeringMode = options.steeringMode ?? DEFAULT_STEERING_MODE;
     this._model = options.model;
     this._systemPrompt = options.systemPrompt;
     this._tools = options.tools ?? [];
     this._messages = [];
-    this._isStreaming = false;
   }
 
   // ─── State accessors ──────────────────────────────────────────────────────
@@ -86,7 +87,6 @@ export class Agent {
     systemPrompt: string;
     tools: ITool[];
     messages: ModelMessage[];
-    isStreaming: boolean;
     error?: string;
   } {
     return {
@@ -94,7 +94,6 @@ export class Agent {
       systemPrompt: this._systemPrompt,
       tools: this._tools,
       messages: this._messages,
-      isStreaming: this._isStreaming,
       ...(this._error !== undefined ? { error: this._error } : {}),
     };
   }
@@ -203,31 +202,16 @@ export class Agent {
 
   private _startTurn(): AgentTurn {
     const ac = new AbortController();
-
-    let controller!: ReadableStreamDefaultController<AgentEvent>;
-    const stream = new ReadableStream<AgentEvent>({
-      start(c) {
-        controller = c;
-      },
-    });
-
-    const turn: AgentTurn = {
-      stream,
-      abort: () => ac.abort(),
-    };
+    const turn: AgentTurn = { abort: () => ac.abort() };
     this._currentTurn = turn;
 
-    // Kick off async — the stream fills via controller.enqueue()
-    void this._runStream(controller, ac.signal);
+    // Kick off async — events emitted via this.emit()
+    void this._runStream(ac.signal);
 
     return turn;
   }
 
-  private async _runStream(
-    controller: ReadableStreamDefaultController<AgentEvent>,
-    signal: AbortSignal,
-  ): Promise<void> {
-    this._isStreaming = true;
+  private async _runStream(signal: AbortSignal): Promise<void> {
     this._error = undefined;
 
     // ── Debug logging ──────────────────────────────────────────────────────────
@@ -250,12 +234,7 @@ export class Agent {
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    const emit = (event: AgentEvent) => {
-      console.debug("[agent] emit", JSON.stringify(event));
-      controller.enqueue(event);
-    };
-
-    emit({ type: "agent_start" });
+    this.emit({ type: "agent_start" });
 
     const ctx = this._ctx;
     if (ctx === null) {
@@ -296,16 +275,15 @@ export class Agent {
         },
 
         onChunk: ({ chunk }) => {
-          console.debug("[agent] onChunk type=%s", chunk.type);
           switch (chunk.type) {
             case "text-delta":
-              emit({ type: "text_delta", delta: chunk.text });
+              this.emit({ type: "text_delta", delta: chunk.text });
               break;
             case "reasoning-delta":
-              emit({ type: "reasoning_delta", delta: chunk.text });
+              this.emit({ type: "reasoning_delta", delta: chunk.text });
               break;
             case "tool-call":
-              emit({
+              this.emit({
                 type: "tool_start",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
@@ -313,7 +291,7 @@ export class Agent {
               });
               break;
             case "tool-result":
-              emit({
+              this.emit({
                 type: "tool_end",
                 toolCallId: chunk.toolCallId,
                 toolName: chunk.toolName,
@@ -329,7 +307,7 @@ export class Agent {
           for (const part of content) {
             if (part.type === "tool-error") {
               const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
-              emit({
+              this.emit({
                 type: "tool_end",
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
@@ -338,7 +316,7 @@ export class Agent {
               });
             }
           }
-          emit({
+          this.emit({
             type: "turn_end",
             stepNumber,
             finishReason: finishReason as FinishReason,
@@ -356,7 +334,7 @@ export class Agent {
           const message = error instanceof Error ? error.message : String(error);
           console.debug("[agent] onError message=%s", message);
           this._error = message;
-          emit({ type: "error", message });
+          this.emit({ type: "error", message });
         },
 
         onAbort: () => {
@@ -373,16 +351,14 @@ export class Agent {
       console.debug("[agent] consumeStream catch: %s", message);
       if (!aborted) {
         this._error = message;
-        emit({ type: "error", message });
+        this.emit({ type: "error", message });
       }
     } finally {
       console.debug("[agent] finally aborted=%s", aborted);
-      this._isStreaming = false;
       if (!aborted) {
-        emit({ type: "agent_end", totalUsage: finalUsage });
+        this.emit({ type: "agent_end", totalUsage: finalUsage });
       }
       this._currentTurn = null;
-      controller.close();
     }
   }
 

@@ -192,15 +192,37 @@ export interface IGatewayCallback {
   notify(message: string, level: "info" | "success" | "warning" | "error"): Promise<void>;
 }
 
+// ─── IObserver / IObservable ──────────────────────────────────────────────────
+
+/**
+ * IObserver<T> — receives values from an IObservable<T>.
+ * onNext() is called for each value; return a Promise to apply backpressure.
+ * Spec ref: specs/api.md §IObserver
+ */
+export interface IObserver<T> {
+  onNext(value: T): Promise<void>;
+  onError(error: unknown): Promise<void>;
+  onComplete(): Promise<void>;
+}
+
+/**
+ * IObservable<T> — a push-based sequence of values.
+ * Call subscribe() to start receiving values via an IObserver<T>.
+ * Spec ref: specs/api.md §IObservable
+ */
+export interface IObservable<T> {
+  subscribe(observer: IObserver<T>): Promise<void>;
+}
+
 // ─── ITurn — Active turn context ──────────────────────────────────────────────
 
 /**
- * ITurn — returned by ISession.prompt(). Owns the AgentEvent stream and the
- * optional gateway callback for this turn.
- * Spec ref: specs/api.md §2
+ * ITurn — returned by ISession.prompt().
+ * Carries only the optional gateway callback for interactive mid-turn prompts.
+ * AgentEvents are delivered via ISession.subscribe() — the session is the observable.
+ * Spec ref: specs/api.md §ITurn
  */
 export interface ITurn {
-  getStream(): Promise<ReadableStream<AgentEvent>>;
   getCallback(): Promise<IGatewayCallback | undefined>;
 }
 
@@ -249,9 +271,12 @@ export type HistoryEntry =
  * ISession — the unified session/context interface.
  * Returned by IPiccoloCore.newSession() / getSession().
  * Also passed as ctx to every extension handler and every ITool.execute() call.
+ *
+ * Extends IObservable<AgentEvent>: subscribe() delivers all AgentEvents for
+ * all turns through this session. The session is the single observable surface.
  * Spec ref: specs/api.md §2
  */
-export interface ISession {
+export interface ISession extends IObservable<AgentEvent> {
   // ─── Identity ───────────────────────────────────────────────────────────────
 
   sessionId(): Promise<string>;
@@ -351,25 +376,18 @@ export interface SystemPromptAddition {
 // ─── Extension events — single discriminated union ───────────────────────────
 
 /**
- * ExtensionEvent — every event piccolo-core dispatches to extension Workers.
+ * ExtensionEvent — interception events dispatched to extension Workers.
  *
- * Extends AgentEvent: all variants that flow through the agent stream
- * (agent_start, agent_end, turn_start, turn_end, tool_start, tool_end,
- * text_delta, reasoning_delta, error) are also valid ExtensionEvents and can
- * be passed directly to IExtensionRunner.emit() without any mapping.
+ * Only contains events that require a return value (interception/merge semantics).
+ * AgentEvents are no longer dispatched here — extensions subscribe to ISession
+ * directly via init(ctx) if they want to observe agent events.
  *
- * Adds extension-only variants for lifecycle and interception events.
  * Every variant carries a `type` field for discrimination.
  *
  * Spec ref: specs/api.md §8
  */
 export type ExtensionEvent =
-  // ── All agent loop events (same type strings as AgentEvent) ───────────────
-  | AgentEvent
-  // ── Lifecycle (extension-only) ────────────────────────────────────────────
-  | { type: "session_start"; sessionId: string; userId: string; modelId: string }
-  | { type: "session_shutdown"; sessionId: string }
-  // ── Interception events (extension-only; have structured return values) ───
+  // ── Interception events (have structured return values) ───────────────────
   | {
       type: "input";
       text: string;
@@ -389,9 +407,7 @@ export type ExtensionEvent =
       output: unknown;
       isError: boolean;
     }
-  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number }
-  // ── Compact notification ──────────────────────────────────────────────────
-  | { type: "compact"; summary: string; keptMessageCount: number };
+  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number };
 
 // ─── Result types for interception events ────────────────────────────────────
 
@@ -424,13 +440,12 @@ export interface BeforeCompactResult {
 // ─── Extension interfaces ─────────────────────────────────────────────────────
 
 /**
- * IExtensionListener — event handler interface implemented by extensions.
+ * IExtensionListener — interception event handler implemented by extensions.
  *
- * A single `onEvent` method receives any ExtensionEvent and the session context.
- * Return void for fire-and-forget events. For interception events (input,
- * before_agent_start, context, tool_call, tool_result, before_compact) the
- * return type is the appropriate result union (see IExtensionRunner for how
- * the core calls each extension and merges results).
+ * onEvent receives only interception events (input, before_agent_start, context,
+ * tool_call, tool_result, before_compact) that require a structured return value.
+ *
+ * For observing AgentEvents, extensions subscribe to ISession via init(ctx).
  *
  * Spec ref: specs/api.md §8
  */
@@ -454,6 +469,11 @@ export interface IExtensionListener {
  * Spec ref: specs/api.md §8
  */
 export interface IExtensionWorker extends IExtensionListener {
+  /**
+   * Called once when the session starts. The extension receives the full ISession
+   * and may call session.subscribe() to observe AgentEvents for the session lifetime.
+   */
+  init?(ctx: ISession): Promise<void>;
   getTools?(ctx: ISession): Promise<ITool[] | undefined>;
   getCommands?(ctx: ISession): Promise<ICommand[] | undefined>;
   getSystemPromptAdditions?(ctx: ISession): Promise<SystemPromptAddition[] | undefined>;

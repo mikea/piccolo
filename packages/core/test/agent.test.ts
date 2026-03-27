@@ -7,8 +7,8 @@
  * Spec ref: specs/core.md §Agent Loop
  */
 
-import type { AgentEvent, ISession, ITool, ToolResult } from "@piccolo/api";
-import type { LanguageModel, ModelMessage } from "ai";
+import type { AgentEvent, IObserver, ISession, ITool, ToolResult } from "@piccolo/api";
+import type { ImagePart, LanguageModel, ModelMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { Agent } from "../src/agent.ts";
 import { createMockModel } from "./do/mock-model.ts";
@@ -47,42 +47,66 @@ function makeTool(
   };
 }
 
-/** Drain a ReadableStream<AgentEvent> into an array. */
-async function drainStream(stream: ReadableStream<AgentEvent>): Promise<AgentEvent[]> {
+/**
+ * Subscribe to agent, call prompt(), collect all events until agent_end or error.
+ * Must subscribe before prompt() to avoid missing early events.
+ */
+async function drainAgent(
+  agent: Agent,
+  input: string | ModelMessage[],
+  images?: ImagePart[],
+  afterPrompt?: () => void,
+): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
-  const reader = stream.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value !== undefined) events.push(value);
+  let resolve!: () => void;
+  const done = new Promise<void>((r) => {
+    resolve = r;
+  });
+  const observer: IObserver<AgentEvent> = {
+    async onNext(event) {
+      events.push(event);
+      if (event.type === "agent_end" || event.type === "error") resolve();
+    },
+    async onError() {
+      resolve();
+    },
+    async onComplete() {
+      resolve();
+    },
+  };
+  // Must await subscribe before prompt() so the subscriber is registered
+  // before any events are emitted.
+  await agent.subscribe(observer);
+  if (typeof input === "string") {
+    agent.prompt(input, images);
+  } else {
+    agent.prompt(input);
   }
+  afterPrompt?.();
+  await done;
   return events;
 }
 
 // ─── Basic streaming ──────────────────────────────────────────────────────────
 
 describe("Agent — basic streaming", () => {
-  it("prompt() returns an AgentTurn with a ReadableStream", () => {
+  it("prompt() returns an AgentTurn", async () => {
     const agent = makeAgent();
-    const turn = agent.prompt("hi");
-    expect(turn).not.toBeNull();
-    expect(turn.stream).toBeInstanceOf(ReadableStream);
-    // drain to avoid unhandled stream
-    void drainStream(turn.stream);
+    const draining = drainAgent(agent, "hi");
+    expect(agent.getCurrentTurn()).not.toBeNull();
+    await draining;
   });
 
   it("emits agent_start and agent_end events", async () => {
     const agent = makeAgent();
-    const turn = agent.prompt("hi");
-    const events = await drainStream(turn.stream);
+    const events = await drainAgent(agent, "hi");
     expect(events.some((e) => e.type === "agent_start")).toBe(true);
     expect(events.some((e) => e.type === "agent_end")).toBe(true);
   });
 
   it("emits text_delta events that reconstruct the response", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "Hello world" }) });
-    const turn = agent.prompt("hi");
-    const events = await drainStream(turn.stream);
+    const events = await drainAgent(agent, "hi");
     const deltas = events
       .filter((e) => e.type === "text_delta")
       .map((e) => (e.type === "text_delta" ? e.delta : ""));
@@ -91,31 +115,29 @@ describe("Agent — basic streaming", () => {
 
   it("emits turn_end event", async () => {
     const agent = makeAgent();
-    const events = await drainStream(agent.prompt("hi").stream);
+    const events = await drainAgent(agent, "hi");
     expect(events.some((e) => e.type === "turn_end")).toBe(true);
   });
 
-  it("isStreaming is false after stream drains", async () => {
+  it("getCurrentTurn() is null after drain", async () => {
     const agent = makeAgent();
-    const turn = agent.prompt("hi");
-    expect(agent.state.isStreaming).toBe(true);
-    await drainStream(turn.stream);
-    expect(agent.state.isStreaming).toBe(false);
+    await drainAgent(agent, "hi");
+    expect(agent.getCurrentTurn()).toBeNull();
   });
 
   it("appends user message and response messages to state", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "hello" }) });
     expect(agent.state.messages).toHaveLength(0);
-    await drainStream(agent.prompt("hello").stream);
+    await drainAgent(agent, "hello");
     expect(agent.state.messages.length).toBeGreaterThanOrEqual(2);
     expect(agent.state.messages[0]).toMatchObject({ role: "user" });
   });
 
   it("accumulates messages across multiple turns", async () => {
     const agent = makeAgent();
-    await drainStream(agent.prompt("first").stream);
+    await drainAgent(agent, "first");
     const afterFirst = agent.state.messages.length;
-    await drainStream(agent.prompt("second").stream);
+    await drainAgent(agent, "second");
     expect(agent.state.messages.length).toBeGreaterThan(afterFirst);
   });
 });
@@ -125,24 +147,20 @@ describe("Agent — basic streaming", () => {
 describe("Agent — getCurrentTurn", () => {
   it("getCurrentTurn() returns the AgentTurn while streaming", () => {
     const agent = makeAgent();
-    const turn = agent.prompt("hi");
-    expect(agent.getCurrentTurn()).toBe(turn);
-    // drain to clean up
-    void drainStream(turn.stream);
+    void drainAgent(agent, "hi");
+    expect(agent.getCurrentTurn()).not.toBeNull();
   });
 
-  it("getCurrentTurn() returns null after stream drains", async () => {
+  it("getCurrentTurn() returns null after turn completes", async () => {
     const agent = makeAgent();
-    const turn = agent.prompt("hi");
-    await drainStream(turn.stream);
+    await drainAgent(agent, "hi");
     expect(agent.getCurrentTurn()).toBeNull();
   });
 
   it("prompt() throws if a turn is already active", () => {
     const agent = makeAgent();
-    const turn = agent.prompt("first");
+    void drainAgent(agent, "first");
     expect(() => agent.prompt("second")).toThrow("turn is already in progress");
-    void drainStream(turn.stream);
   });
 });
 
@@ -151,23 +169,22 @@ describe("Agent — getCurrentTurn", () => {
 describe("Agent — prompt overloads", () => {
   it("accepts string prompt", async () => {
     const agent = makeAgent();
-    await drainStream(agent.prompt("text").stream);
+    await drainAgent(agent, "text");
     expect(agent.state.messages[0]).toMatchObject({ role: "user", content: "text" });
   });
 
   it("accepts ModelMessage array", async () => {
     const agent = makeAgent();
     const msgs: ModelMessage[] = [{ role: "user", content: "pre-built" }];
-    await drainStream(agent.prompt(msgs).stream);
+    await drainAgent(agent, msgs);
     expect(agent.state.messages[0]).toMatchObject({ role: "user", content: "pre-built" });
   });
 
   it("builds content array for text + images", async () => {
     const agent = makeAgent();
-    await drainStream(
-      agent.prompt("describe this", [{ type: "image", image: "https://example.com/img.png" }])
-        .stream,
-    );
+    await drainAgent(agent, "describe this", [
+      { type: "image", image: "https://example.com/img.png" },
+    ]);
     const firstMsg = agent.state.messages[0];
     if (firstMsg && Array.isArray(firstMsg.content)) {
       expect(firstMsg.content[0]).toMatchObject({ type: "text", text: "describe this" });
@@ -203,7 +220,7 @@ describe("Agent — state mutations", () => {
 
   it("replaceMessages replaces conversation history", async () => {
     const agent = makeAgent();
-    await drainStream(agent.prompt("original").stream);
+    await drainAgent(agent, "original");
     const replacement: ModelMessage[] = [{ role: "user", content: "replaced" }];
     agent.replaceMessages(replacement);
     expect(agent.state.messages).toEqual(replacement);
@@ -211,7 +228,7 @@ describe("Agent — state mutations", () => {
 
   it("appendMessages adds to existing history", async () => {
     const agent = makeAgent();
-    await drainStream(agent.prompt("first").stream);
+    await drainAgent(agent, "first");
     const before = agent.state.messages.length;
     agent.appendMessages([{ role: "user", content: "appended" }]);
     expect(agent.state.messages.length).toBe(before + 1);
@@ -223,26 +240,20 @@ describe("Agent — state mutations", () => {
 describe("Agent — abort", () => {
   it("turn.abort() stops streaming and suppresses agent_end", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
-    const turn = agent.prompt("go");
-    turn.abort();
-    const events = await drainStream(turn.stream);
-    expect(agent.state.isStreaming).toBe(false);
+    const events = await drainAgent(agent, "go", undefined, () => agent.abort());
+    expect(agent.getCurrentTurn()).toBeNull();
     expect(events.some((e) => e.type === "agent_end")).toBe(false);
   });
 
   it("agent.abort() delegates to current turn", async () => {
     const agent = makeAgent({ model: createMockModel({ response: "a b c d e f g h i j" }) });
-    const turn = agent.prompt("go");
-    agent.abort();
-    const events = await drainStream(turn.stream);
+    const events = await drainAgent(agent, "go", undefined, () => agent.abort());
     expect(events.some((e) => e.type === "agent_end")).toBe(false);
   });
 
   it("getCurrentTurn() is null after abort", async () => {
     const agent = makeAgent();
-    const turn = agent.prompt("go");
-    turn.abort();
-    await drainStream(turn.stream);
+    await drainAgent(agent, "go", undefined, () => agent.abort());
     expect(agent.getCurrentTurn()).toBeNull();
   });
 });
@@ -278,7 +289,7 @@ describe("Agent — tool execution", () => {
       }),
       tools: [t],
     });
-    const events = await drainStream(agent.prompt("use tool").stream);
+    const events = await drainAgent(agent, "use tool");
     expect(events.some((e) => e.type === "tool_start" && e.toolName === "my_tool")).toBe(true);
     expect(events.some((e) => e.type === "tool_end" && e.toolName === "my_tool")).toBe(true);
   });
@@ -292,7 +303,7 @@ describe("Agent — tool execution", () => {
       }),
       tools: [t],
     });
-    const events = await drainStream(agent.prompt("go").stream);
+    const events = await drainAgent(agent, "go");
     const toolEnd = events.find((e) => e.type === "tool_end");
     expect(toolEnd).toBeDefined();
     if (toolEnd?.type === "tool_end") {
@@ -318,7 +329,7 @@ describe("Agent — error handling", () => {
     });
 
     const agent = makeAgent({ model: failingModel });
-    const events = await drainStream(agent.prompt("hi").stream);
+    const events = await drainAgent(agent, "hi");
 
     const errorEvent = events.find((e) => e.type === "error");
     expect(errorEvent).toBeDefined();
@@ -326,6 +337,6 @@ describe("Agent — error handling", () => {
       expect(errorEvent.message).toContain("network failure");
     }
     expect(agent.state.error).toContain("network failure");
-    expect(agent.state.isStreaming).toBe(false);
+    expect(agent.getCurrentTurn()).toBeNull();
   });
 });

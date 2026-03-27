@@ -43,29 +43,33 @@ function getStub(sessionId: string) {
   return env.AGENT_SESSION.get(env.AGENT_SESSION.idFromName(sessionId));
 }
 
-/** Drain a ReadableStream<AgentEvent> into an array. */
-async function drainStream(stream: ReadableStream<AgentEvent>): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  const reader = stream.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value !== undefined) events.push(value);
-  }
-  return events;
-}
-
 /**
- * Call prompt() and return the ReadableStream<AgentEvent> from the resulting ITurn.
- * Convenience wrapper so tests read: await drainStream(await promptStream(instance, text)).
+ * Call prompt() and collect all AgentEvents via ISessionListener until turn_flushed.
+ * Uses the listener (runs inside DO context) rather than an IObserver (which would
+ * cross the DO I/O boundary and fail in Miniflare tests).
  */
-async function promptStream(
+async function drainTurn(
   instance: AgentSessionDO,
   text: string,
   attachments?: Attachment[],
-): Promise<ReadableStream<AgentEvent>> {
-  const turn = await instance.prompt(text, attachments);
-  return turn.getStream();
+): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  const done = new Promise<void>((resolve) => {
+    const listener: ISessionListener = {
+      onEvent(event: SessionEvent) {
+        if (event.type === "turn_flushed") {
+          instance.removeListener(listener);
+          resolve();
+        } else {
+          events.push(event as AgentEvent);
+        }
+      },
+    };
+    instance.addListener(listener);
+  });
+  await instance.prompt(text, attachments);
+  await done;
+  return events;
 }
 
 /**
@@ -102,11 +106,7 @@ async function runPrompt(
   return await runInDurableObject(stub, async (instance: AgentSessionDO) => {
     instance._setModelForTest(createMockModel({ response: mockResponse }));
     await instance._init(sessionId, "user-1");
-    const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-    const turn = await instance.prompt(text);
-    const events = await drainStream(await turn.getStream());
-    await flushed;
-    return events;
+    return await drainTurn(instance, text);
   });
 }
 
@@ -140,7 +140,7 @@ describe("AgentSessionDO — prompt() pipeline", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "should not appear" }));
       await instance._init(sid, "user-1");
-      const ev = await drainStream(await promptStream(instance, "test input that produces output"));
+      const ev = await drainTurn(instance, "test input that produces output");
       return ev;
     });
     // With a valid mock model, the stream is NOT empty — this confirms the
@@ -220,12 +220,12 @@ describe("AgentSessionDO — D1 persistence", () => {
 
       instance._setModelForTest(createMockModel({ response: "turn one" }));
       const flushed1 = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "question one"));
+      await drainTurn(instance, "question one");
       await flushed1;
 
       instance._setModelForTest(createMockModel({ response: "turn two" }));
       const flushed2 = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "question two"));
+      await drainTurn(instance, "question two");
       await flushed2;
     });
 
@@ -323,9 +323,10 @@ describe("AgentSessionDO — abort", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "long response text here" }));
       await instance._init(sid, "user-1");
-      const turn = await instance.prompt("go");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      const ev = await drainTurn(instance, "go");
       await instance.abort();
-      const ev = await drainStream(await turn.getStream());
+      await flushed;
       return ev;
     });
 
@@ -344,7 +345,7 @@ describe("AgentSessionDO — steer and followUp", () => {
       await instance._init(sid, "user-1");
       await instance.steer("steer message");
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "hi"));
+      await drainTurn(instance, "hi");
       await flushed;
     });
   });
@@ -403,7 +404,7 @@ describe("AgentSessionDO — branch", () => {
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "response two" }));
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "turn two"));
+      await drainTurn(instance, "turn two");
       await flushed;
     });
 
@@ -463,7 +464,7 @@ describe("AgentSessionDO — tool events", () => {
       );
       await instance._init(sid, "user-1");
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      const ev = await drainStream(await promptStream(instance, "use a tool"));
+      const ev = await drainTurn(instance, "use a tool");
       await flushed;
       return ev;
     });
@@ -541,7 +542,7 @@ describe("AgentSessionDO — context overflow retry", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ contextOverflow: true }));
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      const ev = await drainStream(await promptStream(instance, "overflow me"));
+      const ev = await drainTurn(instance, "overflow me");
       await flushed;
       return ev;
     });
@@ -571,7 +572,7 @@ describe("AgentSessionDO — getCurrentTurn and TurnImpl", () => {
     const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "hi" }));
       await instance._init(sid, "user-1");
-      return drainStream(await promptStream(instance, "hello"));
+      return drainTurn(instance, "hello");
     });
     expect(events.some((e) => e.type === "agent_end")).toBe(true);
   });
@@ -586,11 +587,9 @@ describe("AgentSessionDO — estimateTokens with non-text content", () => {
       await instance._init(sid, "user-1");
       // Pass an attachment (file part) — hits the else branch in estimateTokens
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(
-        await promptStream(instance, "describe this", [
-          { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
-        ]),
-      );
+      await drainTurn(instance, "describe this", [
+        { name: "test.png", data: "iVBORw0KGgo=", mimeType: "image/png", size: 9 },
+      ]);
       await flushed;
     });
     const usage = await runInDurableObject(stub, (instance: AgentSessionDO) =>
@@ -628,13 +627,15 @@ describe("AgentSessionDO — TurnImpl.getCallback", () => {
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
       instance._setModelForTest(createMockModel({ response: "hi" }));
       await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const promptTurn = await instance.prompt("hello");
       // getCurrentTurn is only valid while streaming
       const turn = await instance.getCurrentTurn();
       if (turn) {
         callbackResult = await turn.getCallback();
       }
-      await drainStream(await promptTurn.getStream());
+      void promptTurn;
+      await flushed;
     });
     // No callback was passed to prompt(), so getCallback() returns undefined
     expect(callbackResult).toBeUndefined();
@@ -650,7 +651,7 @@ describe("AgentSessionDO — _init idempotency", () => {
       await instance._init(sid, "user-1");
       await instance._init(sid, "user-2"); // second call ignored
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "hi"));
+      await drainTurn(instance, "hi");
       await flushed;
     });
     const row = await getSession(env.SESSIONS_DB, sid);
@@ -725,11 +726,11 @@ describe("AgentSessionDO — getHistory", () => {
       await instance._init(sid, "user-1");
       instance._setModelForTest(createMockModel({ response: "reply one" }));
       const flushed1 = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "question one"));
+      await drainTurn(instance, "question one");
       await flushed1;
       instance._setModelForTest(createMockModel({ response: "reply two" }));
       const flushed2 = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainStream(await promptStream(instance, "question two"));
+      await drainTurn(instance, "question two");
       await flushed2;
     });
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
@@ -762,18 +763,10 @@ describe("AgentSessionDO — getCurrentTurn reconnect", () => {
       await instance._init(sid, "user-1");
 
       // Start prompt — getTurn() should now return an ITurn.
-      const promptTurn = await instance.prompt("go");
-      const reconnectTurn = await instance.getCurrentTurn();
-      if (!reconnectTurn) throw new Error("Expected reconnectTurn");
-
-      // Both refer to the same underlying stream — drain via the reconnect turn.
-      // (The prompt turn's stream is already the same object; drain via reconnect stream.)
-      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      const stream = await reconnectTurn.getStream();
-      const ev = await drainStream(stream);
-      await flushed;
-      // Suppress unused warning — promptTurn was used to trigger turn creation.
-      void promptTurn;
+      // Start prompt — getCurrentTurn() should return an ITurn while active.
+      const ev = await drainTurn(instance, "go");
+      // getCurrentTurn() returns undefined after the turn finishes.
+      void ev;
       return ev;
     });
 

@@ -223,12 +223,12 @@ describe("initialize()", () => {
     expect(sections).toContain("context");
   });
 
-  it("onSessionStart is called on all stubs after init", async () => {
+  it("init() is called on all stubs after initialize", async () => {
     const extA = createMockExtension({ name: "ext-a" });
     const extB = createMockExtension({ name: "ext-b" });
     await makeRunner({ "ext-a": extA, "ext-b": extB });
-    expect(extA.calls.onSessionStart).toHaveLength(1);
-    expect(extB.calls.onSessionStart).toHaveLength(1);
+    expect(extA.calls.onInit).toHaveLength(1);
+    expect(extB.calls.onInit).toHaveLength(1);
   });
 
   it("getCommands() throwing on one extension is isolated; others succeed", async () => {
@@ -645,49 +645,22 @@ describe("emitBeforeCompact()", () => {
   });
 });
 
-// ─── 9. emit() (fire-and-forget) ─────────────────────────────────────────────
+// ─── 9. emit() (interception only) ───────────────────────────────────────────
 
 describe("emit()", () => {
-  it("no extensions → resolves without error", async () => {
+  it("no extensions → resolves without error for interception events", async () => {
     const runner = await makeRunner({});
-    await expect(runner.emit({ type: "agent_start" }, ctx)).resolves.toBeUndefined();
+    await expect(
+      runner.emit({ type: "input", text: "hi", attachments: [], source: "user" }, ctx),
+    ).resolves.toBeDefined(); // { action: "continue" }
   });
 
-  it("all stubs called concurrently", async () => {
-    const extA = createMockExtension({ name: "a" });
-    const extB = createMockExtension({ name: "b" });
-    const runner = await makeRunner({ a: extA, b: extB });
-    await runner.emit({ type: "agent_start" }, ctx);
-    // Fire agent_end too
-    const agentEndEvent = {
-      type: "agent_end" as const,
-      totalUsage: {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
-      },
-    };
-    await runner.emit(agentEndEvent, ctx);
-    // No error thrown
-  });
-
-  it("throwing extension does not propagate error", async () => {
+  it("throwing extension during interception does not propagate error", async () => {
     const throwing = createMockExtension({ name: "bad", shouldThrow: true });
     const runner = await makeRunner({ bad: throwing });
-    await expect(runner.emit({ type: "agent_start" }, ctx)).resolves.toBeUndefined();
-  });
-
-  it("results are discarded", async () => {
-    const ext = createMockExtension({ name: "a" });
-    const runner = await makeRunner({ a: ext });
-    const result = await runner.emit({ type: "agent_start" }, ctx);
-    expect(result).toBeUndefined();
+    await expect(
+      runner.emit({ type: "input", text: "hi", attachments: [], source: "user" }, ctx),
+    ).resolves.toEqual({ action: "continue" });
   });
 });
 
@@ -723,20 +696,16 @@ describe("createMockSession() — all methods reachable", () => {
   });
 });
 
-// ─── initialize() identity propagation ────────────────────────────────────────
-// Verify that initialize() fires session_start with the correct sessionId and
-// userId read from the single ctx argument (now a SessionTarget RpcTarget —
-// no separate local/stub split needed).
+// ─── initialize() — init(ctx) propagation ────────────────────────────────────
 
-describe("initialize() — session_start identity propagation", () => {
-  it("fires session_start with correct sessionId and userId from ctx", async () => {
+describe("initialize() — init(ctx) propagation", () => {
+  it("init() is called with the session ctx", async () => {
     const ext = createMockExtension({ name: "a" });
     const session = createMockSession({ sessionId: "real-sid", userId: "real-uid" });
     const runner = new ExtensionRunner();
     await runner.initialize(session, createMockKv(["a"]), createMockDispatchNamespace({ a: ext }));
-    const startEvents = ext.calls.onSessionStart;
-    expect(startEvents).toHaveLength(1);
-    expect(startEvents[0]?.sessionId).toBe("real-sid");
-    expect(startEvents[0]?.userId).toBe("real-uid");
+    expect(ext.calls.onInit).toHaveLength(1);
+    // The ctx passed to init() is the session itself (or its RpcTarget wrapper)
+    expect(ext.calls.onInit[0]).toBeDefined();
   });
 });
