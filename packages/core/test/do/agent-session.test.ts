@@ -773,3 +773,145 @@ describe("AgentSessionDO — getCurrentTurn reconnect", () => {
     expect(events.some((e) => e.type === "finish")).toBe(true);
   });
 });
+
+// ─── Inlined agent loop — coverage for paths previously in agent.test.ts ──────
+
+describe("AgentSessionDO — steering queue (inlined)", () => {
+  it("sendUserMessage() enqueues a steering message consumed by the turn", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "reply" }));
+      await instance._init(sid, "user-1");
+      await instance.sendUserMessage("steer me");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      await drainTurn(instance, "hi");
+      await flushed;
+    });
+    const row = await getSession(env.SESSIONS_DB, sid);
+    expect(row).not.toBeNull();
+  });
+
+  it("steer() and sendUserMessage() both enqueue without throwing", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "reply" }));
+      await instance._init(sid, "user-1");
+      await instance.steer("steer via steer()");
+      await instance.sendUserMessage("steer via sendUserMessage()");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      await drainTurn(instance, "go");
+      await flushed;
+    });
+  });
+});
+
+describe("AgentSessionDO — prompt() guard (inlined)", () => {
+  it("prompt() throws if a turn is already in progress", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "response" }));
+      await instance._init(sid, "user-1");
+      // Warm up getSystemPrompt() so the first prompt() sets #currentTurn before
+      // any await, making the second prompt() see it as active.
+      await instance.getSystemPrompt();
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      const firstPrompt = instance.prompt("first");
+      await expect(instance.prompt("second")).rejects.toThrow("turn is already in progress");
+      await firstPrompt;
+      await flushed;
+    });
+  });
+});
+
+describe("AgentSessionDO — multi-turn message accumulation (inlined)", () => {
+  it("messages accumulate correctly across two turns", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      await instance._init(sid, "user-1");
+      instance._setModelForTest(createMockModel({ response: "reply one" }));
+      const f1 = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      await drainTurn(instance, "turn one");
+      await f1;
+      instance._setModelForTest(createMockModel({ response: "reply two" }));
+      const f2 = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      await drainTurn(instance, "turn two");
+      await f2;
+    });
+    const rawRows = await getEntries(env.SESSIONS_DB, sid);
+    const messages = rawRows.map(parseEntry).filter((e) => e.type === "message");
+    // 2 user + 2 assistant = at least 4 message entries
+    expect(messages.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("AgentSessionDO — abort() (inlined)", () => {
+  it("abort() does not produce an error event (clean abort)", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "a b c d e f g h i j" }));
+      await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      const promptPromise = drainTurn(instance, "go");
+      await instance.abort();
+      const ev = await promptPromise;
+      await flushed;
+      return ev;
+    });
+    // A clean abort must never produce an error event. Whether finish fires
+    // depends on whether abort races the mock completion — both are valid.
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
+  });
+
+  it("getCurrentTurn() returns undefined after abort", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(createMockModel({ response: "response" }));
+      await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      const promptPromise = drainTurn(instance, "go");
+      await instance.abort();
+      await promptPromise;
+      await flushed;
+      const turn = await instance.getCurrentTurn();
+      expect(turn).toBeUndefined();
+    });
+  });
+});
+
+describe("AgentSessionDO — error handling (inlined)", () => {
+  it("emits error event on model failure", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+    const events = await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      const { MockLanguageModelV3 } = await import("ai/test");
+      instance._setModelForTest(
+        new MockLanguageModelV3({
+          provider: "mock",
+          modelId: "failing",
+          doStream: async () => {
+            throw new Error("network failure");
+          },
+          doGenerate: async () => {
+            throw new Error("network failure");
+          },
+        }),
+      );
+      await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      const ev = await drainTurn(instance, "hi");
+      await flushed;
+      return ev;
+    });
+    const errorEvent = events.find((e) => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    if (errorEvent?.type === "error") {
+      expect(errorEvent.message).toContain("network failure");
+    }
+  });
+});

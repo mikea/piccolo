@@ -5,9 +5,9 @@
  * itself is the RpcTarget returned to gateways and tools.
  *
  * One DO instance per session. This is where all live session logic runs:
- *   - Agent loop (agent.ts)
+ *   - Agent loop (inlined: #runStream, #startTurn)
  *   - Persistence (D1 via session/persistence.ts)
- *   - Context compaction (compaction.ts)
+ *   - Context compaction (inlined: #compact)
  *   - Extension dispatch (ExtensionRunner)
  *   - System prompt assembly (SystemPromptAssembler)
  *
@@ -22,10 +22,12 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import type {
   AgentEvent,
   Attachment,
+  BeforeCompactResult,
   BeforeStartResult,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
+  ExtensionEvent,
   HistoryEntry,
   IDisposable,
   IGatewayCallback,
@@ -39,12 +41,13 @@ import type {
   SessionEvent,
   ToolDescriptor,
 } from "@piccolo/api";
-import type { LanguageModel, ModelMessage } from "ai";
-import { Agent } from "./agent.ts";
-import type { CompactionState } from "./compaction.ts";
-import { compact } from "./compaction.ts";
+import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
+import { modelMessageSchema, stepCountIs, streamText } from "ai";
+import { agentCompact, splitForCompaction } from "./agent-compact.ts";
+import { toAiSdkTools } from "./agent-tools.ts";
 import type {
   AnyEntry,
+  CompactionEntry,
   CustomEntry,
   CustomMessageEntry,
   MessageEntry,
@@ -170,6 +173,8 @@ export class SessionTarget extends RpcTarget implements ISession {
 
 // ─── AgentSessionDO ───────────────────────────────────────────────────────────
 
+const DEFAULT_MAX_STEPS = 20;
+
 export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── Session identity ─────────────────────────────────────────────────────
   #sessionId = "";
@@ -207,8 +212,14 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
   }
 
-  // ─── Agent and infrastructure ─────────────────────────────────────────────
-  #agent!: Agent;
+  // ─── Inlined agent state ──────────────────────────────────────────────────
+  // Previously lived in Agent class. Now owned directly by the DO.
+  #model!: LanguageModel;
+  #error: string | undefined = undefined;
+  #steeringQueue: ModelMessage[] = [];
+  #agentAbortController: AbortController | null = null;
+
+  // ─── Infrastructure ───────────────────────────────────────────────────────
   #extensionRunner!: ExtensionRunner;
   #assembler!: SystemPromptAssembler;
   #assembledSystemPrompt = "";
@@ -274,7 +285,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         const rawRows = await getEntries(db, sessionId);
         const allEntries = rawRows.map(parseEntry);
         const context = buildSessionContext(allEntries, this.#leafId);
-        this.#messages = context.messages;
+        this.#replaceMessages(context.messages, "D1 rehydration");
         if (allEntries.some((e) => e.type === "model_change")) {
           this.#modelId = context.modelId;
         }
@@ -290,26 +301,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 3. Initialize session-level observable (lives for the session lifetime)
     this.#observable = new ObservableImpl<AgentEvent>();
 
-    // 4. Build agent — Agent extends ObservableImpl<AgentEvent>, so we subscribe
-    // to it once here and forward every event to the session observable.
-    const model = createModel(this.env, this.#modelId);
-    this.#agent = new Agent({ model, systemPrompt: "" });
-    this.#agent.replaceMessages(this.#messages);
-    void this.#agent.subscribe({
-      onNext: async (event) => {
-        this.#onTurnEvent(event);
-        this.#observable.emit(event);
-        if (event.type === "finish") {
-          this.ctx.waitUntil(this.#onAgentEnd());
-        }
-      },
-      onError: async (err) => {
-        console.error(`[session:${this.#sessionId}] agent error`, err);
-      },
-      onComplete: async () => {},
-    });
+    // 4. Build the language model directly — no Agent wrapper.
+    this.#model = createModel(this.env, this.#modelId);
 
-    // 4. Set up extension runner and system prompt infrastructure.
+    // 5. Set up extension runner and system prompt infrastructure.
     // initialize() only reads the registry and builds worker stubs — it does
     // NOT call getTools/getCommands/getSystemPromptAdditions, which would make
     // reverse RPC calls back into this DO and deadlock inside blockConcurrencyWhile.
@@ -323,14 +318,13 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── Test-only helpers ────────────────────────────────────────────────────
 
   _setModelForTest(model: LanguageModel): void {
-    this.#agent.setModel(model);
+    this.#model = model;
     this.#modelId = "test-mock";
     this.#modelOverridden = true;
   }
 
   async _getAssembledSystemPrompt(): Promise<string> {
-    await this.#ensureSystemPrompt();
-    return this.#assembledSystemPrompt;
+    return this.getSystemPrompt();
   }
 
   // ─── ISession: Identity ───────────────────────────────────────────────────
@@ -383,98 +377,104 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     attachments?: Attachment[],
     callback?: IGatewayCallback,
   ): Promise<ITurn> {
-    // Ensure the system prompt (and extension tools) are set before the first
-    // turn. #ensureSystemPrompt() is a no-op after the first call. Called here
-    // rather than in blockConcurrencyWhile so that reverse RPC calls from
-    // extensions back into ctx are not deadlocked.
-    await this.#ensureSystemPrompt();
+    // Reserve the turn slot synchronously before any await, so that any
+    // concurrent caller that runs before the microtask queue yields will
+    // immediately see #currentTurn !== null and throw.
     if (this.#currentTurn !== null) {
       throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
     }
-    this.#agent.setContext(this.#rpcCtx);
-    const ctx = this.#rpcCtx;
-
-    // emitInput
-    const inputResult = (await this.#extensionRunner.emit(
-      { type: "input", text, attachments: attachments ?? [], source: "user" },
-      ctx,
-    )) as InputResult;
-    if (inputResult.action === "handled") {
-      const turn = new TurnImpl(callback);
-      this.#currentTurn = turn;
-      // No events to emit — clear the turn right away.
-      void Promise.resolve().then(() => {
-        this.#currentTurn = null;
-      });
-      return turn;
-    }
-    const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
-
-    // Build user message and entry
-    const userMessage: ModelMessage =
-      attachments && attachments.length > 0
-        ? {
-            role: "user",
-            content: [
-              { type: "text", text: effectiveText },
-              ...attachments.map((a) => ({
-                type: "file" as const,
-                data: a.data,
-                mediaType: a.mimeType,
-              })),
-            ],
-          }
-        : { role: "user", content: effectiveText };
-
-    const userEntryId = generateEntryId();
-    const userEntry: MessageEntry = {
-      id: userEntryId,
-      sessionId: this.#sessionId,
-      parentId: this.#leafId,
-      type: "message",
-      timestamp: new Date().toISOString(),
-      data: userMessage,
-    };
-    this.#pendingEntries.push(userEntry);
-    this.#leafId = userEntryId;
-    this.#messageToEntryId.set(userMessage, userEntryId);
-
-    // emitBeforeStart
-    const beforeStart = (await this.#extensionRunner.emit(
-      {
-        type: "before_start",
-        text: effectiveText,
-        attachments: attachments ?? [],
-        systemPrompt: this.#assembledSystemPrompt,
-      },
-      ctx,
-    )) as BeforeStartResult;
-    if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
-      this.#agent.appendMessages(beforeStart.contextMessages);
-    }
-    this.#agent.setSystemPrompt(beforeStart.systemPrompt ?? this.#assembledSystemPrompt);
-
-    if (this.#computeContextUsage().inputTokens > this.#compactTokens()) {
-      await this.#compact({});
-    }
-
-    this.#messagesAtTurnStart = this.#agent.state.messages.length;
-
     const turn = new TurnImpl(callback);
     this.#currentTurn = turn;
 
-    // Start the agent turn — events flow via the agent subscription registered in _init.
-    this.#agent.prompt([userMessage]);
+    try {
+      // Ensure the system prompt (and extension tools) are set before the first
+      // turn. getSystemPrompt() is a no-op after the first call. Called here
+      // rather than in blockConcurrencyWhile so that reverse RPC calls from
+      // extensions back into ctx are not deadlocked.
+      await this.getSystemPrompt();
+      const ctx = this.#rpcCtx;
+
+      // emitInput
+      const inputResult = (await this.#extensionRunner.emit(
+        { type: "input", text, attachments: attachments ?? [], source: "user" },
+        ctx,
+      )) as InputResult;
+      if (inputResult.action === "handled") {
+        // Extension handled the input fully — no agent turn needed.
+        // Clear the reservation and return.
+        this.#currentTurn = null;
+        return turn;
+      }
+      const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
+
+      // Build user message and entry
+      const userMessage: ModelMessage =
+        attachments && attachments.length > 0
+          ? {
+              role: "user",
+              content: [
+                { type: "text", text: effectiveText },
+                ...attachments.map((a) => ({
+                  type: "file" as const,
+                  data: a.data,
+                  mediaType: a.mimeType,
+                })),
+              ],
+            }
+          : { role: "user", content: effectiveText };
+
+      const userEntryId = generateEntryId();
+      const userEntry: MessageEntry = {
+        id: userEntryId,
+        sessionId: this.#sessionId,
+        parentId: this.#leafId,
+        type: "message",
+        timestamp: new Date().toISOString(),
+        data: userMessage,
+      };
+      this.#pendingEntries.push(userEntry);
+      this.#leafId = userEntryId;
+      this.#messageToEntryId.set(userMessage, userEntryId);
+
+      // emitBeforeStart
+      const beforeStart = (await this.#extensionRunner.emit(
+        {
+          type: "before_start",
+          text: effectiveText,
+          attachments: attachments ?? [],
+          systemPrompt: this.#assembledSystemPrompt,
+        },
+        ctx,
+      )) as BeforeStartResult;
+      if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
+        this.#pushMessages(beforeStart.contextMessages, "before_start contextMessages");
+      }
+      this.#assembledSystemPrompt = beforeStart.systemPrompt ?? this.#assembledSystemPrompt;
+
+      if (this.#computeContextUsage().inputTokens > this.#compactTokens()) {
+        await this.#compact({});
+      }
+
+      this.#messagesAtTurnStart = this.#messages.length;
+
+      // Start the agent turn — events flow via #runStream, which calls #onTurnEvent.
+      this.#startTurn([userMessage]);
+    } catch (e) {
+      // If anything above throws, release the turn reservation so the caller
+      // can retry rather than being permanently locked out.
+      this.#currentTurn = null;
+      throw e;
+    }
 
     return turn;
   }
 
   async sendUserMessage(content: string): Promise<void> {
-    this.#agent.steer({ role: "user", content });
+    this.#steeringQueue.push({ role: "user", content });
   }
 
   async steer(text: string): Promise<void> {
-    this.#agent.steer({ role: "user", content: text });
+    this.#steeringQueue.push({ role: "user", content: text });
   }
 
   async followUp(text: string): Promise<void> {
@@ -482,7 +482,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async abort(): Promise<void> {
-    this.#agent.abort();
+    this.#agentAbortController?.abort();
   }
 
   async getCurrentTurn(): Promise<ITurn | undefined> {
@@ -496,7 +496,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const isStreaming = this.#currentTurn !== null;
 
     // Walk committed messages to build history entries.
-    // #messages are the ModelMessage[] currently held in the agent (committed after finish).
+    // #messages are the ModelMessage[] currently held (committed after finish).
     // We also need a map from toolCallId → entry index to fill in tool results.
     const toolEntryIndex = new Map<string, number>();
 
@@ -606,7 +606,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async setModel(modelId: string): Promise<void> {
     this.#modelId = modelId;
-    this.#agent.setModel(createModel(this.env, modelId));
+    this.#model = createModel(this.env, modelId);
     const entry: ModelChangeEntry = {
       id: generateEntryId(),
       sessionId: this.#sessionId,
@@ -634,8 +634,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── ISession: Tools ──────────────────────────────────────────────────────
 
   async getActiveTools(): Promise<ToolDescriptor[]> {
-    const tools = await this.#ensureTools();
-    return Promise.all(tools.map((t) => t.getDescriptor()));
+    if (!this.#tools) {
+      this.#tools = await this.#extensionRunner.getTools(this.#rpcCtx);
+    }
+    return Promise.all(this.#tools.map((t) => t.getDescriptor()));
   }
 
   // ─── ISession: Custom entries ─────────────────────────────────────────────
@@ -698,27 +700,18 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
 
-  async #ensureTools(): Promise<ITool[]> {
-    if (this.#tools) return this.#tools;
-    this.#tools = await this.#extensionRunner.getTools(this.#rpcCtx);
-    this.#agent.setTools(this.#tools);
-    return this.#tools;
-  }
-
-  async #ensureSystemPrompt(): Promise<void> {
-    if (this.#assembledSystemPrompt) return;
-    const tools = await this.#ensureTools();
-    const additions = await this.#extensionRunner.getSystemPromptAdditions(this.#rpcCtx);
-    this.#assembledSystemPrompt = await this.#assembler.assemble(
-      buildBasePrompt(this.env.AGENT_NAME),
-      additions,
-      tools,
-    );
-    this.#agent.setSystemPrompt(this.#assembledSystemPrompt);
-  }
-
   async getSystemPrompt(): Promise<string> {
-    await this.#ensureSystemPrompt();
+    if (!this.#assembledSystemPrompt) {
+      if (!this.#tools) {
+        this.#tools = await this.#extensionRunner.getTools(this.#rpcCtx);
+      }
+      const additions = await this.#extensionRunner.getSystemPromptAdditions(this.#rpcCtx);
+      this.#assembledSystemPrompt = await this.#assembler.assemble(
+        buildBasePrompt(this.env.AGENT_NAME),
+        additions,
+        this.#tools,
+      );
+    }
     return this.#assembledSystemPrompt;
   }
 
@@ -729,11 +722,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const rawRows = await getEntries(this.env.SESSIONS_DB, this.#sessionId);
     const allEntries = rawRows.map(parseEntry);
     const context = buildSessionContext(allEntries, entryId);
-    this.#agent.replaceMessages(context.messages);
-    this.#messages = context.messages;
+    this.#replaceMessages(context.messages, "D1 branch");
     if (context.modelId !== this.#modelId) {
       this.#modelId = context.modelId;
-      this.#agent.setModel(createModel(this.env, context.modelId));
+      this.#model = createModel(this.env, context.modelId);
     }
   }
 
@@ -756,7 +748,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     if (this.#sessionId !== "" && this.#createdAt !== 0) {
       await deleteSession(this.#sessionId, this.env.SESSIONS_DB);
     }
-    this.#agent.abort();
+    this.#agentAbortController?.abort();
     this.#pendingEntries = [];
     this.#messages = [];
     this.#leafId = null;
@@ -796,16 +788,223 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     await this.ctx.storage.put("modelId", modelId);
     await this.ctx.storage.put("name", this.#name);
     if (!this.#modelOverridden) {
-      this.#agent.setModel(createModel(this.env, modelId));
+      this.#model = createModel(this.env, modelId);
     }
+  }
+
+  // ─── Message list helpers ─────────────────────────────────────────────────
+
+  /**
+   * Validate a single ModelMessage and log an error if it does not conform to
+   * the AI SDK schema. Messages are never silently dropped — validation is
+   * diagnostic only, surfacing format mismatches in server logs.
+   */
+  #validateMessage(msg: ModelMessage, source: string, index?: number): void {
+    const check = modelMessageSchema.safeParse(msg);
+    if (!check.success) {
+      const loc = index !== undefined ? ` at index ${index}` : "";
+      console.error(
+        `[session:${this.#sessionId}] invalid ModelMessage${loc} from ${source}: ${JSON.stringify(msg)} — ${JSON.stringify(check.error.issues)}`,
+      );
+    }
+  }
+
+  /**
+   * Validate every message in `msgs`, then append all to #messages.
+   * Use this instead of direct #messages.push() for any external or
+   * untrusted message source.
+   */
+  #pushMessages(msgs: ModelMessage[], source: string): void {
+    for (let i = 0; i < msgs.length; i++) {
+      this.#validateMessage(msgs[i]!, source, i);
+    }
+    this.#messages.push(...msgs);
+  }
+
+  /**
+   * Validate every message in `msgs`, then replace #messages wholesale.
+   * Use this instead of direct #messages assignment for any external or
+   * untrusted message source.
+   */
+  #replaceMessages(msgs: ModelMessage[], source: string): void {
+    for (let i = 0; i < msgs.length; i++) {
+      this.#validateMessage(msgs[i]!, source, i);
+    }
+    this.#messages = msgs;
+  }
+
+  // ─── Inlined agent loop ───────────────────────────────────────────────────
+
+  /**
+   * Start a new agent turn. Pushes initialMessages onto #messages, creates an
+   * AbortController, and runs #runStream via ctx.waitUntil so the Workers
+   * runtime keeps the isolate alive until the stream completes.
+   *
+   * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
+   */
+  #startTurn(initialMessages: ModelMessage[]): void {
+    if (initialMessages.length > 0) {
+      // initialMessages are built by the DO itself (user message, follow-up text)
+      // — validate them to catch any schema drift at the source.
+      this.#pushMessages(initialMessages, "#startTurn");
+    }
+    const ac = new AbortController();
+    this.#agentAbortController = ac;
+    this.ctx.waitUntil(this.#runStream(ac.signal));
+  }
+
+  /**
+   * Core LLM streaming loop — previously Agent._runStream.
+   *
+   * Runs streamText, handles all AI SDK callbacks, emits AgentEvents
+   * directly to #observable via #emitTurnEvent.
+   *
+   * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
+   */
+  async #runStream(signal: AbortSignal): Promise<void> {
+    this.#error = undefined;
+
+    this.#emitTurnEvent({ type: "start" });
+
+    const toolSet = await toAiSdkTools(this.#tools ?? [], this.#rpcCtx);
+    let aborted = false;
+    let finalUsage: LanguageModelUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      inputTokenDetails: {
+        noCacheTokens: undefined,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+      },
+      outputTokenDetails: {
+        textTokens: undefined,
+        reasoningTokens: undefined,
+      },
+    };
+
+    try {
+      const result = streamText({
+        model: this.#model,
+        system: this.#assembledSystemPrompt,
+        messages: this.#messages,
+        tools: toolSet,
+        stopWhen: stepCountIs(DEFAULT_MAX_STEPS),
+        abortSignal: signal,
+
+        prepareStep: ({ stepNumber, messages }) => {
+          this.#emitTurnEvent({ type: "step-start", stepNumber });
+          if (stepNumber > 0 && this.#steeringQueue.length > 0) {
+            const steering = this.#dequeueSteer();
+            return Promise.resolve({ messages: [...messages, ...steering] });
+          }
+          return Promise.resolve(undefined);
+        },
+
+        onChunk: ({ chunk }) => {
+          switch (chunk.type) {
+            case "text-delta":
+              this.#emitTurnEvent({ type: "text-delta", delta: chunk.text });
+              break;
+            case "reasoning-delta":
+              this.#emitTurnEvent({ type: "reasoning-delta", delta: chunk.text });
+              break;
+            case "tool-call":
+              this.#emitTurnEvent({
+                type: "tool-call",
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName,
+                input: chunk.input,
+              });
+              break;
+            case "tool-result":
+              this.#emitTurnEvent({
+                type: "tool-result",
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName,
+                output: chunk.output,
+                isError: false,
+              });
+              break;
+          }
+        },
+
+        onStepFinish: ({ stepNumber, finishReason, usage, content }) => {
+          for (const part of content) {
+            if (part.type === "tool-error") {
+              const errMsg = part.error instanceof Error ? part.error.message : String(part.error);
+              this.#emitTurnEvent({
+                type: "tool-result",
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                output: errMsg,
+                isError: true,
+              });
+            }
+          }
+          this.#emitTurnEvent({
+            type: "step-finish",
+            stepNumber,
+            finishReason: finishReason as FinishReason,
+            usage,
+          });
+        },
+
+        onFinish: ({ totalUsage, response }) => {
+          finalUsage = totalUsage;
+          this.#pushMessages(response.messages, "streamText onFinish");
+        },
+
+        onError: ({ error }) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.#error = message;
+          this.#agentAbortController = null;
+          this.#emitTurnEvent({ type: "error", message });
+        },
+
+        onAbort: () => {
+          aborted = true;
+        },
+      });
+
+      await result.consumeStream();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (!aborted) {
+        this.#error = message;
+        this.#agentAbortController = null;
+        this.#emitTurnEvent({ type: "error", message });
+      }
+    } finally {
+      this.#agentAbortController = null;
+      if (!aborted) {
+        this.#emitTurnEvent({ type: "finish", totalUsage: finalUsage });
+        this.ctx.waitUntil(this.#onAgentEnd());
+      }
+    }
+  }
+
+  /**
+   * Emit a turn event: apply in-flight side effects, forward to observable.
+   * Replaces the Agent subscription callback that used to sit in #initialize().
+   */
+  #emitTurnEvent(event: AgentEvent): void {
+    this.#onTurnEvent(event);
+    this.#observable.emit(event);
+  }
+
+  /** Dequeue one (or all, if steeringMode were "all") steering messages. */
+  #dequeueSteer(): ModelMessage[] {
+    // Default steering mode is "one-at-a-time".
+    const msg = this.#steeringQueue.shift();
+    return msg !== undefined ? [msg] : [];
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
   /**
-   * Called by SessionTransformStream for every AgentEvent as it passes through.
-   * All event-driven side effects for the DO live here — no logic in the stream
-   * callbacks themselves.
+   * Called for every AgentEvent as it passes through the turn loop.
+   * All event-driven side effects for the DO live here.
    *
    * Handles:
    *   1. In-flight history tracking (for getHistory() mid-turn)
@@ -863,10 +1062,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   /**
-   * Called via ctx.waitUntil when finish fires on the agent subscription.
+   * Called via ctx.waitUntil when finish fires in #runStream.
    * Persists messages, runs any queued follow-up turns, then fires turn_flushed.
-   * Follow-up turns also emit through the agent subscription — they trigger
-   * #onAgentEnd again when they finish, processing the queue recursively.
+   * Follow-up turns also run through #runStream — they trigger #onAgentEnd
+   * again when they finish, processing the queue recursively.
    */
   async #onAgentEnd(): Promise<void> {
     await this.#persistNewMessages().catch((err) => {
@@ -874,11 +1073,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     });
 
     if (this.#followUpQueue.length > 0) {
-      // Start the next follow-up turn — it will emit through the agent subscription
+      // Start the next follow-up turn — it will emit through #runStream
       // and trigger #onAgentEnd again when it finishes.
       const followUpText = this.#followUpQueue.shift() ?? "";
-      this.#messagesAtTurnStart = this.#agent.state.messages.length;
-      this.#agent.prompt(followUpText);
+      this.#messagesAtTurnStart = this.#messages.length;
+      this.#startTurn([{ role: "user", content: followUpText }]);
       return; // don't clear #currentTurn or notify yet
     }
 
@@ -898,24 +1097,84 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   #computeContextUsage(): ContextUsage {
-    const extra = estimateTokens(
-      this.#agent.state.messages.slice(this.#lastInputTokens === 0 ? 0 : undefined),
-    );
+    const extra = estimateTokens(this.#messages.slice(this.#lastInputTokens === 0 ? 0 : undefined));
     return { inputTokens: this.#lastInputTokens + extra };
   }
 
+  /**
+   * Run context compaction on the current message history.
+   *
+   * Lets extensions cancel or supply a pre-built summary, otherwise calls
+   * agentCompact() to summarise old messages. Appends a CompactionEntry to
+   * #pendingEntries and replaces #messages with the compacted list.
+   * Does NOT flush to D1 — the caller flushes after the turn ends.
+   *
+   * Spec ref: specs/core.md §Compaction algorithm
+   */
   async #compact(options: CompactOptions): Promise<void> {
-    const compactionState: CompactionState = {
-      sessionId: this.#sessionId,
-      leafId: this.#leafId,
-      agent: this.#agent,
-      extensionRunner: this.#extensionRunner,
-      messageToEntryId: this.#messageToEntryId,
-      pendingEntries: this.#pendingEntries,
-      lastInputTokens: this.#lastInputTokens,
+    const keepRecentTokens = options.keepRecentTokens ?? 20_000;
+
+    // 1. Let extensions cancel or supply a pre-built summary.
+    const beforeCompactEvent: Extract<ExtensionEvent, { type: "before_compact" }> = {
+      type: "before_compact",
+      messages: this.#messages,
+      keepRecentTokens,
     };
-    await compact(compactionState, this.#rpcCtx, options);
-    this.#leafId = compactionState.leafId;
+    const extResult = (await this.#extensionRunner.emit(
+      beforeCompactEvent,
+      this.#rpcCtx,
+    )) as BeforeCompactResult;
+    if (extResult.cancel) return;
+
+    let summary: string;
+    let keptMessages: ModelMessage[];
+
+    if (extResult.summary) {
+      // Extension provided a ready-made summary — skip the LLM call.
+      summary = extResult.summary;
+      keptMessages = splitForCompaction(this.#messages, keepRecentTokens).toKeep;
+    } else {
+      // Call agentCompact() (calls generateText internally).
+      ({ summary, keptMessages } = await agentCompact(
+        this.#messages,
+        keepRecentTokens,
+        this.#model,
+      ));
+    }
+
+    // 2. If nothing was summarised, skip writing a CompactionEntry.
+    if (summary === "" && !extResult.summary) return;
+
+    // 3. Find firstKeptEntryId by looking up keptMessages[0] in the message→entry map.
+    //    Falls back to "" if not found — buildSessionContext handles missing ids gracefully.
+    const firstKeptMessage = keptMessages[0];
+    const firstKeptEntryId =
+      firstKeptMessage !== undefined ? (this.#messageToEntryId.get(firstKeptMessage) ?? "") : "";
+
+    // 4. Build and queue the CompactionEntry.
+    const compactionEntry: CompactionEntry = {
+      id: generateEntryId(),
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      type: "compaction",
+      timestamp: new Date().toISOString(),
+      data: {
+        summary,
+        firstKeptEntryId,
+        tokensBefore: this.#lastInputTokens,
+      },
+    };
+    this.#pendingEntries.push(compactionEntry);
+    this.#leafId = compactionEntry.id;
+
+    // 5. Replace message history with summary + kept messages.
+    // keptMessages are a validated subset of the prior #messages; summaryMessage
+    // is DO-constructed and always valid. Use #replaceMessages for consistency.
+    const summaryMessage: ModelMessage = {
+      role: "user",
+      content: `[Conversation Summary]\n\n${summary}`,
+    };
+    this.#replaceMessages([summaryMessage, ...keptMessages], "#compact");
   }
 
   #requireLeafId(): string {
@@ -927,7 +1186,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   /** Persist all new agent messages to D1 since the last flush point. */
   async #persistNewMessages(): Promise<void> {
-    const newMessages = this.#agent.state.messages.slice(this.#messagesAtTurnStart);
+    const newMessages = this.#messages.slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
       if (this.#messageToEntryId.has(msg)) continue; // already tracked (e.g. user message)
       const entryId = generateEntryId();
@@ -944,7 +1203,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.#messageToEntryId.set(msg, entryId);
     }
     // Advance the start index so the next call only picks up genuinely new messages
-    this.#messagesAtTurnStart = this.#agent.state.messages.length;
+    this.#messagesAtTurnStart = this.#messages.length;
 
     if (this.#createdAt === 0 && this.#sessionId !== "") {
       const now = Date.now();

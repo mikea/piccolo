@@ -68,12 +68,12 @@ JSRPC contract type library. Contains only TypeScript interface and type declara
 ### `piccolo-core` → [core.md](core.md)
 
 Agent loop and session coordination layer. Provides:
-- **Agent loop**: `Agent` class that orchestrates multi-turn LLM conversations via `streamText`, returning `AgentTurn` (a `ReadableStream<AgentEvent>` handle) from each `prompt()` call
+- **Agent loop**: inlined directly into `AgentSessionDO` (`#runStream`, `#startTurn`) — orchestrates multi-turn LLM conversations via `streamText`, emitting `AgentEvent`s to the session-level `ObservableImpl`
 - **`ITool` / `ToolDescriptor`**: full tool interface used by extensions and the agent
 - **Steering queue**: mid-turn message injection via `prepareStep`
-- **`AgentEvent` stream**: events flow through `SessionTransformStream` for gateway consumption and DO side-effects
+- **`AgentEvent` stream**: events flow through `#observable` for gateway consumption and DO side-effects
 - **Session persistence** backed by Cloudflare Durable Objects + D1
-- **Context compaction** (LLM-based summarisation when context window fills)
+- **Context compaction** (LLM-based summarisation when context window fills, inlined as `#compact()` on the DO)
 - **Extension host**: loads extensions from the Workers for Platforms dispatch namespace, dispatches events via JSRPC
 - **System prompt assembly** from registered skills, agent context, and tool guidelines
 - **Model management**: active model stored per session, switchable at runtime

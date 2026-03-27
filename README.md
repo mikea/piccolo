@@ -63,6 +63,8 @@ Piccolo strives to be minimal and extensible. Contributions to piccolo-core shou
 - correctness
 - extensibility
 
+This is AI code, so A LOT can be improved.
+
 Contributions should not try to add features that can be implemented as extensions.
 
 ### Extensions
@@ -71,4 +73,4 @@ The purpose of all provided extensions is to be a testbed and be an example.
 Please do not try to make them fully featured but focus on simplicity and correctness instead.
 
 If you need some specific feature - copy the code and start your own extension.
-Please share it :)
+Please share it with the community.

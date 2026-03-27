@@ -306,43 +306,37 @@ interface DOState {
   // Pending entries not yet flushed to D1
   pendingEntries: AnyEntry[];
 
-  // Active agent instance
-  agent: Agent;
-  abortController: AbortController | null;
+  // Inlined agent state (no separate Agent class)
+  model: LanguageModel;
+  error: string | undefined;
+  steeringQueue: ModelMessage[];
+  agentAbortController: AbortController | null;
 
-  // Follow-up queue (filled by ctx.sendFollowUp())
+  // Follow-up queue (filled by followUp())
   followUpQueue: string[];
 
-  // Extension runner (stub at step 5, real ExtensionRunner from step 6)
+  // Extension runner and system prompt infrastructure
   extensionRunner: ExtensionRunner;
-
-  // System prompt assembler (stub at step 5, real SystemPromptAssembler from step 7)
   assembler: SystemPromptAssembler;
-
-  // The assembled system prompt for the current session
-  assembledSystemPrompt: string;
+  assembledSystemPrompt: string;  // cached; populated lazily on first getSystemPrompt()
+  tools: ITool[] | undefined;     // cached; populated lazily on first getSystemPrompt()
 
   // In-memory cache of all AnyEntry objects on the current branch path (root→leaf order).
   // Populated on cold start from D1. New custom/custom_message entries appended here
-  // when SessionImpl.appendCustomEntry/appendCustomMessage are called.
+  // when appendCustomEntry/appendCustomMessage are called.
   // Used by ISession.getEntries() to avoid a D1 round-trip.
   branchEntries: AnyEntry[];
 
-  // The live ISession for the current turn. Set at the start of prompt(), null when idle.
-  // Also passed to agent.setContext() so tools receive it via execute().
-  // Typed as ISession — implementation is SessionImpl, but DOState never references the Impl class.
-  session: ISession | null;
-
   // Maps ModelMessage object reference → entry ID.
-  // Used by compact() to locate firstKeptEntryId without an extra D1 round-trip.
+  // Used by #compact() to locate firstKeptEntryId without an extra D1 round-trip.
   messageToEntryId: Map<ModelMessage, string>;
 
   // Token counts from the last completed agent turn.
   // lastInputTokens: updated from finish.totalUsage; used for compaction threshold.
   lastInputTokens: number;
 
-  // Count of agent.state.messages at the start of the current prompt() call.
-  // _handleAgentEnd() slices from this index to find new messages to persist.
+  // Count of #messages at the start of the current prompt() call.
+  // #onAgentEnd() slices from this index to find new messages to persist.
   messagesAtTurnStart: number;
 }
 ```
@@ -655,158 +649,38 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-`compact()` takes a `CompactionState` struct rather than individual parameters, so all the mutable DO state it needs to update (leafId, pendingEntries) is passed as a bundle.
+Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. It reads and mutates `#messages`, `#leafId`, and `#pendingEntries` in place.
 
-```typescript
-interface CompactionState {
-  sessionId: string;
-  leafId: string | null;
-  agent: Agent;
-  extensionRunner: ExtensionRunner;
-  /** Maps ModelMessage object reference → entry ID for firstKeptEntryId lookup. */
-  messageToEntryId: Map<ModelMessage, string>;
-  /** Accumulated entries not yet flushed to D1. Compaction entry is appended here. */
-  pendingEntries: AnyEntry[];
-  /** Last known input token count — used for CompactionEntry.tokensBefore. */
-  lastInputTokens: number;
-}
-
-async function compact(
-  state: CompactionState,
-  ctx: ISession,
-  options: CompactOptions = {},
-): Promise<void> {
-  const keepRecentTokens = options.keepRecentTokens ?? 20_000;
-
-  // 1. Let extensions cancel or provide a pre-built summary
-  const extResult = await state.extensionRunner.emitBeforeCompact(
-    { messages: state.agent.state.messages, keepRecentTokens }, ctx
-  );
-  if (extResult?.cancel) return;
-
-  let summary: string;
-  let keptMessages: ModelMessage[];
-
-  if (extResult?.summary) {
-    // Extension provided a ready-made summary — skip LLM call
-    summary = extResult.summary;
-    keptMessages = splitForCompaction(state.agent.state.messages, keepRecentTokens).toKeep;
-  } else {
-    // Use piccolo-agent's agentCompact() (generateText call)
-    ({ summary, keptMessages } = await agentCompact(
-      state.agent.state.messages,
-      keepRecentTokens,
-      state.agent.state.model,
-    ));
-  }
-
-  // Guard: if nothing was summarised (toSummarize was empty), skip writing an entry.
-  if (summary === "" && !extResult?.summary) return;
-
-  // 2. Build and queue CompactionEntry
-  const firstKeptMessage = keptMessages[0];
-  const firstKeptEntryId = firstKeptMessage
-    ? (state.messageToEntryId.get(firstKeptMessage) ?? "")
-    : "";
-  const compactionEntry: CompactionEntry = {
-    id: generateEntryId(),
-    sessionId: state.sessionId,
-    parentId: state.leafId,
-    type: "compaction",
-    timestamp: new Date().toISOString(),
-    data: {
-      summary,
-      firstKeptEntryId,
-      tokensBefore: state.lastInputTokens,
-    },
-  };
-  state.pendingEntries.push(compactionEntry);
-  state.leafId = compactionEntry.id;
-
-  // 3. Rebuild agent message list
-  const summaryMessage: ModelMessage = {
-    role: "user",
-    content: `[Conversation Summary]\n\n${summary}`,
-  };
-  state.agent.replaceMessages([summaryMessage, ...keptMessages]);
-
-  // 4. Notify extensions (fire-and-forget)
-  await state.extensionRunner.emit("onCompact",
-    { summary, keptMessageCount: keptMessages.length }, ctx
-  );
-}
 ```
+1. Emit before_compact to extensions → BeforeCompactResult
+   - If cancel: return (no entry written)
+   - If summary provided: use it, skip LLM call
+   - Otherwise: call agentCompact(#messages, keepRecentTokens, #model)
+
+2. If summary === "" and no extension summary: return (nothing to summarise)
+
+3. Lookup firstKeptEntryId from #messageToEntryId (falls back to "" if not found)
+
+4. Build CompactionEntry, push to #pendingEntries, advance #leafId
+
+5. Replace #messages = [summaryMessage, ...keptMessages]
+```
+
+Caller (`compact()` public method or `#runStream` threshold check) is responsible for flushing `#pendingEntries` to D1 after the turn ends.
 
 ---
 
 ## `ISession` — Core-Side Implementation
 
-`SessionImpl extends RpcTarget` holds a **live reference to `DOState`**. All mutations (model changes, custom entries, etc.) write directly into `doState.pendingEntries` / `doState.branchEntries`. No D1 flush happens here — flushing occurs at `finish` as usual.
+`AgentSessionDO extends DurableObject implements ISession` directly. There is no separate `SessionImpl` wrapper. All `ISession` methods are implemented as public async methods on the DO class itself.
 
-One instance is created per `prompt()` call and stored in `doState.session` (typed as `ISession`). It is also passed to `agent.setContext(session)` so the agent can inject it into every tool `execute()` call. `DOState.session` is always typed as `ISession` — no code outside `session-impl.ts` references `SessionImpl` directly.
+`SessionTarget extends RpcTarget` is a thin JSRPC-serialisable proxy that delegates every `ISession` method to the owning `AgentSessionDO`. One `SessionTarget` is created per DO lifetime (in `#initialize()`) and stored as `#rpcCtx`. It is passed to extension workers and threaded into tool `execute()` calls — this is the JSRPC-correct approach since `DurableObject` instances cannot be passed directly over dispatch RPC.
 
-```typescript
-class SessionImpl extends RpcTarget implements ISession {
-  // Constructor receives a live DOState reference and env bindings.
-  constructor(private readonly doState: DOState, private readonly env: Env) { super(); }
-
-  // ISession.id() and ISession.userId resolved from doState
-
-  // Messaging
-  async sendUserMessage(content: string) {
-    doState.agent.steer({ role: "user", content });
-  }
-  async sendFollowUp(content: string) {
-    doState.followUpQueue.push(content);
-  }
-  async appendCustomMessage(customType, content, display) {
-    // Creates CustomMessageEntry, pushes to pendingEntries + branchEntries, updates leafId.
-    // No D1 flush — flush happens at finish.
-  }
-  async appendCustomEntry(customType, data?) {
-    // Creates CustomEntry, pushes to pendingEntries + branchEntries, updates leafId.
-    // No D1 flush — flush happens at finish.
-  }
-  async getEntries(customType?) {
-    // Filter doState.branchEntries by type === "custom" and optional customType match.
-    return doState.branchEntries
-      .filter(e => e.type === "custom" && (!customType || (e.data as { customType: string }).customType === customType))
-      .map(e => ({ id: e.id, customType: (e.data as { customType: string; payload?: unknown }).customType, data: (e.data as { payload?: unknown }).payload, timestamp: e.timestamp }));
-  }
-
-  // Model
-  async getModel()           { return doState.modelId; }
-  async setModel(modelId)    {
-    doState.modelId = modelId;
-    doState.agent.setModel(createModel(env, modelId));
-    // Pushes ModelChangeEntry to pendingEntries + branchEntries, updates leafId.
-  }
-  async listModels()         { return JSON.parse(env.MODELS) as string[]; }
-
-  // Tools
-  async getActiveTools()     { return doState.agent.state.tools.map(t => t.descriptor) as ToolDescriptor[]; }
-  async setActiveTools(tools: IAgentTool[]){ doState.agent.setTools(tools); }
-
-  // Session control
-  async abort()              { doState.abortController?.abort(); }
-  async getContextUsage()    { return computeContextUsage(doState); }
-  async compact(opts?)       { await compact(compactionState, this, opts); }
-
-  // Metadata
-  async getName()            { return doState.name; }
-  async setName(name)        {
-    doState.name = name;
-    // Pushes SessionInfoEntry to pendingEntries + branchEntries, updates leafId.
-  }
-  async getSystemPrompt()    { return doState.assembledSystemPrompt; }
-}
-```
+All mutations (model changes, custom entries, etc.) write directly into `#pendingEntries` / `#branchEntries` on the DO. No D1 flush happens during the turn — flushing occurs in `#persistNewMessages()` triggered by `#onAgentEnd()`.
 
 ### Context injection into tool execute()
 
-`AgentSessionDO.prompt()` calls `state.agent.setContext(session)` immediately after creating the session (typed as `ISession`). The agent stores it as `IAgentSession` and passes it to `toAiSdkTools(tools, ctx)`, which threads it into every tool `execute()` call. This is the JSRPC-correct approach: an `ISession` `RpcTarget` capability crosses the Worker dispatch boundary with the tool call.
-
-For extension dispatch calls, `AgentSessionDO` currently passes a raw self DO stub (`env.AGENT_SESSION.get(ctx.id)`) instead of passing `this` directly, due a temporary runtime limitation where `AgentSessionDO` instances cannot be serialized over dispatch RPC.
+`#rpcCtx` (the live `SessionTarget`) is passed to `toAiSdkTools(#tools, #rpcCtx)` before each turn, threading it into every tool `execute()` call. The same `#rpcCtx` instance is reused for all extension calls throughout the DO's lifetime.
 
 ---
 
@@ -940,179 +814,67 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
 
 ## Agent Loop — Implementation
 
-The agent loop is implemented in `packages/core/src/agent.ts`. It orchestrates multi-turn, tool-calling conversations via the `ai` SDK's `streamText`. It has no Workers-specific globals and no knowledge of sessions, persistence, or extensions — those are all DO concerns.
+The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`. There is no separate `Agent` class or `compaction.ts` module — both have been inlined as private methods on the DO.
 
-### `AgentTurn`
+### `#startTurn(initialMessages)`
 
-```typescript
-interface AgentTurn {
-  /** Single-consumer ReadableStream of AgentEvents for this turn. */
-  readonly stream: ReadableStream<AgentEvent>;
-  /** Abort this turn immediately. No-op after the turn completes. */
-  abort(): void;
-}
-```
+Pushes `initialMessages` onto `#messages`, creates an `AbortController` stored as `#agentAbortController`, and registers the stream with the Workers runtime via `ctx.waitUntil(this.#runStream(ac.signal))`.
 
-`AgentTurn` is returned synchronously by `Agent.prompt()`. The stream starts filling immediately in the background. `abort()` cancels the underlying `AbortController` and propagates to the AI SDK and all tool `execute()` calls.
+### `#runStream(signal)`
 
-### `AgentOptions` / `AgentState`
+Core LLM loop. Validates messages, calls `streamText(...)` from the `ai` SDK, and dispatches every AI SDK callback to `#emitTurnEvent(event)`. In the `finally` block (non-abort path) it emits the `finish` event and registers `#onAgentEnd()` via `ctx.waitUntil`.
 
-```typescript
-interface AgentOptions {
-  model: LanguageModel;   // from ai package
-  systemPrompt: string;
-  tools?: ITool[];
-  maxSteps?: number;        // default: 20
-  steeringMode?: "one-at-a-time" | "all";
-}
+Key callbacks:
+- `prepareStep` — emits `step-start`; on step > 0 dequeues one steering message from `#steeringQueue` via `#dequeueSteer()`
+- `onChunk` — emits `text-delta`, `reasoning-delta`, `tool-call`, `tool-result`
+- `onStepFinish` — emits `tool-result` for tool errors, then `step-finish`
+- `onFinish` — captures `totalUsage`, appends `response.messages` to `#messages`
+- `onError` / catch — emits `error`, clears `#agentAbortController`
 
-interface AgentState {
-  model: LanguageModel;
-  systemPrompt: string;
-  tools: ITool[];
-  messages: ModelMessage[];
-  isStreaming: boolean;
-  error?: string;
-}
-```
+### `#emitTurnEvent(event)`
 
-### `Agent` Public API
+Calls `#onTurnEvent(event)` (side effects) then `#observable.emit(event)` (subscriber delivery).
 
-```typescript
-class Agent {
-  readonly state: AgentState;
+### `#onTurnEvent(event)`
 
-  // Turn lifecycle
-  prompt(text: string, images?: ImagePart[]): AgentTurn;  // throws if turn active
-  prompt(messages: ModelMessage[]): AgentTurn;
-  getCurrentTurn(): AgentTurn | null;  // synchronous
-  abort(): void;                       // delegates to getCurrentTurn()?.abort()
-
-  // Synchronous mutations
-  setModel(model: LanguageModel): void;
-  setTools(tools: ITool[]): void;
-  setContext(ctx: ISession): void;     // called by DO before each prompt()
-  setSystemPrompt(prompt: string): void;
-  appendMessages(messages: ModelMessage[]): void;
-  replaceMessages(messages: ModelMessage[]): void;
-
-  // Steering queue
-  steer(message: ModelMessage): void;
-  clearSteering(): ModelMessage[];
-}
-```
-
-**Key design decisions:**
-
-- `prompt()` is **synchronous** — it creates the `AgentTurn` and `ReadableStream`, then kicks off `_runStream()` asynchronously via `void`. Events flow into the stream as the AI SDK produces them.
-- There is **no `continue()` method**. The DO handles follow-up turns by calling `agent.prompt(text)` directly.
-- There is **no `subscribe()` method**. All event observation is done by reading `AgentTurn.stream`.
-- `_ctx: ISession | null` is set via `setContext()` and threaded into every tool `execute()` call by `toAiSdkTools()`.
-
-### `prompt()` implementation
-
-```typescript
-prompt(input: string | ModelMessage[], images?: ImagePart[]): AgentTurn {
-  if (this._currentTurn !== null) {
-    throw new Error("A turn is already in progress. Call abort() first.");
-  }
-  // Build messages, push to this._state.messages
-  // ...
-  return this._startTurn();
-}
-
-private _startTurn(): AgentTurn {
-  const ac = new AbortController();
-  let controller!: ReadableStreamDefaultController<AgentEvent>;
-  const stream = new ReadableStream<AgentEvent>({ start(c) { controller = c; } });
-  const turn: AgentTurn = { stream, abort: () => ac.abort() };
-  this._currentTurn = turn;
-  void this._runStream(controller, ac.signal);
-  return turn;
-}
-```
-
-`_runStream()` calls `streamText(...)` from the `ai` package, enqueues events via `controller.enqueue()`, and in the `finally` block sets `_currentTurn = null` and calls `controller.close()`.
-
-Before passing `this._messages` to `streamText`, `_runStream()` calls `checkMessages()` which validates every message against the AI SDK's `modelMessageSchema` and logs any failures as errors. Messages are **never dropped** — the check is diagnostic only, to surface format mismatches (e.g. messages stored in an older schema) in server logs.
-
-### `StreamBroadcaster<T>`
-
-`packages/core/src/stream-broadcaster.ts` — a `TransformStream<T, T>` that fans out every chunk to zero or more subscriber streams:
-
-```typescript
-class StreamBroadcaster<T> extends TransformStream<T, T> {
-  connect(): ReadableStream<T>  // new subscriber stream from this point forward
-  abort(reason: unknown): void  // error all subscribers (call on source error)
-  closed: boolean               // true after writable side closes
-  aborted: boolean              // true after abort() is called
-}
-```
-
-- `bc.readable` (inherited) is the primary drain — must be consumed by the DO to drive backpressure.
-- Each `connect()` call returns an independent `ReadableStream<T>` receiving chunks from that point forward.
-- `connect()` after close → immediately closed stream. After abort → immediately errored stream.
-- Broken subscriber controllers (enqueue/close/error throws) are silently removed and never affect other subscribers.
-
-### `AgentSessionDO.#onTurnEvent()`
-
-Called synchronously for every event as the DO drains the turn stream. Contains all four peek reasons:
+Called synchronously for every `AgentEvent`. Handles:
 
 1. **In-flight history** — accumulates `#streamingAssistantText` and `#streamingToolCalls` for `getHistory()` mid-turn
-2. **Token counts** — updates `#lastInputTokens` from `step-finish.usage` and `finish.totalUsage`
-3. **Extension dispatch** — `extensionRunner.emit(event.type, event, ctx)` fire-and-forget
+2. **Token counts** — updates `#lastInputTokens` from `step-finish.usage` and `finish.totalUsage`; emits a `usage` event after each
+3. **Listener dispatch** — calls `#notifyListeners(event)` (extension runner etc.)
 
-### `AgentSessionDO.#onTurnClose()`
+### `#onAgentEnd()`
 
-Called from `#drainTurnStream()` when the agent stream closes (normally or on error). Schedules `#handleAgentEnd()` via `ctx.waitUntil()`, and clears `#currentTurn` in the `finally` block — after all follow-up processing completes, preserving `TurnImpl` `RpcTarget` identity for the duration of the logical turn.
+Called via `ctx.waitUntil` when finish fires. Persists new messages to D1, then:
+- If `#followUpQueue` is non-empty: dequeues one text, advances `#messagesAtTurnStart`, calls `#startTurn([userMessage])` and returns without clearing `#currentTurn`
+- Otherwise: clears `#currentTurn = null`, fires `turn_flushed` to listeners
 
-### `AgentSessionDO.prompt()` pipeline
-
-```
-agent.prompt([userMessage])
-  → AgentTurn { stream: ReadableStream<AgentEvent>, abort() }
-
-broadcaster = new StreamBroadcaster<AgentEvent>()
-TurnImpl(broadcaster, callback)  ← #currentTurn
-
-ctx.waitUntil(#drainTurnStream(agentTurn.stream, broadcaster, ctx))
-  → pipes agentTurn.stream through broadcaster
-  → drains bc.readable (primary drain)
-  → calls #onTurnEvent() per chunk
-  → calls #onTurnClose() on completion
-
-getStream() → broadcaster.connect()  ← each caller gets a fresh subscriber stream
-```
-
-### Follow-up turns
-
-Inside `#handleAgentEnd()`, after D1 flush. Follow-up turns are internal — no broadcaster needed:
+### `getSystemPrompt()` — lazy assembly
 
 ```typescript
-while (this.#followUpQueue.length > 0) {
-  const text = this.#followUpQueue.shift()!;
-  this.#messagesAtTurnStart = this.#agent.state.messages.length;
-  const followUpTurn = this.#agent.prompt(text);
-
-  const reader = followUpTurn.stream.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    this.#onTurnEvent(value, ctx);
+async getSystemPrompt(): Promise<string> {
+  if (!this.#assembledSystemPrompt) {
+    if (!this.#tools) {
+      this.#tools = await this.#extensionRunner.getTools(this.#rpcCtx);
+    }
+    const additions = await this.#extensionRunner.getSystemPromptAdditions(this.#rpcCtx);
+    this.#assembledSystemPrompt = await this.#assembler.assemble(
+      buildBasePrompt(this.env.AGENT_NAME), additions, this.#tools,
+    );
   }
-  reader.releaseLock();
-
-  await this.#persistNewMessages();
+  return this.#assembledSystemPrompt;
 }
 ```
+
+Called at the start of every `prompt()` call; is a no-op after the first call per DO lifetime.
 
 ### `toAiSdkTools(tools: ITool[], ctx: ISession): ToolSet`
 
-Converts `ITool[]` to the AI SDK `ToolSet` format. `ctx` (the live `ISession`) is threaded into every tool `execute()` call. `jsonSchema()` from `ai` is used to wrap the `JSONSchema7` descriptor.
+Converts `ITool[]` to the AI SDK `ToolSet` format. `ctx` (the live `ISession` via `#rpcCtx`) is threaded into every tool `execute()` call. `jsonSchema()` from `ai` is used to wrap the `JSONSchema7` descriptor.
 
 ### `agentCompact(messages, keepRecentTokens, model): Promise<{ summary, keptMessages }>`
 
-Uses `generateText` (non-streaming) with the same `LanguageModel` as the Agent. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by `compact()` in `compaction.ts`.
+Uses `generateText` (non-streaming) with the same `LanguageModel` as the DO. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by `#compact()` on the DO.
 
 ### LLM Backend
 
