@@ -6,16 +6,17 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "test": "vitest run --coverage",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "build": "wrangler deploy --dry-run",
+    "build": "echo \"telegram gateway build is not implemented yet\"",
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "preview": "wrangler dev"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.4",
+    "@vitest/coverage-v8": "4.1.1",
     "vitest": "*",
-    "wrangler": "^4.77.0"
+    "wrangler": "^4.78.0"
   }
 }

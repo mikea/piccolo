@@ -166,7 +166,11 @@ describe("SystemPromptAssembler", () => {
   // ─── Available Tools section ──────────────────────────────────────────────
 
   it("includes Available Tools section when tool has promptSnippet", async () => {
-    const result = await assembler.assemble(BASE, [], [makeTool("r2", { promptSnippet: "R2 storage" })]);
+    const result = await assembler.assemble(
+      BASE,
+      [],
+      [makeTool("r2", { promptSnippet: "R2 storage" })],
+    );
     expect(result).toContain("## Available Tools");
     expect(result).toContain("- **r2**: R2 storage");
   });
