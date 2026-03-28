@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FetchTool } from "../src/extension.ts";
+import { FetchTool, FetchToolExtension } from "../src/extension.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +33,17 @@ describe("extension worker interface", () => {
   it("getTools returns the fetch tool descriptor", async () => {
     const tool = makeTool();
     expect((await tool.getDescriptor()).name).toBe("fetch");
+  });
+
+  it("FetchToolExtension.fetch returns 200 OK", () => {
+    const response = FetchToolExtension.prototype.fetch.call({});
+    expect(response.status).toBe(200);
+  });
+
+  it("FetchToolExtension.getTools returns a FetchTool instance", async () => {
+    const tools = await FetchToolExtension.prototype.getTools.call({}, ctx);
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toBeInstanceOf(FetchTool);
   });
 
   it("returned tool executes successfully", async () => {
@@ -165,7 +176,7 @@ describe("ranged GET", () => {
     expect(mockFetch).toHaveBeenCalledWith(
       "https://example.com/big.txt",
       expect.objectContaining({
-        headers: { Range: "bytes=0-999" },
+        headers: expect.objectContaining({ Range: "bytes=0-999" }),
       }),
     );
 
@@ -201,7 +212,9 @@ describe("ranged GET", () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       "https://example.com/big.txt",
-      expect.objectContaining({ headers: { Range: "bytes=500-" } }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Range: "bytes=500-" }),
+      }),
     );
   });
 

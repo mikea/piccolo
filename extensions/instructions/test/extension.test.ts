@@ -143,7 +143,6 @@ describe("db: removeInstruction", () => {
 
 describe("InstructionsTool.getDescriptor", () => {
   it("returns descriptor with name=instructions", async () => {
-    const ctx = makeSession();
     const tool = new InstructionsTool(env.INSTRUCTIONS_DB);
     const desc = await tool.getDescriptor();
     expect(desc.name).toBe("instructions");
