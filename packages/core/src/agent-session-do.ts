@@ -42,7 +42,7 @@ import type {
   ToolDescriptor,
 } from "@piccolo/api";
 import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
-import { modelMessageSchema, stepCountIs, streamText } from "ai";
+import { stepCountIs, streamText } from "ai";
 import { agentCompact, splitForCompaction } from "./agent-compact.ts";
 import { toAiSdkTools } from "./agent-tools.ts";
 import type {
@@ -58,6 +58,7 @@ import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
+import { Messages } from "./messages.ts";
 import { ObservableImpl } from "./observable-impl.ts";
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
 import {
@@ -186,7 +187,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #updatedAt = 0;
 
   // ─── In-memory session state ──────────────────────────────────────────────
-  #messages: ModelMessage[] = [];
+  #messages = new Messages([]);
   #pendingEntries: AnyEntry[] = [];
   #branchEntries: AnyEntry[] = [];
   #messageToEntryId = new Map<ModelMessage, string>();
@@ -285,7 +286,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         const rawRows = await getEntries(db, sessionId);
         const allEntries = rawRows.map(parseEntry);
         const context = buildSessionContext(allEntries, this.#leafId);
-        this.#replaceMessages(context.messages, "D1 rehydration");
+        this.#messages = new Messages(context.messages);
         if (allEntries.some((e) => e.type === "model_change")) {
           this.#modelId = context.modelId;
         }
@@ -447,7 +448,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         ctx,
       )) as BeforeAgentStartResult;
       if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
-        this.#pushMessages(beforeStart.contextMessages, "before_start contextMessages");
+        this.#messages.pushAll(beforeStart.contextMessages);
       }
       this.#assembledSystemPrompt = beforeStart.systemPrompt ?? this.#assembledSystemPrompt;
 
@@ -722,7 +723,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const rawRows = await getEntries(this.env.SESSIONS_DB, this.#sessionId);
     const allEntries = rawRows.map(parseEntry);
     const context = buildSessionContext(allEntries, entryId);
-    this.#replaceMessages(context.messages, "D1 branch");
+    this.#messages = new Messages(context.messages);
     if (context.modelId !== this.#modelId) {
       this.#modelId = context.modelId;
       this.#model = createModel(this.env, context.modelId);
@@ -750,7 +751,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
     this.#agentAbortController?.abort();
     this.#pendingEntries = [];
-    this.#messages = [];
+    this.#messages = new Messages([]);
     this.#leafId = null;
   }
 
@@ -792,53 +793,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     }
   }
 
-  // ─── Message list helpers ─────────────────────────────────────────────────
-
-  /**
-   * Validate a single ModelMessage and log an error if it does not conform to
-   * the AI SDK schema. Messages are never silently dropped — validation is
-   * diagnostic only, surfacing format mismatches in server logs.
-   */
-  #validateMessage(msg: ModelMessage, source: string, index?: number): void {
-    const check = modelMessageSchema.safeParse(msg);
-    if (!check.success) {
-      const loc = index !== undefined ? ` at index ${index}` : "";
-      console.error(
-        `[session:${this.#sessionId}] invalid ModelMessage${loc} from ${source}: ${JSON.stringify(msg)} — ${JSON.stringify(check.error.issues)}`,
-      );
-    }
-  }
-
-  /**
-   * Validate every message in `msgs`, then append all to #messages.
-   * Use this instead of direct #messages.push() for any external or
-   * untrusted message source.
-   */
-  #pushMessages(msgs: ModelMessage[], source: string): void {
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
-      if (msg !== undefined) {
-        this.#validateMessage(msg, source, i);
-      }
-    }
-    this.#messages.push(...msgs);
-  }
-
-  /**
-   * Validate every message in `msgs`, then replace #messages wholesale.
-   * Use this instead of direct #messages assignment for any external or
-   * untrusted message source.
-   */
-  #replaceMessages(msgs: ModelMessage[], source: string): void {
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
-      if (msg !== undefined) {
-        this.#validateMessage(msg, source, i);
-      }
-    }
-    this.#messages = msgs;
-  }
-
   // ─── Inlined agent loop ───────────────────────────────────────────────────
 
   /**
@@ -850,9 +804,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    */
   #startTurn(initialMessages: ModelMessage[]): void {
     if (initialMessages.length > 0) {
-      // initialMessages are built by the DO itself (user message, follow-up text)
-      // — validate them to catch any schema drift at the source.
-      this.#pushMessages(initialMessages, "#startTurn");
+      this.#messages.pushAll(initialMessages);
     }
     const ac = new AbortController();
     this.#agentAbortController = ac;
@@ -893,7 +845,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       const result = streamText({
         model: this.#model,
         system: this.#assembledSystemPrompt,
-        messages: this.#messages,
+        messages: this.#messages.get(),
         tools: toolSet,
         stopWhen: stepCountIs(DEFAULT_MAX_STEPS),
         abortSignal: signal,
@@ -958,7 +910,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
         onFinish: ({ totalUsage, response }) => {
           finalUsage = totalUsage;
-          this.#pushMessages(response.messages, "streamText onFinish");
+          this.#messages.pushAll(response.messages);
         },
 
         onError: ({ error }) => {
@@ -1103,7 +1055,9 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   #computeContextUsage(): ContextUsage {
-    const extra = estimateTokens(this.#messages.slice(this.#lastInputTokens === 0 ? 0 : undefined));
+    const extra = estimateTokens(
+      this.#messages.get().slice(this.#lastInputTokens === 0 ? 0 : undefined),
+    );
     return { inputTokens: this.#lastInputTokens + extra };
   }
 
@@ -1123,7 +1077,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // 1. Let extensions cancel or supply a pre-built summary.
     const beforeCompactEvent: Extract<ExtensionEvent, { type: "before_compact" }> = {
       type: "before_compact",
-      messages: this.#messages,
+      messages: this.#messages.get(),
       keepRecentTokens,
     };
     const extResult = (await this.#extensionRunner.emit(
@@ -1138,11 +1092,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     if (extResult.summary) {
       // Extension provided a ready-made summary — skip the LLM call.
       summary = extResult.summary;
-      keptMessages = splitForCompaction(this.#messages, keepRecentTokens).toKeep;
+      keptMessages = splitForCompaction(this.#messages.get(), keepRecentTokens).toKeep;
     } else {
       // Call agentCompact() (calls generateText internally).
       ({ summary, keptMessages } = await agentCompact(
-        this.#messages,
+        this.#messages.get(),
         keepRecentTokens,
         this.#model,
       ));
@@ -1180,7 +1134,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       role: "user",
       content: `[Conversation Summary]\n\n${summary}`,
     };
-    this.#replaceMessages([summaryMessage, ...keptMessages], "#compact");
+    this.#messages = new Messages([summaryMessage, ...keptMessages]);
   }
 
   #requireLeafId(): string {
@@ -1192,7 +1146,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   /** Persist all new agent messages to D1 since the last flush point. */
   async #persistNewMessages(): Promise<void> {
-    const newMessages = this.#messages.slice(this.#messagesAtTurnStart);
+    const newMessages = this.#messages.get().slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
       if (this.#messageToEntryId.has(msg)) continue; // already tracked (e.g. user message)
       const entryId = generateEntryId();

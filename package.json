@@ -5,6 +5,7 @@
   "description": "Minimalistic AI agent running on Cloudflare infrastructure",
   "scripts": {
     "check": "pnpm biome check . && pnpm -r exec tsc --noEmit",
+    "tsc": "pnpm -r exec tsc --noEmit",
     "lint": "pnpm biome check --write .",
     "test": "pnpm -r test",
     "build": "pnpm -r build",

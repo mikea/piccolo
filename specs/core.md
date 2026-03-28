@@ -816,6 +816,8 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
 
 The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`. There is no separate `Agent` class or `compaction.ts` module — both have been inlined as private methods on the DO.
 
+The DO stores in-memory turn history in a `Messages` helper (`packages/core/src/messages.ts`). `Messages` is intentionally array-compatible and iterable so existing array consumers such as `streamText(...)`, compaction, and persistence can read it directly, while replacement paths mutate the same container via `replace(...)`.
+
 ### `#startTurn(initialMessages)`
 
 Pushes `initialMessages` onto `#messages`, creates an `AbortController` stored as `#agentAbortController`, and registers the stream with the Workers runtime via `ctx.waitUntil(this.#runStream(ac.signal))`.
