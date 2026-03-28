@@ -19,8 +19,8 @@
  */
 
 import type {
+  BeforeAgentStartResult,
   BeforeCompactResult,
-  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   GatewayId,
@@ -124,7 +124,7 @@ class SafeToolWrapper implements ITool {
  */
 export type ExtensionEventResult =
   | InputResult
-  | BeforeStartResult
+  | BeforeAgentStartResult
   | ContextResult
   | ToolCallResult
   | ToolResultOverride
@@ -419,14 +419,14 @@ export class ExtensionRunner implements IExtensionRunner {
   async #dispatchBeforeStart(
     event: Extract<ExtensionEvent, { type: "before_start" }>,
     ctx: ISession,
-  ): Promise<BeforeStartResult> {
+  ): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
       this.#extensions.map(({ name, worker }) =>
         this.#safeCall(name, "before_start", () => worker.onEvent?.(event, ctx)),
       ),
     );
     const typed = results.filter(
-      (r): r is BeforeStartResult =>
+      (r): r is BeforeAgentStartResult =>
         r !== undefined &&
         r !== null &&
         typeof r === "object" &&
@@ -434,7 +434,7 @@ export class ExtensionRunner implements IExtensionRunner {
     );
     const contextMessages = typed.flatMap((r) => r.contextMessages ?? []);
     const lastSystemPrompt = typed.filter((r) => r.systemPrompt != null).at(-1)?.systemPrompt;
-    const merged: BeforeStartResult = { contextMessages };
+    const merged: BeforeAgentStartResult = { contextMessages };
     if (lastSystemPrompt != null) merged.systemPrompt = lastSystemPrompt;
     return merged;
   }

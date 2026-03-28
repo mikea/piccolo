@@ -20,8 +20,8 @@
  */
 
 import type {
+  BeforeAgentStartResult,
   BeforeCompactResult,
-  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   InputResult,
@@ -53,8 +53,8 @@ async function emitBeforeStart(
   runner: ExtensionRunner,
   event: Extract<ExtensionEvent, { type: "before_start" }>,
   session: ISession,
-): Promise<BeforeStartResult> {
-  return (await runner.emit(event, session)) as BeforeStartResult;
+): Promise<BeforeAgentStartResult> {
+  return (await runner.emit(event, session)) as BeforeAgentStartResult;
 }
 
 async function emitContext(
@@ -224,7 +224,7 @@ describe("initialize()", () => {
   it("init() is called on all stubs by initialize()", async () => {
     const extA = createMockExtension({ name: "ext-a" });
     const extB = createMockExtension({ name: "ext-b" });
-    const runner = await makeRunner({ "ext-a": extA, "ext-b": extB });
+    await makeRunner({ "ext-a": extA, "ext-b": extB });
     expect(extA.calls.onInit).toHaveLength(1);
     expect(extB.calls.onInit).toHaveLength(1);
   });

@@ -12,7 +12,6 @@ import type {
   IObserver,
   IPiccoloCore,
   ISession,
-  ISubscription,
   ITurn,
   IUser,
 } from "@piccolo/api";
@@ -27,7 +26,7 @@ const noopSubscription: IDisposable = { [Symbol.dispose]() {} };
 
 export function createEventObservable(events: AgentEvent[]): IObservable<AgentEvent> {
   return {
-    async subscribe(observer: IObserver<AgentEvent>): Promise<ISubscription> {
+    async subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
       for (const event of events) {
         await observer.onNext(event);
       }
@@ -76,7 +75,7 @@ export function createMockSession(
     compact: vi.fn().mockResolvedValue(undefined),
     getSystemPrompt: vi.fn().mockResolvedValue(""),
     branch: vi.fn().mockResolvedValue(undefined),
-    fork: vi.fn().mockImplementation(async () => createMockSession()),
+    fork: vi.fn().mockResolvedValue("forked-session-id"),
     delete: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };

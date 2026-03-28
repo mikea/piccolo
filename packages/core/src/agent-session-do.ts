@@ -22,8 +22,8 @@ import { DurableObject, RpcTarget } from "cloudflare:workers";
 import type {
   AgentEvent,
   Attachment,
+  BeforeAgentStartResult,
   BeforeCompactResult,
-  BeforeStartResult,
   CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
@@ -445,7 +445,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
           systemPrompt: this.#assembledSystemPrompt,
         },
         ctx,
-      )) as BeforeStartResult;
+      )) as BeforeAgentStartResult;
       if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
         this.#pushMessages(beforeStart.contextMessages, "before_start contextMessages");
       }

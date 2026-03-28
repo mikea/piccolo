@@ -14,7 +14,6 @@
  */
 
 // ── Re-export ai types used in the public API ─────────────────────────────────
-export type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
 export type {
   FinishReason,
   ImagePart,
@@ -25,8 +24,10 @@ export type {
 
 // ─── Imports for use below ───────────────────────────────────────────────────
 
-import type { JSONSchema7 } from "@ai-sdk/provider";
+import type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
 import type { FinishReason, LanguageModelUsage, ModelMessage } from "ai";
+
+export type { JsonSchema7 };
 
 // ─── Shared data types ────────────────────────────────────────────────────────
 
@@ -108,7 +109,7 @@ export interface ToolDescriptor {
   /** Optional bullets appended to "Guidelines" while this tool is active. */
   promptGuidelines?: string[];
   /** JSON Schema (draft-07 style) for the tool input parameters. */
-  inputSchema: JSONSchema7;
+  inputSchema: JsonSchema7;
 }
 
 /**
@@ -131,8 +132,8 @@ export interface ToolResult {
  * The platform AbortSignal cannot cross JSRPC boundaries. This interface is
  * an RpcTarget capability: piccolo-core creates an implementation backed by the
  * real AbortSignal and passes it to tool execute() calls over JSRPC.
- * Tool implementations call isAborted() to poll, or register a callback via
- * onAbort() and cancel their own AbortController accordingly.
+ * Tool implementations call isAborted() to poll and cancel their own
+ * AbortController accordingly.
  * Spec ref: specs/api.md §Shared Types §IAbortSignal
  */
 export interface IAbortSignal {
@@ -236,20 +237,13 @@ export interface IDisposable {
 }
 
 /**
- * ISubscription — returned by IObservable.subscribe().
- * Dispose it (via [Symbol.dispose]() or a `using` declaration) to unsubscribe.
- * Spec ref: specs/api.md §ISubscription
- */
-export type ISubscription = IDisposable;
-
-/**
  * IObservable<T> — a push-based sequence of values.
  * Call subscribe() to start receiving values via an IObserver<T>.
- * Returns an ISubscription that must be disposed to unsubscribe.
+ * Returns an IDisposable that must be disposed to unsubscribe.
  * Spec ref: specs/api.md §IObservable
  */
 export interface IObservable<T> {
-  subscribe(observer: IObserver<T>): Promise<ISubscription>;
+  subscribe(observer: IObserver<T>): Promise<IDisposable>;
 }
 
 // ─── ITurn — Active turn context ──────────────────────────────────────────────
@@ -453,7 +447,7 @@ export interface InputResult {
   text?: string;
 }
 
-export interface BeforeStartResult {
+export interface BeforeAgentStartResult {
   systemPrompt?: string;
   contextMessages?: ModelMessage[];
 }
@@ -492,7 +486,7 @@ export interface IExtensionListener {
     ctx: ISession,
   ): Promise<
     | InputResult
-    | BeforeStartResult
+    | BeforeAgentStartResult
     | ContextResult
     | ToolCallResult
     | ToolResultOverride

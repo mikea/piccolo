@@ -67,7 +67,16 @@ type AgentEvent =
   | { type: "reasoning-delta"; delta: string }
   | { type: "tool-call";      toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result";        toolCallId: string; toolName: string; output: unknown; isError: boolean }
-  | { type: "error";           message: string };
+  | { type: "error";           message: string }
+  | { type: "usage";           inputTokens: number };
+
+// Internal lifecycle stream used by AgentSessionDO listeners.
+// Includes all AgentEvents plus turn completion signal.
+type SessionEvent = AgentEvent | { type: "turn_flushed" };
+
+interface ISessionListener {
+  onEvent(event: SessionEvent): void;
+}
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
@@ -219,7 +228,7 @@ type HistoryEntry =
 
 Exposed by the `piccolo-core` Worker. Gateways call this via service binding.
 
-`IPiccoloCore` is the entry point only — it creates or retrieves sessions and lists global state. All per-session operations are performed on the `ISession` stub returned by `newSession()` / `getSession()`.
+`IPiccoloCore` is the entry point only. Gateways resolve an authenticated user-scoped `IUser` via `getUser(userId)`. All session operations are then performed through `IUser` and `ISession`.
 
 > **Implementation:** see [core.md — `IPiccoloCore` WorkerEntrypoint](core.md#ipicclocore-workerentrypoint--implementation) and [core.md — `ISession` stub](core.md#isession-stub).
 
@@ -227,20 +236,23 @@ Exposed by the `piccolo-core` Worker. Gateways call this via service binding.
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 
 class IPiccoloCore extends WorkerEntrypoint {
+  // Resolve the authenticated user surface for this request context.
+  getUser(userId: string): IUser;
+}
+
+interface IUser {
 
   // ─── Session lifecycle ────────────────────────────────────────────────────
 
   // Create a new session. Returns an ISession stub bound to the new session.
-  // userId is provided by the calling gateway after it has authenticated the user.
-  newSession(userId: string, options?: NewSessionOptions): Promise<ISession>;
+  newSession(options?: NewSessionOptions): Promise<ISession>;
 
   // Retrieve an existing session by ID. Returns an ISession stub.
   getSession(sessionId: string): Promise<ISession>;
 
-  // List sessions for a given user as live ISession RpcTargets.
+  // List sessions for the authenticated user as live ISession RpcTargets.
   // Gateways call id(), getName(), getUpdatedAt() etc. on each stub directly.
-  // userId is provided by the calling gateway after it has authenticated the user.
-  listSessions(userId: string): Promise<ISession[]>;
+  listSessions(): Promise<ISession[]>;
 
   // ─── Global model registry ───────────────────────────────────────────────
 
@@ -253,7 +265,7 @@ class IPiccoloCore extends WorkerEntrypoint {
 
 ## 2. Session API — `ISession`
 
-An `RpcTarget` stub returned by `IPiccoloCore.newSession()` and `IPiccoloCore.getSession()`. Represents one conversation session and exposes all per-session operations as instance methods — no `sessionId` parameter threading.
+An `RpcTarget` stub returned by `IUser.newSession()` and `IUser.getSession()`. Represents one conversation session and exposes all per-session operations as instance methods — no `sessionId` parameter threading.
 
 `ISession` is also the context object passed to every extension handler call and every tool `execute()` call. Extensions and tools receive the same full session interface — no separate "extension context" type.
 
@@ -361,8 +373,8 @@ interface ISession extends IObservable<AgentEvent> {
   branch(entryId: string): Promise<void>;
 
   // Fork this session from a given entry (or current leaf).
-  // Returns a new ISession stub for the forked session.
-  fork(fromEntryId?: string): Promise<ISession>;
+  // Returns the new sessionId; callers resolve the stub via IUser.getSession().
+  fork(fromEntryId?: string): Promise<string>;
 
   // ─── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -378,10 +390,15 @@ interface IObserver<T> {
   onComplete(): Promise<void>;
 }
 
+interface IDisposable {
+  [Symbol.dispose](): void;
+}
+
 interface IObservable<T> {
   // Subscribe to receive events. Already-emitted events are replayed to late
   // subscribers (supports reconnect after page reload).
-  subscribe(observer: IObserver<T>): Promise<void>;
+  // Returns an IDisposable; dispose to unsubscribe.
+  subscribe(observer: IObserver<T>): Promise<IDisposable>;
 }
 
 // ITurn — returned by ISession.prompt(). Carries only the optional gateway
