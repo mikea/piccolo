@@ -816,7 +816,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    */
   #pushMessages(msgs: ModelMessage[], source: string): void {
     for (let i = 0; i < msgs.length; i++) {
-      this.#validateMessage(msgs[i]!, source, i);
+      const msg = msgs[i];
+      if (msg !== undefined) {
+        this.#validateMessage(msg, source, i);
+      }
     }
     this.#messages.push(...msgs);
   }
@@ -828,7 +831,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    */
   #replaceMessages(msgs: ModelMessage[], source: string): void {
     for (let i = 0; i < msgs.length; i++) {
-      this.#validateMessage(msgs[i]!, source, i);
+      const msg = msgs[i];
+      if (msg !== undefined) {
+        this.#validateMessage(msg, source, i);
+      }
     }
     this.#messages = msgs;
   }

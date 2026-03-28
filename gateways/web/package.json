@@ -6,10 +6,10 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "test": "vitest run --coverage",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "build:app": "vite build --config app/vite.config.ts",
-    "build": "pnpm build:app && wrangler deploy --dry-run",
+    "build:app": "pnpm --dir app build",
+    "build": "pnpm build:app && wrangler deploy --dry-run --config wrangler.template.jsonc",
     "deploy": "pnpm build:app && wrangler deploy",
     "types": "wrangler types src/worker-configuration.d.ts --config wrangler.template.jsonc"
   },
