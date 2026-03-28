@@ -5,7 +5,7 @@
  */
 
 import { RpcTarget } from "cloudflare:workers";
-import type { IDisposable, IObservable, IObserver, ISubscription } from "@piccolo/api";
+import type { IDisposable, IObservable, IObserver } from "@piccolo/api";
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -84,7 +84,7 @@ export class ObservableImpl<T> extends RpcTarget implements IObservable<T> {
 
   // ─── IObservable<T> ─────────────────────────────────────────────────────────
 
-  async subscribe(observer: IObserver<T>): Promise<ISubscription> {
+  async subscribe(observer: IObserver<T>): Promise<IDisposable> {
     if (this.#done) {
       const p = this.#hasError ? observer.onError(this.#doneError) : observer.onComplete();
       await p.catch(() => {});
@@ -98,7 +98,7 @@ export class ObservableImpl<T> extends RpcTarget implements IObservable<T> {
 
     let sub: Subscriber<T>;
     let disposed = false;
-    const subscription: ISubscription = {
+    const subscription: IDisposable = {
       [Symbol.dispose]: () => {
         if (disposed) return;
         disposed = true;

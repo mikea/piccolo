@@ -215,7 +215,7 @@ describe("ObservableImpl — subscribe after terminal state", () => {
 
 // ─── ObservableImpl — unsubscribe ─────────────────────────────────────────────
 
-describe("ObservableImpl — unsubscribe via ISubscription[Symbol.dispose]", () => {
+describe("ObservableImpl — unsubscribe via IDisposable[Symbol.dispose]", () => {
   it("disposed subscription stops receiving values", async () => {
     const obs = new ObservableImpl<number>();
     const sub = makeObserver<number>();

@@ -13,8 +13,8 @@
 export type {
   AgentEvent,
   Attachment,
+  BeforeAgentStartResult,
   BeforeCompactResult,
-  BeforeStartResult,
   CompactOptions,
   ContextResult,
   ContextUsage,
@@ -33,7 +33,6 @@ export type {
   IObservable,
   IObserver,
   ISessionListener,
-  ISubscription,
   ITextUI,
   ITool,
   ITurn,

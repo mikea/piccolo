@@ -15,8 +15,8 @@
  */
 
 import type {
+  BeforeAgentStartResult,
   BeforeCompactResult,
-  BeforeStartResult,
   ContextResult,
   ExtensionEvent,
   ICommand,
@@ -63,7 +63,7 @@ export interface MockExtensionOptions {
   /** Handler for input events. Return undefined to behave as not-implemented. */
   onInput?: (event: InputEv) => InputResult | undefined;
   /** Handler for before_start events. */
-  onBeforeStart?: (event: BeforeStartEv) => BeforeStartResult | undefined;
+  onBeforeStart?: (event: BeforeStartEv) => BeforeAgentStartResult | undefined;
   /** Handler for context events. */
   onContext?: (event: ContextEv) => ContextResult | undefined;
   /** Handler for tool_call events. */
