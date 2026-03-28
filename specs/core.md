@@ -300,8 +300,13 @@ interface DOState {
   createdAt: number;   // Unix ms; 0 = session not yet committed to D1
   updatedAt: number;
 
-  // In-memory message list; rebuilt from D1 on cold start
-  messages: ModelMessage[];
+  // In-memory message state wrapper; rebuilt from D1 on cold start.
+  // Owns:
+  // - message array
+  // - message -> entry id map
+  // - message validation
+  // - conversion to/from HistoryEntry
+  messages: Messages;
 
   // Pending entries not yet flushed to D1
   pendingEntries: AnyEntry[];
@@ -326,10 +331,6 @@ interface DOState {
   // when appendCustomEntry/appendCustomMessage are called.
   // Used by ISession.getEntries() to avoid a D1 round-trip.
   branchEntries: AnyEntry[];
-
-  // Maps ModelMessage object reference → entry ID.
-  // Used by #compact() to locate firstKeptEntryId without an extra D1 round-trip.
-  messageToEntryId: Map<ModelMessage, string>;
 
   // Token counts from the last completed agent turn.
   // lastInputTokens: updated from finish.totalUsage; used for compaction threshold.
@@ -649,7 +650,7 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. It reads and mutates `#messages`, `#leafId`, and `#pendingEntries` in place.
+Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`, using a stateless helper `Messages.compact(...)` to compute the replacement message state. The DO then applies the returned state and writes the compaction entry.
 
 ```
 1. Emit before_compact to extensions → BeforeCompactResult
@@ -659,11 +660,14 @@ Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. I
 
 2. If summary === "" and no extension summary: return (nothing to summarise)
 
-3. Lookup firstKeptEntryId from #messageToEntryId (falls back to "" if not found)
+3. Call `Messages.compact(sessionId, messages, summary, keptMessages)`:
+   - Returns `firstKeptEntryId`
+   - Returns a new `Messages` instance containing `[summaryMessage, ...keptMessages]`
+   - Preserves message→entry ids for kept messages
 
 4. Build CompactionEntry, push to #pendingEntries, advance #leafId
 
-5. Replace #messages = [summaryMessage, ...keptMessages]
+5. Replace DO `#messages` with the returned `Messages` instance
 ```
 
 Caller (`compact()` public method or `#runStream` threshold check) is responsible for flushing `#pendingEntries` to D1 after the turn ends.
@@ -828,7 +832,7 @@ Key callbacks:
 - `prepareStep` — emits `step-start`; on step > 0 dequeues one steering message from `#steeringQueue` via `#dequeueSteer()`
 - `onChunk` — emits `text-delta`, `reasoning-delta`, `tool-call`, `tool-result`
 - `onStepFinish` — emits `tool-result` for tool errors, then `step-finish`
-- `onFinish` — captures `totalUsage`, appends `response.messages` to `#messages`
+- `onFinish` — captures `totalUsage`, appends `response.messages` via `Messages.push(...)`
 - `onError` / catch — emits `error`, clears `#agentAbortController`
 
 ### `#emitTurnEvent(event)`
