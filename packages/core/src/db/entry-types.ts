@@ -45,9 +45,34 @@ export interface EntryBase {
 // ─── Concrete entry types ─────────────────────────────────────────────────────
 
 /** A single LLM message (user | assistant | tool | system). */
+export interface LegacySystemMessageData {
+  type: "system";
+  content: string;
+}
+
+/**
+ * Serialized payload stored in `entries.data` for `type: "message"` rows.
+ *
+ * Primary format is the AI SDK `ModelMessage` serialized as-is.
+ * `LegacySystemMessageData` is kept for old non-ModelMessage system entries.
+ */
+export type MessageEntryData = ModelMessage | LegacySystemMessageData;
+
+export function isLegacySystemMessageData(data: MessageEntryData): data is LegacySystemMessageData {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    data.type === "system" &&
+    "content" in data &&
+    typeof data.content === "string"
+  );
+}
+
+/** A single LLM message (user | assistant | tool | system). */
 export interface MessageEntry extends EntryBase {
   type: "message";
-  data: ModelMessage;
+  data: MessageEntryData;
 }
 
 /** Active model was switched. */

@@ -20,6 +20,7 @@ import type {
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
+import { isLegacySystemMessageData } from "../db/entry-types.ts";
 
 // ─── Message schema validation ────────────────────────────────────────────────
 
@@ -81,8 +82,13 @@ export function walkToRoot(entries: AnyEntry[], leafId: string | null): AnyEntry
  */
 function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
   switch (entry.type) {
-    case "message":
-      return (entry as MessageEntry).data;
+    case "message": {
+      const messageData = (entry as MessageEntry).data;
+      if (isLegacySystemMessageData(messageData)) {
+        return { role: "system", content: messageData.content };
+      }
+      return messageData as ModelMessage;
+    }
     case "custom_message": {
       const cm = entry as CustomMessageEntry;
       if (cm.data.display) {

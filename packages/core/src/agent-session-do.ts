@@ -54,7 +54,7 @@ import type {
   ModelChangeEntry,
   SessionInfoEntry,
 } from "./db/entry-types.ts";
-import { generateEntryId, parseEntry } from "./db/entry-types.ts";
+import { generateEntryId, isLegacySystemMessageData, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
@@ -64,8 +64,8 @@ import { buildSessionContext, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
   deleteSession,
-  flushPendingEntries,
   forkSession,
+  appendEntry as persistEntry,
 } from "./session/persistence.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
@@ -188,7 +188,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── In-memory session state ──────────────────────────────────────────────
   #messages = new Messages([]);
-  #pendingEntries: AnyEntry[] = [];
   #branchEntries: AnyEntry[] = [];
   #messageToEntryId = new Map<ModelMessage, string>();
 
@@ -292,7 +291,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         }
         for (const entry of allEntries) {
           if (entry.type === "message") {
-            this.#messageToEntryId.set((entry as MessageEntry).data, entry.id);
+            const messageData = (entry as MessageEntry).data;
+            if (!isLegacySystemMessageData(messageData)) {
+              this.#messageToEntryId.set(messageData, entry.id);
+            }
           }
         }
         this.#branchEntries = walkToRoot(allEntries, this.#leafId);
@@ -359,16 +361,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       timestamp: new Date().toISOString(),
       data: { name },
     };
-    this.#appendEntry(entry);
-    if (this.#createdAt !== 0) {
-      await flushPendingEntries(
-        this.#pendingEntries,
-        this.#sessionId,
-        this.#requireLeafId(),
-        this.env.SESSIONS_DB,
-      );
-      this.#pendingEntries = [];
-    }
+    await this.#appendEntry(entry);
   }
 
   // ─── ISession: Conversation ───────────────────────────────────────────────
@@ -433,9 +426,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         timestamp: new Date().toISOString(),
         data: userMessage,
       };
-      this.#pendingEntries.push(userEntry);
-      this.#leafId = userEntryId;
-      this.#messageToEntryId.set(userMessage, userEntryId);
+      await this.#appendEntry(userEntry);
 
       // emitBeforeStart
       const beforeStart = (await this.#extensionRunner.emit(
@@ -459,7 +450,13 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.#messagesAtTurnStart = this.#messages.length;
 
       // Start the agent turn — events flow via #runStream, which calls #onTurnEvent.
-      this.#startTurn([userMessage]);
+      const persistedUserMessages = this.#startTurn([userMessage]);
+      const persistedUserMessage = persistedUserMessages[0];
+      if (persistedUserMessage !== undefined) {
+        // Messages stores structured-cloned snapshots; map the in-session object
+        // reference (not the caller's original) to the entry ID used in D1.
+        this.#messageToEntryId.set(persistedUserMessage, userEntryId);
+      }
     } catch (e) {
       // If anything above throws, release the turn reservation so the caller
       // can retry rather than being permanently locked out.
@@ -616,16 +613,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       timestamp: new Date().toISOString(),
       data: { modelId },
     };
-    this.#appendEntry(entry);
-    if (this.#createdAt !== 0) {
-      await flushPendingEntries(
-        this.#pendingEntries,
-        this.#sessionId,
-        this.#requireLeafId(),
-        this.env.SESSIONS_DB,
-      );
-      this.#pendingEntries = [];
-    }
+    await this.#appendEntry(entry);
   }
 
   async listModels(): Promise<string[]> {
@@ -652,7 +640,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       timestamp: new Date().toISOString(),
       data: { customType, content, display },
     };
-    this.#appendEntry(entry);
+    await this.#appendEntry(entry);
   }
 
   async appendCustomEntry(customType: string, data?: unknown): Promise<void> {
@@ -664,7 +652,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       timestamp: new Date().toISOString(),
       data: { customType, payload: data },
     };
-    this.#appendEntry(entry);
+    await this.#appendEntry(entry);
   }
 
   async getEntries(customType?: string): Promise<CustomEntryType[]> {
@@ -688,15 +676,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async compact(options?: CompactOptions): Promise<void> {
     await this.#compact(options ?? {});
-    if (this.#createdAt !== 0 && this.#leafId !== null) {
-      await flushPendingEntries(
-        this.#pendingEntries,
-        this.#sessionId,
-        this.#leafId,
-        this.env.SESSIONS_DB,
-      );
-      this.#pendingEntries = [];
-    }
   }
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
@@ -750,7 +729,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       await deleteSession(this.#sessionId, this.env.SESSIONS_DB);
     }
     this.#agentAbortController?.abort();
-    this.#pendingEntries = [];
     this.#messages = new Messages([]);
     this.#leafId = null;
   }
@@ -802,13 +780,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    *
    * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
    */
-  #startTurn(initialMessages: ModelMessage[]): void {
+  #startTurn(initialMessages: ModelMessage[]): ModelMessage[] {
+    let addedMessages: ModelMessage[] = [];
     if (initialMessages.length > 0) {
-      this.#messages.pushAll(initialMessages);
+      // Messages.pushAll() structured-clones inputs to detach mutable external
+      // references from internal session state.
+      addedMessages = this.#messages.pushAll(initialMessages);
     }
     const ac = new AbortController();
     this.#agentAbortController = ac;
     this.ctx.waitUntil(this.#runStream(ac.signal));
+    return addedMessages;
   }
 
   /**
@@ -1043,10 +1025,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#notifyListeners({ type: "turn_flushed" });
   }
 
-  #appendEntry(entry: AnyEntry): void {
-    this.#pendingEntries.push(entry);
+  async #appendEntry(entry: AnyEntry): Promise<void> {
     this.#branchEntries.push(entry);
     this.#leafId = entry.id;
+    await this.#ensureSessionCommitted();
+    await persistEntry(entry, this.env.SESSIONS_DB);
+    this.#updatedAt = Date.now();
   }
 
   #compactTokens(): number {
@@ -1066,8 +1050,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    *
    * Lets extensions cancel or supply a pre-built summary, otherwise calls
    * agentCompact() to summarise old messages. Appends a CompactionEntry to
-   * #pendingEntries and replaces #messages with the compacted list.
-   * Does NOT flush to D1 — the caller flushes after the turn ends.
+   * D1 and replaces #messages with the compacted list.
    *
    * Spec ref: specs/core.md §Compaction algorithm
    */
@@ -1124,8 +1107,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         tokensBefore: this.#lastInputTokens,
       },
     };
-    this.#pendingEntries.push(compactionEntry);
-    this.#leafId = compactionEntry.id;
+    await this.#appendEntry(compactionEntry);
 
     // 5. Replace message history with summary + kept messages.
     // keptMessages are a validated subset of the prior #messages; summaryMessage
@@ -1135,13 +1117,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       content: `[Conversation Summary]\n\n${summary}`,
     };
     this.#messages = new Messages([summaryMessage, ...keptMessages]);
-  }
-
-  #requireLeafId(): string {
-    if (this.#leafId === null) {
-      throw new Error("Session leafId is not initialized");
-    }
-    return this.#leafId;
   }
 
   /** Persist all new agent messages to D1 since the last flush point. */
@@ -1158,35 +1133,26 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         timestamp: new Date().toISOString(),
         data: msg,
       };
-      this.#pendingEntries.push(entry);
-      this.#leafId = entryId;
+      await this.#appendEntry(entry);
       this.#messageToEntryId.set(msg, entryId);
     }
     // Advance the start index so the next call only picks up genuinely new messages
     this.#messagesAtTurnStart = this.#messages.length;
+  }
 
-    if (this.#createdAt === 0 && this.#sessionId !== "") {
-      const now = Date.now();
-      this.#createdAt = now;
-      this.#updatedAt = now;
-      await commitSession(
-        this.#sessionId,
-        this.#userId,
-        { ...(this.#name !== undefined ? { name: this.#name } : {}), modelId: this.#modelId },
-        this.env.SESSIONS_DB,
-      );
+  async #ensureSessionCommitted(): Promise<void> {
+    if (this.#createdAt !== 0 || this.#sessionId === "") {
+      return;
     }
-
-    if (this.#pendingEntries.length > 0 && this.#leafId !== null) {
-      await flushPendingEntries(
-        this.#pendingEntries,
-        this.#sessionId,
-        this.#leafId,
-        this.env.SESSIONS_DB,
-      );
-      this.#pendingEntries = [];
-      this.#updatedAt = Date.now();
-    }
+    const now = Date.now();
+    this.#createdAt = now;
+    this.#updatedAt = now;
+    await commitSession(
+      this.#sessionId,
+      this.#userId,
+      { ...(this.#name !== undefined ? { name: this.#name } : {}), modelId: this.#modelId },
+      this.env.SESSIONS_DB,
+    );
   }
 }
 
