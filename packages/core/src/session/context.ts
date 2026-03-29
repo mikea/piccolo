@@ -17,10 +17,10 @@ import type {
   BranchSummaryEntry,
   CompactionEntry,
   CustomMessageEntry,
-  LegacySystemMessageData,
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
+import { isLegacySystemMessageData } from "../db/entry-types.ts";
 
 // ─── Message schema validation ────────────────────────────────────────────────
 
@@ -84,16 +84,10 @@ function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
   switch (entry.type) {
     case "message": {
       const messageData = (entry as MessageEntry).data;
-      if (
-        typeof messageData === "object" &&
-        messageData !== null &&
-        "type" in messageData &&
-        messageData.type === "system"
-      ) {
-        const legacySystem = messageData as LegacySystemMessageData;
-        return { role: "system", content: legacySystem.content };
+      if (isLegacySystemMessageData(messageData)) {
+        return { role: "system", content: messageData.content };
       }
-      return messageData;
+      return messageData as ModelMessage;
     }
     case "custom_message": {
       const cm = entry as CustomMessageEntry;

@@ -58,6 +58,17 @@ export interface LegacySystemMessageData {
  */
 export type MessageEntryData = ModelMessage | LegacySystemMessageData;
 
+export function isLegacySystemMessageData(data: MessageEntryData): data is LegacySystemMessageData {
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "type" in data &&
+    data.type === "system" &&
+    "content" in data &&
+    typeof data.content === "string"
+  );
+}
+
 /** A single LLM message (user | assistant | tool | system). */
 export interface MessageEntry extends EntryBase {
   type: "message";

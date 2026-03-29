@@ -54,7 +54,7 @@ import type {
   ModelChangeEntry,
   SessionInfoEntry,
 } from "./db/entry-types.ts";
-import { generateEntryId, parseEntry } from "./db/entry-types.ts";
+import { generateEntryId, isLegacySystemMessageData, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { createModel } from "./gateway.ts";
@@ -62,10 +62,10 @@ import { Messages } from "./messages.ts";
 import { ObservableImpl } from "./observable-impl.ts";
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
 import {
-  appendEntry as persistEntry,
   commitSession,
   deleteSession,
   forkSession,
+  appendEntry as persistEntry,
 } from "./session/persistence.ts";
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
@@ -291,7 +291,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         }
         for (const entry of allEntries) {
           if (entry.type === "message") {
-            this.#messageToEntryId.set((entry as MessageEntry).data, entry.id);
+            const messageData = (entry as MessageEntry).data;
+            if (!isLegacySystemMessageData(messageData)) {
+              this.#messageToEntryId.set(messageData, entry.id);
+            }
           }
         }
         this.#branchEntries = walkToRoot(allEntries, this.#leafId);
