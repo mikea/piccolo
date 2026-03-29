@@ -149,7 +149,7 @@ type EntryType =
 // "message" — a single LLM message (user | assistant | tool | system)
 interface MessageEntry extends EntryBase {
   type: "message";
-  data: ModelMessage;  // from `ai` package
+  data: ModelMessage | { type: "system"; content: string };  // ModelMessage JSON (legacy system payload supported)
 }
 
 // "model_change" — active model switched
@@ -241,7 +241,7 @@ class PiccoloCore extends WorkerEntrypoint<Env> {
     // 2. Resolve DO stub: env.AGENT_SESSION.idFromName(sessionId)
     // 3. Call stub.newSession(userId, options) — the DO initialises itself using
     //    its own name (sessionId) from ctx.id.name; returns the SessionImpl RpcTarget
-    // Note: D1 row is NOT written here — lazy creation on first assistant response
+    // Note: D1 row is NOT written here — lazy creation on first persisted entry
   }
 
   async getSession(sessionId: string): Promise<ISession> {
@@ -301,10 +301,9 @@ interface DOState {
   updatedAt: number;
 
   // In-memory message list; rebuilt from D1 on cold start
+  // Every append clones messages via structuredClone before storing, so
+  // session state never retains external object references.
   messages: ModelMessage[];
-
-  // Pending entries not yet flushed to D1
-  pendingEntries: AnyEntry[];
 
   // Inlined agent state (no separate Agent class)
   model: LanguageModel;
@@ -381,7 +380,7 @@ async newSession(
    e. Reconstruct the `LanguageModel` via `createModel(env, modelId)`.
 2. Return `getSession(userId)` — the DO's own `SessionImpl` RpcTarget.
 
-The D1 `sessions` row is **not** written here — it is written lazily on the first `finish` (see §Lazy session creation).
+The D1 `sessions` row is **not** written here — it is written lazily on the first persisted entry append (see §Lazy session creation).
 
 ---
 
@@ -396,7 +395,7 @@ The D1 `sessions` row is **not** written here — it is written lazily on the fi
 │     If "transform": use result.text as the prompt text
 │
 ├─ 2. Build UserMessage from (text, attachments)
-│     Append to agent.messages + pendingEntries
+│     Append to agent.messages and persist immediately
 │
 ├─ 3. Emit BeforeAgentStartEvent to ExtensionRunner
 │     → BeforeAgentStartResult { systemPrompt?, contextMessages? }
@@ -428,27 +427,19 @@ off when the RPC call frame completes.
 
 #### Per-message append
 
-When `AgentEvent.type === "finish"` fires:
+When a persistent entry is created (user/assistant/tool/system message, model change, custom entry, compaction):
 
 ```
-1. For each new ModelMessage in agent.state.messages since last flush:
+1. For each new ModelMessage in agent.state.messages since last persistence point:
    a. Create MessageEntry { id, sessionId, parentId: leafId, type: "message", ... }
-   b. Append to DO storage (synchronous)
-   c. leafId = newEntry.id
-   d. Add to pendingEntries
-
-2. Flush pendingEntries to D1:
-   INSERT INTO entries (id, session_id, parent_id, type, timestamp, data)
-   VALUES ... (batch insert, all pending entries)
-
-3. UPDATE sessions SET updated_at = ?, leaf_id = ?, model_id = ? WHERE id = ?
-
-4. Clear pendingEntries
+   b. Ensure `sessions` row is committed (if first persistent append)
+   c. INSERT entry into D1 immediately
+   d. UPDATE sessions SET updated_at = ?, leaf_id = ? WHERE id = ?
 ```
 
 #### Lazy session creation
 
-The D1 `sessions` row is not written until the first assistant response is committed. Before that point, session state lives only in the DO. On first flush:
+The D1 `sessions` row is not written until the first persistent entry is appended. Before that point, session state lives only in the DO. On first append:
 
 ```
 INSERT OR IGNORE INTO sessions (id, user_id, created_at, updated_at, name, model_id, leaf_id)
@@ -649,7 +640,7 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. It reads and mutates `#messages`, `#leafId`, and `#pendingEntries` in place.
+Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. It reads and mutates `#messages` and `#leafId` in place.
 
 ```
 1. Emit before_compact to extensions → BeforeCompactResult
@@ -661,12 +652,12 @@ Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. I
 
 3. Lookup firstKeptEntryId from #messageToEntryId (falls back to "" if not found)
 
-4. Build CompactionEntry, push to #pendingEntries, advance #leafId
+4. Build CompactionEntry, persist immediately, advance #leafId
 
 5. Replace #messages = [summaryMessage, ...keptMessages]
 ```
 
-Caller (`compact()` public method or `#runStream` threshold check) is responsible for flushing `#pendingEntries` to D1 after the turn ends.
+No deferred flush is required — compaction entries are persisted immediately.
 
 ---
 
@@ -676,7 +667,7 @@ Caller (`compact()` public method or `#runStream` threshold check) is responsibl
 
 `SessionTarget extends RpcTarget` is a thin JSRPC-serialisable proxy that delegates every `ISession` method to the owning `AgentSessionDO`. One `SessionTarget` is created per DO lifetime (in `#initialize()`) and stored as `#rpcCtx`. It is passed to extension workers and threaded into tool `execute()` calls — this is the JSRPC-correct approach since `DurableObject` instances cannot be passed directly over dispatch RPC.
 
-All mutations (model changes, custom entries, etc.) write directly into `#pendingEntries` / `#branchEntries` on the DO. No D1 flush happens during the turn — flushing occurs in `#persistNewMessages()` triggered by `#onAgentEnd()`.
+All persistent mutations (model changes, custom entries, messages, compaction) write directly to D1 as soon as they are created, and also append to `#branchEntries` in-memory.
 
 ### Context injection into tool execute()
 

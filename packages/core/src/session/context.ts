@@ -17,6 +17,7 @@ import type {
   BranchSummaryEntry,
   CompactionEntry,
   CustomMessageEntry,
+  LegacySystemMessageData,
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
@@ -81,8 +82,19 @@ export function walkToRoot(entries: AnyEntry[], leafId: string | null): AnyEntry
  */
 function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
   switch (entry.type) {
-    case "message":
-      return (entry as MessageEntry).data;
+    case "message": {
+      const messageData = (entry as MessageEntry).data;
+      if (
+        typeof messageData === "object" &&
+        messageData !== null &&
+        "type" in messageData &&
+        messageData.type === "system"
+      ) {
+        const legacySystem = messageData as LegacySystemMessageData;
+        return { role: "system", content: legacySystem.content };
+      }
+      return messageData;
+    }
     case "custom_message": {
       const cm = entry as CustomMessageEntry;
       if (cm.data.display) {
