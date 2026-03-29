@@ -675,7 +675,6 @@ describe("createMockSession() — all methods reachable", () => {
     await expect(s.sendUserMessage("hi")).resolves.toBeUndefined();
     await expect(s.steer("steer")).resolves.toBeUndefined();
     await expect(s.followUp("follow")).resolves.toBeUndefined();
-    await expect(s.abort()).resolves.toBeUndefined();
     expect(await s.getModel()).toBe("test/model");
     await expect(s.setModel("x")).resolves.toBeUndefined();
     expect(await s.listModels()).toEqual([]);

@@ -261,6 +261,7 @@ export interface IObservable<T> {
  */
 export interface ITurn {
   getCallback(): Promise<IGatewayCallback | undefined>;
+  abort(): Promise<void>;
 }
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
@@ -327,7 +328,6 @@ export interface ISession extends IObservable<AgentEvent> {
   sendUserMessage(content: string): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  abort(): Promise<void>;
   getCurrentTurn(): Promise<ITurn | undefined>;
 
   // ─── Model management ────────────────────────────────────────────────────────

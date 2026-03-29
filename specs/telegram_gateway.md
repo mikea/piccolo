@@ -165,7 +165,7 @@ Telegram `/commands` are handled by the gateway and not forwarded to the agent c
 | `/new` | `core.newSession()`, update KV mapping, confirm to user |
 | `/model <id>` | `session.setModel(id)`, confirm to user |
 | `/models` | `core.listModels()`, reply with list |
-| `/abort` | `session.abort()`, confirm to user |
+| `/abort` | `session.getCurrentTurn()?.abort()`, confirm to user |
 | `/status` | `session.getModel()` + `session.getContextUsage()`, reply with model + token usage |
 | `/compact` | `session.compact()`, confirm to user |
 | `/help` | Reply with list of available commands and descriptions |

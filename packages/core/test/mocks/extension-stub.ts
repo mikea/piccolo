@@ -278,7 +278,6 @@ export function createMockSession(
     sendUserMessage: async () => {},
     steer: async () => {},
     followUp: async () => {},
-    abort: async () => {},
     getCurrentTurn: async () => undefined,
     getModel: async () => "test/model",
     setModel: async () => {},
