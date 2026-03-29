@@ -265,7 +265,7 @@ The Durable Object that owns a live session. Wires `piccolo-agent` to persistenc
 | `packages/core/src/do/agent-session.ts` | `AgentSessionDO` class — full DO implementation |
 | `packages/core/src/do/compaction.ts` | `compact()` helper; creates `CompactionEntry`, calls `agentCompact()` |
 | `packages/core/src/do/retry.ts` | `checkRetry()` with exponential backoff, transient/overflow classification |
-| `packages/core/src/do/gateway.ts` | `createModel()` — wraps `ai-gateway-provider` with env bindings |
+| `packages/core/src/agent-session-do.ts` | Internal `createModel()` helper — wraps `ai-gateway-provider` with env bindings |
 | `packages/core/src/do/system-prompt.ts` | `buildBasePrompt(agentName)` — renders the base prompt template |
 | `packages/core/src/do/stubs.ts` | `ExtensionRunnerStub`, `SystemPromptAssemblerStub` — no-op stubs for steps 6–7 |
 | `packages/core/src/do/types-internal.ts` | `SystemPromptAddition`, `MODEL_CATALOG`, `resolveModel()` |
@@ -514,7 +514,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 
 ### 10.1 Implementation Notes
 
-**Status:** Complete. 51 tests pass (383 total across all packages), coverage above thresholds. `pnpm biome check .` passes with 1 pre-existing `noNonNullAssertion` warning. `pnpm -r exec tsc --noEmit` has one pre-existing error in `packages/core/src/gateway.ts` (unrelated to step 10).
+**Status:** Complete. 51 tests pass (383 total across all packages), coverage above thresholds. `pnpm biome check .` passes with 1 pre-existing `noNonNullAssertion` warning. `pnpm -r exec tsc --noEmit` had one historical pre-existing error in the former `packages/core/src/gateway.ts` (unrelated to step 10).
 
 **Post-review corrections (all changes fully spec-synced):**
 1. `ITextUI.show*()` → `ITextUI.get*()` — direction fix: tool provides rendering text to gateway (pull), not gateway pushes to tool.

@@ -43,6 +43,8 @@ import type {
 } from "@piccolo/api";
 import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
+import { createAiGateway } from "ai-gateway-provider";
+import { createUnified } from "ai-gateway-provider/providers/unified";
 import { agentCompact, splitForCompaction } from "./agent-compact.ts";
 import { toAiSdkTools } from "./agent-tools.ts";
 import type {
@@ -57,7 +59,6 @@ import type {
 import { generateEntryId, isLegacySystemMessageData, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
-import { createModel } from "./gateway.ts";
 import { Messages } from "./messages.ts";
 import { ObservableImpl } from "./observable-impl.ts";
 import { buildSessionContext, walkToRoot } from "./session/context.ts";
@@ -70,6 +71,15 @@ import {
 import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { defaultModelId, parseModels } from "./types-internal.ts";
+
+function createModel(env: Env, modelId: string): LanguageModel {
+  const gateway = createAiGateway({
+    accountId: env.CF_ACCOUNT_ID,
+    gateway: env.CF_AI_GATEWAY_NAME,
+    apiKey: env.CF_AI_GATEWAY_TOKEN,
+  });
+  return gateway(createUnified()(modelId)) as LanguageModel;
+}
 
 // ─── SessionTarget ────────────────────────────────────────────────────────────
 
