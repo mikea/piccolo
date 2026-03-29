@@ -72,15 +72,6 @@ import { buildBasePrompt } from "./system-prompt.ts";
 import { SystemPromptAssembler } from "./system-prompt-assembler.ts";
 import { defaultModelId, parseModels } from "./types-internal.ts";
 
-function createModel(env: Env, modelId: string): LanguageModel {
-  const gateway = createAiGateway({
-    accountId: env.CF_ACCOUNT_ID,
-    gateway: env.CF_AI_GATEWAY_NAME,
-    apiKey: env.CF_AI_GATEWAY_TOKEN,
-  });
-  return gateway(createUnified()(modelId)) as LanguageModel;
-}
-
 // ─── SessionTarget ────────────────────────────────────────────────────────────
 
 /**
@@ -1205,4 +1196,13 @@ function estimateTokens(messages: ModelMessage[]): number {
     }
   }
   return Math.ceil(chars / 4);
+}
+
+function createModel(env: Env, modelId: string): LanguageModel {
+  const gateway = createAiGateway({
+    accountId: env.CF_ACCOUNT_ID,
+    gateway: env.CF_AI_GATEWAY_NAME,
+    apiKey: env.CF_AI_GATEWAY_TOKEN,
+  });
+  return gateway(createUnified()(modelId)) as LanguageModel;
 }
