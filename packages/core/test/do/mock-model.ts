@@ -4,8 +4,8 @@
  * Mirrors packages/agent/test/mock-gateway.ts but is kept separate so
  * packages/agent's test helpers do not need to be part of its public API.
  *
- * The `AgentSessionDO` constructor calls `createModel(env, modelId)` from
- * gateway.ts which uses ai-gateway-provider. Tests bypass the real gateway by
+ * The `AgentSessionDO` constructor calls an internal `createModel(env, modelId)`
+ * helper that uses ai-gateway-provider. Tests bypass the real gateway because
  * overriding `createModel` is not viable inside a Durable Object context.
  *
  * Instead, tests use `runInDurableObject` to reach directly into the DO

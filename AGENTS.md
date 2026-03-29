@@ -68,6 +68,12 @@ Spec drift is never "someone else's problem to fix later." It compounds.
 
 ---
 
+## Rule 7: Place helper functions at the end of implementation files
+
+When adding or refactoring helper functions in source files, place them after the main class/function implementations (i.e. helper functions last in the file), unless language constraints require otherwise.
+
+---
+
 ## Verification Checklist
 
 Run this checklist after every non-trivial change:

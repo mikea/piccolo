@@ -377,7 +377,7 @@ async newSession(
    b. Derive `sessionId = this.ctx.id.name` (the DO was named with `idFromName(uuid)`).
    c. Set `state.sessionId`, `state.userId`, `state.modelId`, `state.name` where `state.name = options.name ?? sessionId`.
    d. Persist `sessionId`, `modelId`, and `name` to DO storage for cold-start recovery.
-   e. Reconstruct the `LanguageModel` via `createModel(env, modelId)`.
+   e. Reconstruct the `LanguageModel` via the internal `createModel(env, modelId)` helper in `agent-session-do.ts`.
 2. Return `getSession(userId)` — the DO's own `SessionImpl` RpcTarget.
 
 The D1 `sessions` row is **not** written here — it is written lazily on the first persisted entry append (see §Lazy session creation).
@@ -871,4 +871,4 @@ Uses `generateText` (non-streaming) with the same `LanguageModel` as the DO. Cal
 
 ### LLM Backend
 
-All LLM calls go through the **Cloudflare AI Gateway** unified endpoint. `createModel(env, modelId)` in `gateway.ts` constructs the `LanguageModel` via `ai-gateway-provider`. Models are addressed as `{provider}/{model-id}` (e.g. `anthropic/claude-sonnet-4-5`). `piccolo-core` constructs the model; the `Agent` class has no knowledge of how it was built.
+All LLM calls go through the **Cloudflare AI Gateway** unified endpoint. `createModel(env, modelId)` in `agent-session-do.ts` constructs the `LanguageModel` via `ai-gateway-provider`. Models are addressed as `{provider}/{model-id}` (e.g. `anthropic/claude-sonnet-4-5`). `piccolo-core` constructs the model; the `Agent` class has no knowledge of how it was built.
