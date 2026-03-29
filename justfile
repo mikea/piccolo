@@ -1,7 +1,10 @@
-all: check test
+all: compile test check
 
 check:
     pnpm check
+
+compile:
+    pnpm tsc
 
 test:
     pnpm test

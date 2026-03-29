@@ -237,11 +237,12 @@ export async function compact(options: {
 
   let summary: string;
   let toKeep: IMessage[];
-  const hasExtensionSummary = extResult.summary !== undefined;
+  const extensionSummary = extResult.summary;
+  const hasExtensionSummary = extensionSummary !== undefined;
 
   if (hasExtensionSummary) {
     // Extension provided a ready-made summary — skip the LLM call.
-    summary = extResult.summary;
+    summary = extensionSummary;
     toKeep = splitForCompaction(messages, keepRecentTokens).toKeep;
   } else {
     // Call agentCompact() (calls generateText internally).
