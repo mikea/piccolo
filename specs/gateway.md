@@ -45,9 +45,9 @@ const session: ISession = await core.getSession(storedSessionId);
 
 // All per-session operations are on the ISession stub
 const turn = await session.prompt("Hello", attachments);
-const stream = await turn.getStream();
 await session.setModel("anthropic/claude-sonnet-4-5");
-await session.abort();
+const currentTurn = await session.getCurrentTurn();
+await currentTurn?.abort();
 ```
 
 See [api.md §1–2](api.md) for `IPiccoloCore` and `ISession`.

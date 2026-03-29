@@ -38,8 +38,8 @@ export function createEventObservable(events: AgentEvent[]): IObservable<AgentEv
 
 function emptyTurn(): ITurn {
   return {
-    getObservable: vi.fn().mockResolvedValue(createEventObservable([])),
     getCallback: vi.fn().mockResolvedValue(undefined),
+    abort: vi.fn().mockResolvedValue(undefined),
   } as unknown as ITurn;
 }
 
@@ -60,7 +60,6 @@ export function createMockSession(
     sendUserMessage: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
     followUp: vi.fn().mockResolvedValue(undefined),
-    abort: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn().mockResolvedValue(noopSubscription),
     getCurrentTurn: vi.fn().mockResolvedValue(undefined),
     getModel: vi.fn().mockResolvedValue(DEFAULT_MODEL),

@@ -311,9 +311,6 @@ interface ISession extends IObservable<AgentEvent> {
   // without interrupting an active turn.
   followUp(text: string): Promise<void>;
 
-  // Abort the current streaming turn immediately.
-  abort(): Promise<void>;
-
   // Return the active turn context (if a turn is in progress), or undefined if idle.
   // Gateways call this after getHistory() to reconnect to an in-progress turn
   // Returns undefined when idle; non-undefined means a turn is in progress.
@@ -410,6 +407,9 @@ interface ITurn {
   // Tools call this to request interactive input mid-turn (select, confirm, input).
   // Returns undefined if the gateway did not supply a callback for this turn.
   getCallback(): Promise<IGatewayCallback | undefined>;
+
+  // Abort this turn if it is still running.
+  abort(): Promise<void>;
 }
 ```
 

@@ -120,9 +120,6 @@ export class SessionTarget extends RpcTarget implements ISession {
   followUp(text: string): Promise<void> {
     return this.#do.followUp(text);
   }
-  abort(): Promise<void> {
-    return this.#do.abort();
-  }
   getCurrentTurn(): Promise<ITurn | undefined> {
     return this.#do.getCurrentTurn();
   }
@@ -376,9 +373,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // concurrent caller that runs before the microtask queue yields will
     // immediately see #currentTurn !== null and throw.
     if (this.#currentTurn !== null) {
-      throw new Error("A turn is already in progress. Call abort() before starting a new turn.");
+      throw new Error(
+        "A turn is already in progress. Call getCurrentTurn() and abort() that turn before starting a new turn.",
+      );
     }
-    const turn = new TurnImpl(callback);
+    const turn = new TurnImpl(callback, () => this.#abortCurrentTurn());
     this.#currentTurn = turn;
 
     try {
@@ -480,7 +479,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#followUpQueue.push(text);
   }
 
-  async abort(): Promise<void> {
+  async #abortCurrentTurn(): Promise<void> {
     this.#agentAbortController?.abort();
   }
 
@@ -1161,14 +1160,20 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
 export class TurnImpl extends RpcTarget implements ITurn {
   readonly #callback: IGatewayCallback | undefined;
+  readonly #abort: () => Promise<void>;
 
-  constructor(callback: IGatewayCallback | undefined) {
+  constructor(callback: IGatewayCallback | undefined, abort: () => Promise<void>) {
     super();
     this.#callback = callback;
+    this.#abort = abort;
   }
 
   async getCallback(): Promise<IGatewayCallback | undefined> {
     return this.#callback;
+  }
+
+  async abort(): Promise<void> {
+    await this.#abort();
   }
 }
 

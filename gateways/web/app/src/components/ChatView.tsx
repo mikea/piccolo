@@ -251,7 +251,8 @@ export const ChatView: Component<Props> = (props) => {
 
   async function handleAbort(): Promise<void> {
     try {
-      await session.abort();
+      const turn = await session.getCurrentTurn();
+      await turn?.abort();
     } catch {
       /* turn may have ended */
     }

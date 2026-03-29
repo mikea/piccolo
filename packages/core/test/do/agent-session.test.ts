@@ -325,7 +325,7 @@ describe("AgentSessionDO — abort", () => {
       await instance._init(sid, "user-1");
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const ev = await drainTurn(instance, "go");
-      await instance.abort();
+      await (await instance.getCurrentTurn())?.abort();
       await flushed;
       return ev;
     });
@@ -857,7 +857,7 @@ describe("AgentSessionDO — abort() (inlined)", () => {
       await instance._init(sid, "user-1");
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const promptPromise = drainTurn(instance, "go");
-      await instance.abort();
+      await (await instance.getCurrentTurn())?.abort();
       const ev = await promptPromise;
       await flushed;
       return ev;
@@ -875,7 +875,7 @@ describe("AgentSessionDO — abort() (inlined)", () => {
       await instance._init(sid, "user-1");
       const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
       const promptPromise = drainTurn(instance, "go");
-      await instance.abort();
+      await (await instance.getCurrentTurn())?.abort();
       await promptPromise;
       await flushed;
       const turn = await instance.getCurrentTurn();
