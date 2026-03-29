@@ -5,14 +5,15 @@
  * Each row has a `type` discriminant and a `data` JSON column.
  * This file defines:
  *   - The discriminated union of all entry variants (AnyEntry)
- *   - generateEntryId() for producing 8-char hex IDs
+ *   - generateEntryId() for producing stable UUID v4 IDs
  *   - isEntryType() for narrowing unknown strings
  *   - parseEntry() for deserialising a raw DB row into a typed entry
  *
  * Spec ref: specs/core.md §Entry Types
  */
 
-import type { ModelMessage, UserContent } from "ai";
+import type { IMessage } from "@piccolo/api";
+import type { UserContent } from "ai";
 
 // ─── Discriminant union ───────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ export type EntryType =
 // ─── Base ─────────────────────────────────────────────────────────────────────
 
 export interface EntryBase {
-  /** 8-char hex identifier, unique within a session. */
+  /** Stable UUID v4 identifier, unique within a session. */
   id: string;
   sessionId: string;
   /** null for the root entry. */
@@ -45,34 +46,9 @@ export interface EntryBase {
 // ─── Concrete entry types ─────────────────────────────────────────────────────
 
 /** A single LLM message (user | assistant | tool | system). */
-export interface LegacySystemMessageData {
-  type: "system";
-  content: string;
-}
-
-/**
- * Serialized payload stored in `entries.data` for `type: "message"` rows.
- *
- * Primary format is the AI SDK `ModelMessage` serialized as-is.
- * `LegacySystemMessageData` is kept for old non-ModelMessage system entries.
- */
-export type MessageEntryData = ModelMessage | LegacySystemMessageData;
-
-export function isLegacySystemMessageData(data: MessageEntryData): data is LegacySystemMessageData {
-  return (
-    typeof data === "object" &&
-    data !== null &&
-    "type" in data &&
-    data.type === "system" &&
-    "content" in data &&
-    typeof data.content === "string"
-  );
-}
-
-/** A single LLM message (user | assistant | tool | system). */
 export interface MessageEntry extends EntryBase {
   type: "message";
-  data: MessageEntryData;
+  data: IMessage;
 }
 
 /** Active model was switched. */
@@ -90,7 +66,7 @@ export interface ThinkingLevelChangeEntry extends EntryBase {
 /** Context was summarised; firstKeptEntryId marks the resumption point. */
 export interface CompactionEntry extends EntryBase {
   type: "compaction";
-  data: { summary: string; firstKeptEntryId: string; tokensBefore: number };
+  data: { summary: string; firstKeptEntryId: string | undefined; tokensBefore: number };
 }
 
 /** Summary of an abandoned branch stored at the fork point. */
@@ -144,16 +120,11 @@ export type AnyEntry =
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Generate a random 8-character lowercase hex entry ID.
- * Uses crypto.getRandomValues for 4 bytes → 8 hex chars.
+ * Generate a random UUID v4 entry ID.
  * Available in both Workers runtime and Vitest/Miniflare environments.
  */
 export function generateEntryId(): string {
-  const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return crypto.randomUUID();
 }
 
 /** Narrow an unknown string to EntryType. */
@@ -196,6 +167,19 @@ export function parseEntry(row: DbEntryRow): AnyEntry {
   // data is guaranteed valid JSON by the CHECK constraint; cast is safe.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const data = JSON.parse(row.data) as unknown;
+  if (row.type === "message" && typeof data === "object" && data !== null) {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      parentId: row.parent_id,
+      type: row.type,
+      timestamp: row.timestamp,
+      data: {
+        ...(data as Record<string, unknown>),
+        id: row.id,
+      },
+    } as MessageEntry;
+  }
   return {
     id: row.id,
     sessionId: row.session_id,

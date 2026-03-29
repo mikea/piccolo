@@ -1,7 +1,7 @@
 /**
  * Session context reconstruction.
  *
- * `buildSessionContext` rebuilds the `ModelMessage[]` list the agent receives
+ * `buildSessionContext` rebuilds the `IMessage[]` list the agent receives
  * on cold start or after forking. It walks the entry tree from the active
  * `leafId` to the root, applies compaction if present, and converts the
  * resulting path to the message types the agent understands.
@@ -11,6 +11,7 @@
  * Spec ref: specs/core.md §Context Reconstruction
  */
 
+import type { IMessage } from "@piccolo/api";
 import { type ModelMessage, modelMessageSchema } from "ai";
 import type {
   AnyEntry,
@@ -20,7 +21,6 @@ import type {
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
-import { isLegacySystemMessageData } from "../db/entry-types.ts";
 
 // ─── Message schema validation ────────────────────────────────────────────────
 
@@ -80,19 +80,15 @@ export function walkToRoot(entries: AnyEntry[], leafId: string | null): AnyEntry
  * Convert a single non-compaction entry to zero or one ModelMessage.
  * Returns `undefined` for entry types that are not sent to the LLM.
  */
-function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
+function entryToMessage(entry: AnyEntry): IMessage | undefined {
   switch (entry.type) {
     case "message": {
-      const messageData = (entry as MessageEntry).data;
-      if (isLegacySystemMessageData(messageData)) {
-        return { role: "system", content: messageData.content };
-      }
-      return messageData as ModelMessage;
+      return (entry as MessageEntry).data;
     }
     case "custom_message": {
       const cm = entry as CustomMessageEntry;
       if (cm.data.display) {
-        return { role: "user", content: cm.data.content as string };
+        return { role: "user", content: cm.data.content as string, id: entry.id };
       }
       return undefined;
     }
@@ -101,6 +97,7 @@ function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
       return {
         role: "assistant",
         content: `[Previous branch summary]\n\n${bs.data.summary}`,
+        id: entry.id,
       };
     }
     // compaction, model_change, thinking_level_change, custom, label, session_info → skip
@@ -112,7 +109,7 @@ function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
 // ─── Context reconstruction ───────────────────────────────────────────────────
 
 /**
- * Convert an ordered entry path (root-first) to the `ModelMessage[]` list
+ * Convert an ordered entry path (root-first) to the `IMessage[]` list
  * the agent receives, and extract the active `modelId`.
  *
  * Compaction layout in the entry tree:
@@ -134,7 +131,7 @@ function entryToMessage(entry: AnyEntry): ModelMessage | undefined {
 export function buildSessionContext(
   entries: AnyEntry[],
   leafId: string | null,
-): { messages: ModelMessage[]; modelId: string } {
+): { messages: IMessage[]; modelId: string } {
   const path = walkToRoot(entries, leafId);
 
   if (path.length === 0) {
@@ -152,13 +149,14 @@ export function buildSessionContext(
   }
 
   // ── Build message list ─────────────────────────────────────────────────────
-  const messages: ModelMessage[] = [];
+  const messages: IMessage[] = [];
 
   if (lastCompaction !== undefined) {
     // 1. Emit the synthetic summary message first.
     messages.push({
       role: "user",
       content: `[Conversation Summary]\n\n${lastCompaction.data.summary}`,
+      id: lastCompaction.id,
     });
 
     // 2. Find where firstKeptEntryId sits on the path.

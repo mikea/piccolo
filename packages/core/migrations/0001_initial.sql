@@ -13,7 +13,7 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE entries (
-  id          TEXT    NOT NULL,              -- 8-char hex
+  id          TEXT    NOT NULL,              -- UUID v4; also used as IMessage.id for message entries
   session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   parent_id   TEXT,                          -- null for root entry
   type        TEXT    NOT NULL,              -- discriminant (see entry-types.ts)

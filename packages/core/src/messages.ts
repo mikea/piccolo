@@ -1,10 +1,10 @@
-import type { ModelMessage } from "ai";
-import { modelMessageSchema } from "ai";
+import type { IMessage } from "@piccolo/api";
+import { type ModelMessage, modelMessageSchema } from "ai";
 
 export class Messages {
-  #messages: ModelMessage[] = [];
+  #messages: IMessage[] = [];
 
-  constructor(messages: ModelMessage[] = []) {
+  constructor(messages: IMessage[] = []) {
     this.#messages = Messages.#cloneAndValidateAll(messages);
   }
 
@@ -12,7 +12,7 @@ export class Messages {
     return this.#messages.length;
   }
 
-  [Symbol.iterator](): ArrayIterator<ModelMessage> {
+  [Symbol.iterator](): ArrayIterator<IMessage> {
     return this.#messages[Symbol.iterator]();
   }
 
@@ -33,34 +33,34 @@ export class Messages {
    * extensions, gateway handlers). Session state should only hold detached
    * snapshots.
    */
-  static #cloneAndValidateAll(messages: ModelMessage[]): ModelMessage[] {
-    const cloned = structuredClone(messages) as ModelMessage[];
+  static #cloneAndValidateAll(messages: IMessage[]): IMessage[] {
+    const cloned = structuredClone(messages) as IMessage[];
     for (const message of cloned) {
       Messages.#validate(message);
     }
     return cloned;
   }
 
-  push(...messages: ModelMessage[]): ModelMessage[] {
+  push(...messages: IMessage[]): IMessage[] {
     return this.pushAll(messages);
   }
 
-  pushAll(contextMessages: ModelMessage[]): ModelMessage[] {
+  pushAll(contextMessages: IMessage[]): IMessage[] {
     const cloned = Messages.#cloneAndValidateAll(contextMessages);
     this.#messages.push(...cloned);
     return cloned;
   }
 
-  slice(start?: number, end?: number): ModelMessage[] {
+  slice(start?: number, end?: number): IMessage[] {
     return this.#messages.slice(start, end);
   }
 
-  replace(messages: ModelMessage[]): ModelMessage[] {
+  replace(messages: IMessage[]): IMessage[] {
     this.#messages = Messages.#cloneAndValidateAll(messages);
     return this.#messages;
   }
 
-  get(): ModelMessage[] {
+  get(): IMessage[] {
     return this.#messages;
   }
 }

@@ -229,11 +229,19 @@ export async function forkSession(
     const newId = generateEntryId();
     idMap.set(entry.id, newId);
     const newParentId = entry.parentId !== null ? (idMap.get(entry.parentId) ?? null) : null;
+    const newData =
+      entry.type === "message"
+        ? {
+            ...entry.data,
+            id: newId,
+          }
+        : entry.data;
     return {
       ...entry,
       id: newId,
       sessionId: newSessionId,
       parentId: newParentId,
+      data: newData,
     } as AnyEntry;
   });
 

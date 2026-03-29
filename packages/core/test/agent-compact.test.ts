@@ -1,30 +1,37 @@
 /**
- * Unit tests for agent-compact.ts.
+ * Unit tests for compact.ts.
  *
  * Spec ref: specs/core.md §Agent Loop §agentCompact
  */
 
-import type { ModelMessage } from "ai";
+import type { IMessage } from "@piccolo/api";
 import { describe, expect, it, vi } from "vitest";
 import {
   agentCompact,
   SUMMARIZATION_SYSTEM_PROMPT,
   serializeConversation,
   splitForCompaction,
-} from "../src/agent-compact.ts";
+} from "../src/compact.ts";
 import { createMockModel } from "./do/mock-model.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function userMsg(text: string): ModelMessage {
-  return { role: "user", content: text };
+let messageSeq = 0;
+
+function nextMessageId(): string {
+  messageSeq += 1;
+  return `msg-${messageSeq}`;
 }
 
-function assistantMsg(text: string): ModelMessage {
-  return { role: "assistant", content: [{ type: "text", text }] };
+function userMsg(text: string): IMessage {
+  return { role: "user", content: text, id: nextMessageId() };
 }
 
-function longMsg(chars: number): ModelMessage {
+function assistantMsg(text: string): IMessage {
+  return { role: "assistant", content: [{ type: "text", text }], id: nextMessageId() };
+}
+
+function longMsg(chars: number): IMessage {
   return userMsg("x".repeat(chars));
 }
 
@@ -38,14 +45,14 @@ describe("splitForCompaction", () => {
   });
 
   it("keeps all messages when they fit within keepRecentTokens", () => {
-    const msgs: ModelMessage[] = [userMsg("hello"), assistantMsg("world")];
+    const msgs: IMessage[] = [userMsg("hello"), assistantMsg("world")];
     const result = splitForCompaction(msgs, 1000);
     expect(result.toSummarize).toEqual([]);
     expect(result.toKeep).toHaveLength(2);
   });
 
   it("splits when messages exceed keepRecentTokens", () => {
-    const msgs: ModelMessage[] = [longMsg(1000), longMsg(1000), longMsg(1000)];
+    const msgs: IMessage[] = [longMsg(1000), longMsg(1000), longMsg(1000)];
     const result = splitForCompaction(msgs, 300);
     expect(result.toKeep.length).toBeGreaterThanOrEqual(1);
     expect(result.toSummarize.length).toBeGreaterThanOrEqual(1);
@@ -53,7 +60,7 @@ describe("splitForCompaction", () => {
   });
 
   it("always keeps at least the newest message", () => {
-    const msgs: ModelMessage[] = [longMsg(10000)];
+    const msgs: IMessage[] = [longMsg(10000)];
     const result = splitForCompaction(msgs, 1);
     expect(result.toKeep).toHaveLength(1);
     expect(result.toSummarize).toHaveLength(0);
@@ -61,14 +68,14 @@ describe("splitForCompaction", () => {
 
   it("keeps exact boundary messages correctly", () => {
     // 4 chars per token, budget 10 tokens = 40 chars
-    const msgs: ModelMessage[] = [userMsg("a".repeat(40)), userMsg("b".repeat(40))];
+    const msgs: IMessage[] = [userMsg("a".repeat(40)), userMsg("b".repeat(40))];
     const result = splitForCompaction(msgs, 10);
     expect(result.toKeep).toHaveLength(1);
     expect(result.toSummarize).toHaveLength(1);
   });
 
   it("preserves message order", () => {
-    const msgs: ModelMessage[] = [userMsg("first"), assistantMsg("second"), userMsg("third")];
+    const msgs: IMessage[] = [userMsg("first"), assistantMsg("second"), userMsg("third")];
     const result = splitForCompaction(msgs, 5);
     const allMsgs = [...result.toSummarize, ...result.toKeep];
     expect(allMsgs).toEqual(msgs);
@@ -100,7 +107,7 @@ describe("serializeConversation", () => {
   });
 
   it("serialises tool-call parts", () => {
-    const msgs: ModelMessage[] = [
+    const msgs: IMessage[] = [
       {
         role: "assistant",
         content: [
@@ -126,7 +133,7 @@ describe("serializeConversation", () => {
           },
         ],
       },
-    ] as unknown as ModelMessage[];
+    ] as unknown as IMessage[];
     const result = serializeConversation(msgs);
     expect(result).toContain("[TOOL]");
     expect(result).toContain("TOOL RESULT: call_1");
@@ -135,7 +142,7 @@ describe("serializeConversation", () => {
   it("serialises reasoning parts", () => {
     const msgs = [
       { role: "assistant", content: [{ type: "reasoning", text: "I need to think" }] },
-    ] as unknown as ModelMessage[];
+    ] as unknown as IMessage[];
     const result = serializeConversation(msgs);
     expect(result).toContain("REASONING");
     expect(result).toContain("I need to think");
@@ -144,7 +151,7 @@ describe("serializeConversation", () => {
   it("handles unknown part types via JSON fallback", () => {
     const msgs = [
       { role: "assistant", content: [{ type: "unknown-type", data: "x" }] },
-    ] as unknown as ModelMessage[];
+    ] as unknown as IMessage[];
     expect(serializeConversation(msgs)).toContain("[ASSISTANT]");
   });
 });
@@ -153,7 +160,7 @@ describe("serializeConversation", () => {
 
 describe("agentCompact", () => {
   it("returns empty summary when nothing to summarise", async () => {
-    const msgs: ModelMessage[] = [userMsg("hi")];
+    const msgs: IMessage[] = [userMsg("hi")];
     const { MockLanguageModelV3 } = await import("ai/test");
     const unusedModel = new MockLanguageModelV3({
       doGenerate: async () => {
@@ -162,18 +169,19 @@ describe("agentCompact", () => {
     });
     const result = await agentCompact(msgs, 10_000, unusedModel);
     expect(result.summary).toBe("");
-    expect(result.keptMessages).toEqual(msgs);
+    expect(result.toKeep).toEqual(msgs);
   });
 
   it("calls generateText and returns summary + kept messages", async () => {
-    const msgs: ModelMessage[] = [longMsg(5000), longMsg(5000), userMsg("recent message")];
+    const recent = userMsg("recent message");
+    const msgs: IMessage[] = [longMsg(5000), longMsg(5000), recent];
     const model = createMockModel({ response: "This is a summary of the conversation." });
 
     const result = await agentCompact(msgs, 200, model);
 
     expect(result.summary).toBeTruthy();
-    expect(result.keptMessages.length).toBeGreaterThanOrEqual(1);
-    expect(result.keptMessages[result.keptMessages.length - 1]).toEqual(userMsg("recent message"));
+    expect(result.toKeep.length).toBeGreaterThanOrEqual(1);
+    expect(result.toKeep[result.toKeep.length - 1]).toEqual(recent);
   });
 
   it("SUMMARIZATION_SYSTEM_PROMPT is non-empty and mentions summariser role", () => {

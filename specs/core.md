@@ -4,7 +4,7 @@
 
 All public interfaces are defined in [api.md](api.md). This document specifies the internal implementation of those interfaces.
 
-The agent loop (`Agent` class, `AgentTurn`, `toAiSdkTools`, `agentCompact`) lives directly in `packages/core/src/` — there is no separate `packages/agent` library. The `ai` and `ai-gateway-provider` packages are used directly by piccolo-core.
+The agent loop (`AgentSessionDO`, `toAiSdkTools`, `agentCompact`) lives directly in `packages/core/src/` — there is no separate `packages/agent` library. The `ai` and `ai-gateway-provider` packages are used directly by piccolo-core.
 
 ---
 
@@ -14,12 +14,12 @@ The agent loop (`Agent` class, `AgentTurn`, `toAiSdkTools`, `agentCompact`) live
 |---|---|
 | Expose `IPiccoloCore` and `ISession` to gateways | `WorkerEntrypoint` JSRPC |
 | Own one `AgentSessionDO` per session | Durable Object |
-| Run the agent loop | `Agent` class (in `agent.ts`), called by `AgentSessionDO` |
+| Run the agent loop | `AgentSessionDO` private methods + helpers in `compact.ts` / `agent-tools.ts` |
 | Persist conversation history | D1 + DO storage |
 | Dispatch events to extensions | `ExtensionRunner` via dispatch namespace |
 | Assemble the system prompt | `SystemPromptAssembler` |
 | Manage model selection | Stored per session in D1 |
-| Trigger and persist context compaction | `compact()` in `compaction.ts`, called by DO |
+| Trigger and persist context compaction | `compact()` in `compact.ts`, called by DO |
 
 ---
 
@@ -78,7 +78,7 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE entries (
-  id          TEXT    NOT NULL,             -- 8-char hex
+  id          TEXT    NOT NULL,             -- UUID v4; for message rows this also matches IMessage.id
   session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   parent_id   TEXT,                         -- null for root entry
   type        TEXT    NOT NULL,             -- discriminant (see Entry Types)
@@ -123,7 +123,7 @@ All entries share `EntryBase` and are stored as JSON in `entries.data`:
 
 ```typescript
 interface EntryBase {
-  id: string;              // 8-char hex: crypto.getRandomValues → hex encode
+  id: string;              // UUID v4; assigned once and never changes
   sessionId: string;
   parentId: string | null;
   type: EntryType;
@@ -149,7 +149,7 @@ type EntryType =
 // "message" — a single LLM message (user | assistant | tool | system)
 interface MessageEntry extends EntryBase {
   type: "message";
-  data: ModelMessage | { type: "system"; content: string };  // ModelMessage JSON (legacy system payload supported)
+  data: IMessage;
 }
 
 // "model_change" — active model switched
@@ -167,7 +167,7 @@ interface ThinkingLevelChangeEntry extends EntryBase {
 // "compaction" — context was summarised; firstKeptEntryId marks resumption point
 interface CompactionEntry extends EntryBase {
   type: "compaction";
-  data: { summary: string; firstKeptEntryId: string; tokensBefore: number };
+  data: { summary: string; firstKeptEntryId: string | undefined; tokensBefore: number };
 }
 
 // "branch_summary" — summary of an abandoned branch stored at the fork point
@@ -303,12 +303,12 @@ interface DOState {
   // In-memory message list; rebuilt from D1 on cold start
   // Every append clones messages via structuredClone before storing, so
   // session state never retains external object references.
-  messages: ModelMessage[];
+  messages: IMessage[];
 
   // Inlined agent state (no separate Agent class)
   model: LanguageModel;
   error: string | undefined;
-  steeringQueue: ModelMessage[];
+  steeringQueue: IMessage[];
   agentAbortController: AbortController | null;
 
   // Follow-up queue (filled by followUp())
@@ -325,10 +325,6 @@ interface DOState {
   // when appendCustomEntry/appendCustomMessage are called.
   // Used by ISession.getEntries() to avoid a D1 round-trip.
   branchEntries: AnyEntry[];
-
-  // Maps ModelMessage object reference → entry ID.
-  // Used by #compact() to locate firstKeptEntryId without an extra D1 round-trip.
-  messageToEntryId: Map<ModelMessage, string>;
 
   // Token counts from the last completed agent turn.
   // lastInputTokens: updated from finish.totalUsage; used for compaction threshold.
@@ -640,7 +636,7 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. It reads and mutates `#messages` and `#leafId` in place.
+Compaction is implemented by `compact()` in `packages/core/src/compact.ts`, called by `AgentSessionDO.compact()`. It reads `IMessage[]`, returns a `CompactionEntry` plus the replacement message list, and the DO persists the entry immediately.
 
 ```
 1. Emit before_compact to extensions → BeforeCompactResult
@@ -650,11 +646,11 @@ Compaction is implemented as `#compact(options)` directly on `AgentSessionDO`. I
 
 2. If summary === "" and no extension summary: return (nothing to summarise)
 
-3. Lookup firstKeptEntryId from #messageToEntryId (falls back to "" if not found)
+3. Set `firstKeptEntryId` from `toKeep[0]?.id`
 
 4. Build CompactionEntry, persist immediately, advance #leafId
 
-5. Replace #messages = [summaryMessage, ...keptMessages]
+5. Replace #messages = [summaryMessage, ...toKeep]
 ```
 
 No deferred flush is required — compaction entries are persisted immediately.
@@ -677,13 +673,13 @@ All persistent mutations (model changes, custom entries, messages, compaction) w
 
 ## Context Reconstruction — `buildSessionContext`
 
-Called on cold start and after forking. Produces the `ModelMessage[]` list the agent receives.
+Called on cold start and after forking. Produces the `IMessage[]` list the agent receives.
 
 ```typescript
 function buildSessionContext(
   entries: EntryBase[],
   leafId: string | null,
-): { messages: ModelMessage[]; modelId: string } {
+): { messages: IMessage[]; modelId: string } {
   // 1. Walk from leafId → root collecting entry IDs, then reverse
   const path = walkToRoot(entries, leafId).reverse();
 
@@ -695,8 +691,8 @@ function buildSessionContext(
     ? path.filter(e => e.id === lastCompaction.id || comesAfter(e, lastCompaction, path))
     : path;
 
-  // 4. Convert to ModelMessage[], checking each against modelMessageSchema (log only)
-  const messages: ModelMessage[] = [];
+  // 4. Convert to IMessage[], checking each against modelMessageSchema (log only)
+  const messages: IMessage[] = [];
   for (const entry of relevant) {
     let msg: ModelMessage | undefined;
     if (entry.type === "compaction") {
@@ -716,7 +712,7 @@ function buildSessionContext(
       if (!result.success) {
         console.error(`[context] invalid ModelMessage in entry ${entry.id}:`, msg, result.error.issues);
       }
-      messages.push(msg);
+      messages.push({ ...msg, id: entry.id });
     }
   }
 
@@ -805,9 +801,9 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
 
 ## Agent Loop — Implementation
 
-The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`. There is no separate `Agent` class or `compaction.ts` module — both have been inlined as private methods on the DO.
+The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`, with helper functions in `packages/core/src/compact.ts` and `packages/core/src/agent-tools.ts`.
 
-The DO stores in-memory turn history in a `Messages` helper (`packages/core/src/messages.ts`). `Messages` is intentionally array-compatible and iterable so existing array consumers such as `streamText(...)`, compaction, and persistence can read it directly, while replacement paths mutate the same container via `replace(...)`.
+The DO stores in-memory turn history in a `Messages` helper (`packages/core/src/messages.ts`). `Messages` is intentionally array-compatible and iterable so existing array consumers such as `streamText(...)`, compaction, and persistence can read it directly.
 
 ### `#startTurn(initialMessages)`
 
@@ -865,7 +861,7 @@ Called at the start of every `prompt()` call; is a no-op after the first call pe
 
 Converts `ITool[]` to the AI SDK `ToolSet` format. `ctx` (the live `ISession` via `#rpcCtx`) is threaded into every tool `execute()` call. `jsonSchema()` from `ai` is used to wrap the `JSONSchema7` descriptor.
 
-### `agentCompact(messages, keepRecentTokens, model): Promise<{ summary, keptMessages }>`
+### `agentCompact(messages, keepRecentTokens, model): Promise<{ summary, toKeep }>`
 
 Uses `generateText` (non-streaming) with the same `LanguageModel` as the DO. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by `#compact()` on the DO.
 

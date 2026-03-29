@@ -56,7 +56,7 @@ function makeMessageEntry(
     parentId,
     type: "message",
     timestamp: ts(offset),
-    data: { role, content: text },
+    data: { role, content: text, id },
   };
 }
 

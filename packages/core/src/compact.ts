@@ -11,8 +11,11 @@
  * Spec ref: specs/core.md §Agent Loop §agentCompact
  */
 
+import type { BeforeCompactResult, ExtensionEvent, IMessage, ISession } from "@piccolo/api";
 import type { LanguageModel, ModelMessage } from "ai";
 import { generateText } from "ai";
+import { type CompactionEntry, generateEntryId } from "./db/entry-types";
+import type { ExtensionRunner } from "./extension-runner";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -39,13 +42,6 @@ Rules:
 
 // ─── Split ────────────────────────────────────────────────────────────────────
 
-export interface CompactionSplit {
-  /** Messages to summarise (older). May be empty if all messages fit in keepRecentTokens. */
-  toSummarize: ModelMessage[];
-  /** Messages to keep verbatim (newest). Always non-empty. */
-  toKeep: ModelMessage[];
-}
-
 /**
  * Split a message array into a portion to summarise and a portion to keep.
  *
@@ -56,9 +52,14 @@ export interface CompactionSplit {
  * At least one message is always kept to ensure the conversation is not empty.
  */
 export function splitForCompaction(
-  messages: ModelMessage[],
+  messages: IMessage[],
   keepRecentTokens: number,
-): CompactionSplit {
+): {
+  /** Messages to summarise (older). May be empty if all messages fit in keepRecentTokens. */
+  toSummarize: IMessage[];
+  /** Messages to keep verbatim (newest). Always non-empty. */
+  toKeep: IMessage[];
+} {
   if (messages.length === 0) {
     return { toSummarize: [], toKeep: [] };
   }
@@ -93,7 +94,7 @@ export function splitForCompaction(
 /**
  * Serialise a message array to a human-readable string for the summarisation LLM.
  */
-export function serializeConversation(messages: ModelMessage[]): string {
+export function serializeConversation(messages: IMessage[]): string {
   return messages
     .map((msg) => {
       const role = msg.role.toUpperCase();
@@ -116,15 +117,15 @@ export function serializeConversation(messages: ModelMessage[]): string {
  * CompactionEntry and updating the agent's message history.
  */
 export async function agentCompact(
-  messages: ModelMessage[],
+  messages: IMessage[],
   keepRecentTokens: number,
   model: LanguageModel,
-): Promise<{ summary: string; keptMessages: ModelMessage[] }> {
+): Promise<{ summary: string; toKeep: IMessage[] }> {
   const { toSummarize, toKeep } = splitForCompaction(messages, keepRecentTokens);
 
   if (toSummarize.length === 0) {
     // Nothing to summarise — return empty summary.
-    return { summary: "", keptMessages: toKeep };
+    return { summary: "", toKeep };
   }
 
   const conversationText = serializeConversation(toSummarize);
@@ -135,7 +136,7 @@ export async function agentCompact(
     messages: [{ role: "user", content: conversationText }],
   });
 
-  return { summary, keptMessages: toKeep };
+  return { summary, toKeep };
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -186,4 +187,99 @@ function serializeMessageContent(msg: ModelMessage): string {
       .join("\n");
   }
   return String(msg.content);
+}
+
+/**
+ * Run context compaction on the current message history.
+ *
+ * Lets extensions cancel or supply a pre-built summary, otherwise calls
+ * agentCompact() to summarise old messages. Appends a CompactionEntry to
+ * #pendingEntries and replaces #messages with the compacted list.
+ * Does NOT flush to D1 — the caller flushes after the turn ends.
+ *
+ * Spec ref: specs/core.md §Compaction algorithm
+ */
+export async function compact(options: {
+  keepRecentTokens: number;
+  messages: IMessage[];
+  extensionRunner: ExtensionRunner;
+  ctx: ISession;
+  model: LanguageModel;
+  sessionId: string;
+  parentId: string | null;
+  tokensBefore: number;
+}): Promise<
+  | {
+      messages: IMessage[];
+      compactionEntry: CompactionEntry;
+    }
+  | false
+> {
+  const {
+    keepRecentTokens,
+    messages,
+    extensionRunner,
+    ctx,
+    model,
+    sessionId,
+    parentId,
+    tokensBefore,
+  } = options;
+
+  // 1. Let extensions cancel or supply a pre-built summary.
+  const beforeCompactEvent: Extract<ExtensionEvent, { type: "before_compact" }> = {
+    type: "before_compact",
+    messages,
+    keepRecentTokens,
+  };
+  const extResult = (await extensionRunner.emit(beforeCompactEvent, ctx)) as BeforeCompactResult;
+  if (extResult.cancel) return false;
+
+  let summary: string;
+  let toKeep: IMessage[];
+  const hasExtensionSummary = extResult.summary !== undefined;
+
+  if (hasExtensionSummary) {
+    // Extension provided a ready-made summary — skip the LLM call.
+    summary = extResult.summary;
+    toKeep = splitForCompaction(messages, keepRecentTokens).toKeep;
+  } else {
+    // Call agentCompact() (calls generateText internally).
+    ({ summary, toKeep } = await agentCompact(messages, keepRecentTokens, model));
+  }
+
+  if (!hasExtensionSummary && summary === "") {
+    return false;
+  }
+
+  // 3. Find firstKeptEntryId from the first kept message's stable id.
+  //    Falls back to "" if not found — buildSessionContext handles missing ids gracefully.
+  const firstKeptMessage = toKeep[0];
+
+  // 4. Build and queue the CompactionEntry.
+  const compactionEntry: CompactionEntry = {
+    id: generateEntryId(),
+    sessionId,
+    parentId,
+    type: "compaction",
+    timestamp: new Date().toISOString(),
+    data: {
+      summary,
+      firstKeptEntryId: firstKeptMessage?.id,
+      tokensBefore,
+    },
+  };
+
+  // 5. Replace message history with summary + kept messages.
+  // toKeep is a validated subset of the prior #messages; summaryMessage
+  // is DO-constructed and always valid. Use #replaceMessages for consistency.
+  const summaryMessage: IMessage = {
+    role: "user",
+    content: `[Conversation Summary]\n\n${summary}`,
+    id: compactionEntry.id,
+  };
+  return {
+    compactionEntry: compactionEntry,
+    messages: [summaryMessage, ...toKeep],
+  };
 }

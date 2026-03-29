@@ -20,6 +20,10 @@ Types used across multiple API surfaces.
 ```typescript
 import type { ModelMessage, LanguageModelUsage, FinishReason } from "ai";
 
+type IMessage = ModelMessage & {
+  id: string;
+};
+
 // ─── Session ──────────────────────────────────────────────────────────────────
 
 // NOTE: SessionRecord is an internal piccolo-core type (D1 row shape).
@@ -191,10 +195,6 @@ interface ContextUsage {
   inputTokens: number;
 }
 
-interface CompactOptions {
-  keepRecentTokens?: number;    // default: 20_000
-}
-
 // Entry returned by ISession.getEntries()
 interface CustomEntry {
   id: string;
@@ -361,7 +361,7 @@ interface ISession extends IObservable<AgentEvent> {
   getContextUsage(): Promise<ContextUsage>;
 
   // Trigger context compaction immediately.
-  compact(options?: CompactOptions): Promise<void>;
+  compact(): Promise<void>;
 
   // ─── System prompt ────────────────────────────────────────────────────────
 
@@ -587,11 +587,11 @@ type ExtensionEvent =
   | { type: "input"; text: string; attachments: Attachment[]; source: "user";
       commandName?: string; commandArgs?: string }
   | { type: "before_start"; text: string; attachments: Attachment[]; systemPrompt: string }
-  | { type: "context"; messages: ModelMessage[] }
+  | { type: "context"; messages: IMessage[] }
   | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool_result"; toolCallId: string; toolName: string;
       input: unknown; output: unknown; isError: boolean }
-  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number };
+  | { type: "before_compact"; messages: IMessage[]; keepRecentTokens: number };
 ```
 
 ### Extension Result Types
@@ -599,11 +599,11 @@ type ExtensionEvent =
 ```typescript
 interface BeforeAgentStartResult {
   systemPrompt?: string;
-  contextMessages?: ModelMessage[];   // injected before the user message
+  contextMessages?: IMessage[];   // injected before the user message
 }
 
 interface ContextResult {
-  messages: ModelMessage[];            // replacement message list
+  messages: IMessage[];            // replacement message list
 }
 
 interface ToolCallResult {

@@ -1,11 +1,11 @@
-import type { ModelMessage } from "@piccolo/api";
+import type { IMessage } from "@piccolo/api";
 import { describe, expect, it } from "vitest";
 import { Messages } from "../src/messages.ts";
 
 describe("Messages", () => {
   it("is iterable and supports replacing the internal array in-place", () => {
-    const first: ModelMessage = { role: "user", content: "first" };
-    const second: ModelMessage = { role: "assistant", content: "second" };
+    const first: IMessage = { role: "user", content: "first", id: "first" };
+    const second: IMessage = { role: "assistant", content: "second", id: "second" };
 
     const messages = new Messages([first]);
     messages.pushAll([second]);

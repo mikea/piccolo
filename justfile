@@ -1,5 +1,10 @@
+all: check test
+
 check:
     pnpm check
+
+test:
+    pnpm test
 
 deploy-all: deploy-core deploy-web deploy-fetch
 

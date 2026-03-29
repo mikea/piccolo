@@ -19,7 +19,6 @@ export type {
   ImagePart,
   LanguageModel,
   LanguageModelUsage,
-  ModelMessage,
 } from "ai";
 
 // ─── Imports for use below ───────────────────────────────────────────────────
@@ -28,6 +27,12 @@ import type { JSONSchema7 as JsonSchema7 } from "@ai-sdk/provider";
 import type { FinishReason, LanguageModelUsage, ModelMessage } from "ai";
 
 export type { JsonSchema7 };
+
+// ─── Message ──────────────────────────────────────────────────────────────────
+
+export type IMessage = ModelMessage & {
+  id: string;
+};
 
 // ─── Shared data types ────────────────────────────────────────────────────────
 
@@ -264,10 +269,6 @@ export interface ContextUsage {
   inputTokens: number;
 }
 
-export interface CompactOptions {
-  keepRecentTokens?: number; // default: 20_000
-}
-
 /** Entry returned by ISession.getEntries(). */
 export interface CustomEntry {
   id: string;
@@ -352,7 +353,7 @@ export interface ISession extends IObservable<AgentEvent> {
   // ─── Context usage ────────────────────────────────────────────────────────────
 
   getContextUsage(): Promise<ContextUsage>;
-  compact(options?: CompactOptions): Promise<void>;
+  compact(): Promise<void>;
 
   // ─── System prompt ────────────────────────────────────────────────────────────
 
@@ -428,7 +429,7 @@ export type ExtensionEvent =
       commandArgs?: string;
     }
   | { type: "before_start"; text: string; attachments: Attachment[]; systemPrompt: string }
-  | { type: "context"; messages: ModelMessage[] }
+  | { type: "context"; messages: IMessage[] }
   | { type: "tool_call"; toolCallId: string; toolName: string; input: unknown }
   | {
       type: "tool_result";
@@ -438,7 +439,7 @@ export type ExtensionEvent =
       output: unknown;
       isError: boolean;
     }
-  | { type: "before_compact"; messages: ModelMessage[]; keepRecentTokens: number };
+  | { type: "before_compact"; messages: IMessage[]; keepRecentTokens: number };
 
 // ─── Result types for interception events ────────────────────────────────────
 
@@ -449,11 +450,11 @@ export interface InputResult {
 
 export interface BeforeAgentStartResult {
   systemPrompt?: string;
-  contextMessages?: ModelMessage[];
+  contextMessages?: IMessage[];
 }
 
 export interface ContextResult {
-  messages: ModelMessage[];
+  messages: IMessage[];
 }
 
 export interface ToolCallResult {

@@ -43,13 +43,13 @@ function sessionInfo(id: string, parentId: string | null = null): AnyEntry {
 }
 
 function userMsg(id: string, parentId: string | null, text: string): AnyEntry {
-  return makeEntry({ id, parentId, type: "message" }, { role: "user", content: text });
+  return makeEntry({ id, parentId, type: "message" }, { role: "user", content: text, id });
 }
 
 function assistantMsg(id: string, parentId: string | null, text: string): AnyEntry {
   return makeEntry(
     { id, parentId, type: "message" },
-    { role: "assistant", content: [{ type: "text", text }] },
+    { role: "assistant", content: [{ type: "text", text }], id },
   );
 }
 
@@ -175,10 +175,11 @@ describe("buildSessionContext — message entries", () => {
     const a = assistantMsg("a", "u", "Hi");
     const { messages } = buildSessionContext([r, u, a], "a");
     expect(messages).toHaveLength(2);
-    expect(messages[0]).toEqual({ role: "user", content: "Hello" });
+    expect(messages[0]).toEqual({ role: "user", content: "Hello", id: "u" });
     expect(messages[1]).toEqual({
       role: "assistant",
       content: [{ type: "text", text: "Hi" }],
+      id: "a",
     });
   });
 });
@@ -224,7 +225,7 @@ describe("buildSessionContext — custom_message entries", () => {
     const cm = customMessage("cm", "r", "Injected context", true);
     const { messages } = buildSessionContext([r, cm], "cm");
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ role: "user", content: "Injected context" });
+    expect(messages[0]).toEqual({ role: "user", content: "Injected context", id: "cm" });
   });
 
   it("skips custom_message with display: false", () => {
@@ -246,6 +247,7 @@ describe("buildSessionContext — branch_summary entries", () => {
     expect(messages[0]).toEqual({
       role: "assistant",
       content: "[Previous branch summary]\n\nThe other branch did X.",
+      id: "bs",
     });
   });
 });
@@ -305,11 +307,13 @@ describe("buildSessionContext — compaction", () => {
     expect(messages[0]).toEqual({
       role: "user",
       content: "[Conversation Summary]\n\nSummary of old stuff",
+      id: "comp",
     });
-    expect(messages[1]).toEqual({ role: "user", content: "Kept message" });
+    expect(messages[1]).toEqual({ role: "user", content: "Kept message", id: "u3" });
     expect(messages[2]).toEqual({
       role: "assistant",
       content: [{ type: "text", text: "New reply" }],
+      id: "a2",
     });
   });
 
@@ -329,10 +333,11 @@ describe("buildSessionContext — compaction", () => {
     expect(messages[0]).toEqual({
       role: "user",
       content: "[Conversation Summary]\n\nSecond summary",
+      id: "comp2",
     });
     // u4 is firstKeptEntryId for comp2
-    expect(messages[1]).toEqual({ role: "user", content: "Second kept" });
-    expect(messages[2]).toEqual({ role: "user", content: "Recent message" });
+    expect(messages[1]).toEqual({ role: "user", content: "Second kept", id: "u4" });
+    expect(messages[2]).toEqual({ role: "user", content: "Recent message", id: "u5" });
     expect(messages).toHaveLength(3);
   });
 
@@ -347,8 +352,9 @@ describe("buildSessionContext — compaction", () => {
     expect(messages[0]).toEqual({
       role: "user",
       content: "[Conversation Summary]\n\nSummary",
+      id: "comp",
     });
-    expect(messages[1]).toEqual({ role: "user", content: "After compaction" });
+    expect(messages[1]).toEqual({ role: "user", content: "After compaction", id: "u" });
   });
 });
 
@@ -371,15 +377,17 @@ describe("buildSessionContext — mixed entry types on path", () => {
 
     expect(modelId).toBe("openai/gpt-4o");
     expect(messages).toHaveLength(4);
-    expect(messages[0]).toEqual({ role: "user", content: "Hello" });
-    expect(messages[1]).toEqual({ role: "user", content: "Context injected" });
+    expect(messages[0]).toEqual({ role: "user", content: "Hello", id: "u1" });
+    expect(messages[1]).toEqual({ role: "user", content: "Context injected", id: "cm" });
     expect(messages[2]).toEqual({
       role: "assistant",
       content: [{ type: "text", text: "Reply" }],
+      id: "a1",
     });
     expect(messages[3]).toEqual({
       role: "assistant",
       content: "[Previous branch summary]\n\nOld branch",
+      id: "bs",
     });
   });
 });

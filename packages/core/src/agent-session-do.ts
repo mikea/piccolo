@@ -7,7 +7,7 @@
  * One DO instance per session. This is where all live session logic runs:
  *   - Agent loop (inlined: #runStream, #startTurn)
  *   - Persistence (D1 via session/persistence.ts)
- *   - Context compaction (inlined: #compact)
+ *   - Context compaction (via compact.ts)
  *   - Extension dispatch (ExtensionRunner)
  *   - System prompt assembly (SystemPromptAssembler)
  *
@@ -23,14 +23,12 @@ import type {
   AgentEvent,
   Attachment,
   BeforeAgentStartResult,
-  BeforeCompactResult,
-  CompactOptions,
   ContextUsage,
   CustomEntry as CustomEntryType,
-  ExtensionEvent,
   HistoryEntry,
   IDisposable,
   IGatewayCallback,
+  IMessage,
   InputResult,
   IObserver,
   ISession,
@@ -45,18 +43,17 @@ import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } fr
 import { stepCountIs, streamText } from "ai";
 import { createAiGateway } from "ai-gateway-provider";
 import { createUnified } from "ai-gateway-provider/providers/unified";
-import { agentCompact, splitForCompaction } from "./agent-compact.ts";
 import { toAiSdkTools } from "./agent-tools.ts";
+import { compact as compactImpl } from "./compact.ts";
 import type {
   AnyEntry,
-  CompactionEntry,
   CustomEntry,
   CustomMessageEntry,
   MessageEntry,
   ModelChangeEntry,
   SessionInfoEntry,
 } from "./db/entry-types.ts";
-import { generateEntryId, isLegacySystemMessageData, parseEntry } from "./db/entry-types.ts";
+import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries, getSession } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { Messages } from "./messages.ts";
@@ -156,8 +153,8 @@ export class SessionTarget extends RpcTarget implements ISession {
   getContextUsage(): Promise<ContextUsage> {
     return this.#do.getContextUsage();
   }
-  compact(options?: CompactOptions): Promise<void> {
-    return this.#do.compact(options);
+  compact(): Promise<void> {
+    return this.#do.compact();
   }
   getSystemPrompt(): Promise<string> {
     return this.#do.getSystemPrompt();
@@ -177,6 +174,10 @@ export class SessionTarget extends RpcTarget implements ISession {
 
 const DEFAULT_MAX_STEPS = 20;
 
+interface CompactOptions {
+  keepRecentTokens?: number;
+}
+
 export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── Session identity ─────────────────────────────────────────────────────
   #sessionId = "";
@@ -190,7 +191,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // ─── In-memory session state ──────────────────────────────────────────────
   #messages = new Messages([]);
   #branchEntries: AnyEntry[] = [];
-  #messageToEntryId = new Map<ModelMessage, string>();
 
   // ─── Listeners ────────────────────────────────────────────────────────────
   #listeners = new Set<ISessionListener>();
@@ -217,7 +217,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   // Previously lived in Agent class. Now owned directly by the DO.
   #model!: LanguageModel;
   #error: string | undefined = undefined;
-  #steeringQueue: ModelMessage[] = [];
+  #steeringQueue: IMessage[] = [];
   #agentAbortController: AbortController | null = null;
 
   // ─── Infrastructure ───────────────────────────────────────────────────────
@@ -285,18 +285,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
         const rawRows = await getEntries(db, sessionId);
         const allEntries = rawRows.map(parseEntry);
-        const context = buildSessionContext(allEntries, this.#leafId);
-        this.#messages = new Messages(context.messages);
+        const { messages, modelId } = buildSessionContext(allEntries, this.#leafId);
+        this.#messages = new Messages(messages);
         if (allEntries.some((e) => e.type === "model_change")) {
-          this.#modelId = context.modelId;
-        }
-        for (const entry of allEntries) {
-          if (entry.type === "message") {
-            const messageData = (entry as MessageEntry).data;
-            if (!isLegacySystemMessageData(messageData)) {
-              this.#messageToEntryId.set(messageData, entry.id);
-            }
-          }
+          this.#modelId = modelId;
         }
         this.#branchEntries = walkToRoot(allEntries, this.#leafId);
       }
@@ -403,7 +395,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       const effectiveText = inputResult.action === "transform" ? (inputResult.text ?? text) : text;
 
       // Build user message and entry
-      const userMessage: ModelMessage =
+      const userEntryId = generateEntryId();
+      const userMessage: IMessage =
         attachments && attachments.length > 0
           ? {
               role: "user",
@@ -415,10 +408,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
                   mediaType: a.mimeType,
                 })),
               ],
+              id: userEntryId,
             }
-          : { role: "user", content: effectiveText };
+          : { role: "user", content: effectiveText, id: userEntryId };
 
-      const userEntryId = generateEntryId();
       const userEntry: MessageEntry = {
         id: userEntryId,
         sessionId: this.#sessionId,
@@ -445,19 +438,14 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       this.#assembledSystemPrompt = beforeStart.systemPrompt ?? this.#assembledSystemPrompt;
 
       if (this.#computeContextUsage().inputTokens > this.#compactTokens()) {
-        await this.#compact({});
+        await this.compact();
       }
-
-      this.#messagesAtTurnStart = this.#messages.length;
 
       // Start the agent turn — events flow via #runStream, which calls #onTurnEvent.
-      const persistedUserMessages = this.#startTurn([userMessage]);
-      const persistedUserMessage = persistedUserMessages[0];
-      if (persistedUserMessage !== undefined) {
-        // Messages stores structured-cloned snapshots; map the in-session object
-        // reference (not the caller's original) to the entry ID used in D1.
-        this.#messageToEntryId.set(persistedUserMessage, userEntryId);
-      }
+      this.#startTurn([userMessage]);
+      // The prompt() entry is already persisted above; only assistant/tool output
+      // from this turn should be flushed by #persistNewMessages().
+      this.#messagesAtTurnStart = this.#messages.length;
     } catch (e) {
       // If anything above throws, release the turn reservation so the caller
       // can retry rather than being permanently locked out.
@@ -469,11 +457,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async sendUserMessage(content: string): Promise<void> {
-    this.#steeringQueue.push({ role: "user", content });
+    this.#steeringQueue.push({ role: "user", content, id: generateEntryId() });
   }
 
   async steer(text: string): Promise<void> {
-    this.#steeringQueue.push({ role: "user", content: text });
+    this.#steeringQueue.push({ role: "user", content: text, id: generateEntryId() });
   }
 
   async followUp(text: string): Promise<void> {
@@ -500,7 +488,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     const toolEntryIndex = new Map<string, number>();
 
     for (const msg of this.#messages) {
-      const id = this.#messageToEntryId.get(msg) ?? Math.random().toString(36).slice(2);
+      const id = msg.id;
       if (msg.role === "user") {
         const content = typeof msg.content === "string" ? msg.content : "[attachment]";
         entries.push({ type: "user", id, content });
@@ -676,7 +664,24 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async compact(options?: CompactOptions): Promise<void> {
-    await this.#compact(options ?? {});
+    const result = await compactImpl({
+      keepRecentTokens: options?.keepRecentTokens ?? 20_000,
+      messages: this.#messages.get(),
+      extensionRunner: this.#extensionRunner,
+      ctx: this.#rpcCtx,
+      model: this.#model,
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      tokensBefore: this.#lastInputTokens,
+    });
+
+    if (!result) {
+      return;
+    }
+
+    const { messages, compactionEntry } = result;
+    await this.#appendEntry(compactionEntry);
+    this.#messages = new Messages(messages);
   }
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
@@ -781,17 +786,13 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    *
    * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
    */
-  #startTurn(initialMessages: ModelMessage[]): ModelMessage[] {
-    let addedMessages: ModelMessage[] = [];
+  #startTurn(initialMessages: IMessage[]): void {
     if (initialMessages.length > 0) {
-      // Messages.pushAll() structured-clones inputs to detach mutable external
-      // references from internal session state.
-      addedMessages = this.#messages.pushAll(initialMessages);
+      this.#messages.pushAll(initialMessages);
     }
     const ac = new AbortController();
     this.#agentAbortController = ac;
     this.ctx.waitUntil(this.#runStream(ac.signal));
-    return addedMessages;
   }
 
   /**
@@ -893,7 +894,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
         onFinish: ({ totalUsage, response }) => {
           finalUsage = totalUsage;
-          this.#messages.pushAll(response.messages);
+          this.#messages.pushAll(response.messages.map((m) => ({ ...m, id: generateEntryId() })));
         },
 
         onError: ({ error }) => {
@@ -935,7 +936,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   /** Dequeue one (or all, if steeringMode were "all") steering messages. */
-  #dequeueSteer(): ModelMessage[] {
+  #dequeueSteer(): IMessage[] {
     // Default steering mode is "one-at-a-time".
     const msg = this.#steeringQueue.shift();
     return msg !== undefined ? [msg] : [];
@@ -1018,7 +1019,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       // and trigger #onAgentEnd again when it finishes.
       const followUpText = this.#followUpQueue.shift() ?? "";
       this.#messagesAtTurnStart = this.#messages.length;
-      this.#startTurn([{ role: "user", content: followUpText }]);
+      this.#startTurn([{ role: "user", content: followUpText, id: generateEntryId() }]);
       return; // don't clear #currentTurn or notify yet
     }
 
@@ -1046,86 +1047,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return { inputTokens: this.#lastInputTokens + extra };
   }
 
-  /**
-   * Run context compaction on the current message history.
-   *
-   * Lets extensions cancel or supply a pre-built summary, otherwise calls
-   * agentCompact() to summarise old messages. Appends a CompactionEntry to
-   * D1 and replaces #messages with the compacted list.
-   *
-   * Spec ref: specs/core.md §Compaction algorithm
-   */
-  async #compact(options: CompactOptions): Promise<void> {
-    const keepRecentTokens = options.keepRecentTokens ?? 20_000;
-
-    // 1. Let extensions cancel or supply a pre-built summary.
-    const beforeCompactEvent: Extract<ExtensionEvent, { type: "before_compact" }> = {
-      type: "before_compact",
-      messages: this.#messages.get(),
-      keepRecentTokens,
-    };
-    const extResult = (await this.#extensionRunner.emit(
-      beforeCompactEvent,
-      this.#rpcCtx,
-    )) as BeforeCompactResult;
-    if (extResult.cancel) return;
-
-    let summary: string;
-    let keptMessages: ModelMessage[];
-
-    if (extResult.summary) {
-      // Extension provided a ready-made summary — skip the LLM call.
-      summary = extResult.summary;
-      keptMessages = splitForCompaction(this.#messages.get(), keepRecentTokens).toKeep;
-    } else {
-      // Call agentCompact() (calls generateText internally).
-      ({ summary, keptMessages } = await agentCompact(
-        this.#messages.get(),
-        keepRecentTokens,
-        this.#model,
-      ));
-    }
-
-    // 2. If nothing was summarised, skip writing a CompactionEntry.
-    if (summary === "" && !extResult.summary) return;
-
-    // 3. Find firstKeptEntryId by looking up keptMessages[0] in the message→entry map.
-    //    Falls back to "" if not found — buildSessionContext handles missing ids gracefully.
-    const firstKeptMessage = keptMessages[0];
-    const firstKeptEntryId =
-      firstKeptMessage !== undefined ? (this.#messageToEntryId.get(firstKeptMessage) ?? "") : "";
-
-    // 4. Build and queue the CompactionEntry.
-    const compactionEntry: CompactionEntry = {
-      id: generateEntryId(),
-      sessionId: this.#sessionId,
-      parentId: this.#leafId,
-      type: "compaction",
-      timestamp: new Date().toISOString(),
-      data: {
-        summary,
-        firstKeptEntryId,
-        tokensBefore: this.#lastInputTokens,
-      },
-    };
-    await this.#appendEntry(compactionEntry);
-
-    // 5. Replace message history with summary + kept messages.
-    // keptMessages are a validated subset of the prior #messages; summaryMessage
-    // is DO-constructed and always valid. Use #replaceMessages for consistency.
-    const summaryMessage: ModelMessage = {
-      role: "user",
-      content: `[Conversation Summary]\n\n${summary}`,
-    };
-    this.#messages = new Messages([summaryMessage, ...keptMessages]);
-  }
-
   /** Persist all new agent messages to D1 since the last flush point. */
   async #persistNewMessages(): Promise<void> {
     const newMessages = this.#messages.get().slice(this.#messagesAtTurnStart);
     for (const msg of newMessages) {
-      if (this.#messageToEntryId.has(msg)) continue; // already tracked (e.g. user message)
-      const entryId = generateEntryId();
+      const entryId = msg.id;
       const entry: MessageEntry = {
         id: entryId,
         sessionId: this.#sessionId,
@@ -1135,7 +1061,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         data: msg,
       };
       await this.#appendEntry(entry);
-      this.#messageToEntryId.set(msg, entryId);
     }
     // Advance the start index so the next call only picks up genuinely new messages
     this.#messagesAtTurnStart = this.#messages.length;

@@ -101,21 +101,20 @@ See [extension-system.md](extension-system.md) for the extension contract.
 
 ## Core Data Structures
 
-### `ModelMessage` (from the `ai` package)
+### `IMessage` (from `@piccolo/api`)
 
-The canonical message type throughout piccolo. Imported directly from the `ai` package:
+The canonical message type throughout piccolo. `IMessage` wraps the AI SDK's
+`ModelMessage` and carries the stable UUID used for persisted message rows:
 
 ```typescript
-import type { ModelMessage } from "ai";
+import type { IMessage } from "@piccolo/api";
 
-// Variants used:
-// { role: "user";      content: string | UserContent[] }
-// { role: "assistant"; content: AssistantContent[] }
-// { role: "tool";      content: ToolResultPart[] }
-// { role: "system";    content: string }
+type IMessage = ModelMessage & {
+  id: string;
+};
 ```
 
-All session storage, agent state, and extension event payloads use `ModelMessage[]`.
+All agent state and extension event payloads use `IMessage[]`. 
 
 ### `AgentEvent` (from `piccolo-core`)
 

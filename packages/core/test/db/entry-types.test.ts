@@ -19,13 +19,10 @@ import {
 // ─── generateEntryId ──────────────────────────────────────────────────────────
 
 describe("generateEntryId", () => {
-  it("returns exactly 8 characters", () => {
-    expect(generateEntryId()).toHaveLength(8);
-  });
-
-  it("contains only lowercase hex characters", () => {
-    const id = generateEntryId();
-    expect(id).toMatch(/^[0-9a-f]{8}$/);
+  it("returns a UUID v4", () => {
+    expect(generateEntryId()).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
   });
 
   it("produces unique IDs across 1000 calls", () => {
@@ -85,14 +82,14 @@ describe("parseEntry — MessageEntry", () => {
     expect(entry.sessionId).toBe("session-1");
     expect(entry.parentId).toBe("parent-1");
     expect(entry.timestamp).toBe("2024-01-01T00:00:00.000Z");
-    expect(entry.data).toEqual(data);
+    expect(entry.data).toEqual({ ...data, id: "aabb1122" });
   });
 
   it("parses an assistant message", () => {
     const data = { role: "assistant", content: "world" };
     const entry = parseEntry(makeRow("message", data)) as MessageEntry;
     expect(entry.type).toBe("message");
-    expect(entry.data).toEqual(data);
+    expect(entry.data).toEqual({ ...data, id: "aabb1122" });
   });
 
   it("preserves parentId = null for root entry", () => {
