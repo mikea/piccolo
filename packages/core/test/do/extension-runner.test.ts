@@ -774,10 +774,7 @@ describe("createMockSession() — all methods reachable", () => {
     await expect(s.setModel("x")).resolves.toBeUndefined();
     expect(await s.listModels()).toEqual([]);
     expect(await s.getActiveTools()).toEqual([]);
-    await expect(s.appendCustomMessage("t", "c", false)).resolves.toBeUndefined();
-    await expect(s.appendCustomEntry("t")).resolves.toBeUndefined();
     expect(await s.getEntries()).toEqual([]);
-    expect(await s.getEntries("type")).toEqual([]);
     expect(await s.getContextUsage()).toMatchObject({ inputTokens: 0 });
     await expect(s.compact()).resolves.toBeUndefined();
     expect(await s.getSystemPrompt()).toBe("");

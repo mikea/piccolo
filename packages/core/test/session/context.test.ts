@@ -73,22 +73,6 @@ function branchSummary(id: string, parentId: string | null, summary: string): An
   return makeEntry({ id, parentId, type: "branch_summary" }, { summary, fromId: parentId ?? "" });
 }
 
-function customEntry(id: string, parentId: string | null): AnyEntry {
-  return makeEntry({ id, parentId, type: "custom" }, { customType: "test" });
-}
-
-function customMessage(
-  id: string,
-  parentId: string | null,
-  content: string,
-  display: boolean,
-): AnyEntry {
-  return makeEntry(
-    { id, parentId, type: "custom_message" },
-    { customType: "test", content, display },
-  );
-}
-
 function labelEntry(id: string, parentId: string | null): AnyEntry {
   return makeEntry({ id, parentId, type: "label" }, { targetId: "x", label: "foo" });
 }
@@ -217,25 +201,6 @@ describe("buildSessionContext — modelId", () => {
   });
 });
 
-// ─── buildSessionContext — custom_message ────────────────────────────────────
-
-describe("buildSessionContext — custom_message entries", () => {
-  it("includes custom_message with display: true as user message", () => {
-    const r = sessionInfo("r");
-    const cm = customMessage("cm", "r", "Injected context", true);
-    const { messages } = buildSessionContext([r, cm], "cm");
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toEqual({ role: "user", content: "Injected context", id: "cm" });
-  });
-
-  it("skips custom_message with display: false", () => {
-    const r = sessionInfo("r");
-    const cm = customMessage("cm", "r", "Hidden", false);
-    const { messages } = buildSessionContext([r, cm], "cm");
-    expect(messages).toHaveLength(0);
-  });
-});
-
 // ─── buildSessionContext — branch_summary ────────────────────────────────────
 
 describe("buildSessionContext — branch_summary entries", () => {
@@ -255,13 +220,6 @@ describe("buildSessionContext — branch_summary entries", () => {
 // ─── buildSessionContext — skipped entry types ────────────────────────────────
 
 describe("buildSessionContext — non-message entry types are skipped", () => {
-  it("skips custom entries", () => {
-    const r = sessionInfo("r");
-    const c = customEntry("c", "r");
-    const { messages } = buildSessionContext([r, c], "c");
-    expect(messages).toHaveLength(0);
-  });
-
   it("skips label entries", () => {
     const r = sessionInfo("r");
     const l = labelEntry("l", "r");
@@ -365,26 +323,22 @@ describe("buildSessionContext — mixed entry types on path", () => {
     const r = sessionInfo("r");
     const mc = modelChange("mc", "r", "openai/gpt-4o");
     const u1 = userMsg("u1", "mc", "Hello");
-    const cm = customMessage("cm", "u1", "Context injected", true);
-    const hidden = customMessage("hid", "cm", "Hidden", false);
-    const ce = customEntry("ce", "hid");
-    const a1 = assistantMsg("a1", "ce", "Reply");
+    const a1 = assistantMsg("a1", "u1", "Reply");
     const lb = labelEntry("lb", "a1");
     const bs = branchSummary("bs", "lb", "Old branch");
 
-    const entries = [r, mc, u1, cm, hidden, ce, a1, lb, bs];
+    const entries = [r, mc, u1, a1, lb, bs];
     const { messages, modelId } = buildSessionContext(entries, "bs");
 
     expect(modelId).toBe("openai/gpt-4o");
-    expect(messages).toHaveLength(4);
+    expect(messages).toHaveLength(3);
     expect(messages[0]).toEqual({ role: "user", content: "Hello", id: "u1" });
-    expect(messages[1]).toEqual({ role: "user", content: "Context injected", id: "cm" });
-    expect(messages[2]).toEqual({
+    expect(messages[1]).toEqual({
       role: "assistant",
       content: [{ type: "text", text: "Reply" }],
       id: "a1",
     });
-    expect(messages[3]).toEqual({
+    expect(messages[2]).toEqual({
       role: "assistant",
       content: "[Previous branch summary]\n\nOld branch",
       id: "bs",

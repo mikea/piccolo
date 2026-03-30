@@ -3,8 +3,6 @@ import {
   type AnyEntry,
   type BranchSummaryEntry,
   type CompactionEntry,
-  type CustomEntry,
-  type CustomMessageEntry,
   type DbEntryRow,
   generateEntryId,
   isEntryType,
@@ -40,8 +38,6 @@ describe("isEntryType", () => {
     "thinking_level_change",
     "compaction",
     "branch_summary",
-    "custom",
-    "custom_message",
     "label",
     "session_info",
   ])("returns true for valid type %s", (type) => {
@@ -54,7 +50,7 @@ describe("isEntryType", () => {
     "MESSAGE",
     "msg",
     "compaction_entry",
-    "custom message",
+    "custom",
   ])("returns false for invalid type %s", (type) => {
     expect(isEntryType(type)).toBe(false);
   });
@@ -145,57 +141,6 @@ describe("parseEntry — BranchSummaryEntry", () => {
   });
 });
 
-describe("parseEntry — CustomEntry", () => {
-  it("round-trips with payload present", () => {
-    const data = { customType: "my-ext:state", payload: { key: "value" } };
-    const entry = parseEntry(makeRow("custom", data)) as CustomEntry;
-    expect(entry.type).toBe("custom");
-    expect(entry.data).toEqual(data);
-  });
-
-  it("round-trips with payload absent", () => {
-    const data = { customType: "my-ext:state" };
-    const entry = parseEntry(makeRow("custom", data)) as CustomEntry;
-    expect(entry.data.payload).toBeUndefined();
-  });
-});
-
-describe("parseEntry — CustomMessageEntry", () => {
-  it("round-trips with string content", () => {
-    const data = { customType: "skills:inject", content: "Some injected text.", display: true };
-    const entry = parseEntry(makeRow("custom_message", data)) as CustomMessageEntry;
-    expect(entry.type).toBe("custom_message");
-    expect(entry.data).toEqual(data);
-  });
-
-  it("round-trips with UserContent array", () => {
-    const data = {
-      customType: "skills:inject",
-      content: [{ type: "text", text: "Part A" }],
-      display: false,
-    };
-    const entry = parseEntry(makeRow("custom_message", data)) as CustomMessageEntry;
-    expect(entry.data.content).toEqual(data.content);
-  });
-
-  it("round-trips with details present", () => {
-    const data = {
-      customType: "ext:x",
-      content: "msg",
-      display: true,
-      details: { extra: 42 },
-    };
-    const entry = parseEntry(makeRow("custom_message", data)) as CustomMessageEntry;
-    expect(entry.data.details).toEqual({ extra: 42 });
-  });
-
-  it("round-trips with details absent", () => {
-    const data = { customType: "ext:x", content: "msg", display: true };
-    const entry = parseEntry(makeRow("custom_message", data)) as CustomMessageEntry;
-    expect(entry.data.details).toBeUndefined();
-  });
-});
-
 describe("parseEntry — LabelEntry", () => {
   it("round-trips with label string", () => {
     const data = { targetId: "a1b2c3d4", label: "checkpoint" };
@@ -242,7 +187,7 @@ describe("parseEntry — error handling", () => {
 // ─── AnyEntry discriminated union — exhaustiveness check ─────────────────────
 
 describe("AnyEntry — exhaustiveness", () => {
-  it("covers all 9 entry types via discriminated union switch", () => {
+  it("covers all 7 entry types via discriminated union switch", () => {
     // This test verifies at the TypeScript level that the switch is exhaustive.
     // If a new entry type is added without updating the union, this function
     // will produce a tsc error on the `never` branch.
@@ -258,10 +203,6 @@ describe("AnyEntry — exhaustiveness", () => {
           return "compaction";
         case "branch_summary":
           return "branch_summary";
-        case "custom":
-          return "custom";
-        case "custom_message":
-          return "custom_message";
         case "label":
           return "label";
         case "session_info":
@@ -280,8 +221,6 @@ describe("AnyEntry — exhaustiveness", () => {
       "thinking_level_change",
       "compaction",
       "branch_summary",
-      "custom",
-      "custom_message",
       "label",
       "session_info",
     ];
@@ -292,8 +231,6 @@ describe("AnyEntry — exhaustiveness", () => {
       thinking_level_change: { thinkingLevel: "high" },
       compaction: { summary: "s", firstKeptEntryId: "id", tokensBefore: 0 },
       branch_summary: { summary: "s", fromId: "id" },
-      custom: { customType: "t" },
-      custom_message: { customType: "t", content: "c", display: true },
       label: { targetId: "id", label: "l" },
       session_info: {},
     };

@@ -76,6 +76,38 @@ function makeModelChangeEntry(
   };
 }
 
+function makeCompactionEntry(
+  id: string,
+  sessionId: string,
+  parentId: string | null,
+  firstKeptEntryId: string,
+): AnyEntry {
+  return {
+    id,
+    sessionId,
+    parentId,
+    type: "compaction",
+    timestamp: ts(),
+    data: { summary: "summary", firstKeptEntryId, tokensBefore: 0 },
+  };
+}
+
+function makeBranchSummaryEntry(
+  id: string,
+  sessionId: string,
+  parentId: string | null,
+  fromId: string,
+): AnyEntry {
+  return {
+    id,
+    sessionId,
+    parentId,
+    type: "branch_summary",
+    timestamp: ts(),
+    data: { summary: "branch", fromId },
+  };
+}
+
 async function seedSession(sessionId: string, userId = "user-1"): Promise<void> {
   await commitSession(
     sessionId,
@@ -504,5 +536,36 @@ describe("forkSession", () => {
     );
     const newSession = await getSession(env.SESSIONS_DB, newSid);
     expect(newSession?.leaf_id).not.toBeNull();
+  });
+
+  it("remaps internal ID references for compaction and branch_summary", async () => {
+    const sid = createSession();
+    await seedSession(sid);
+    const e1 = makeMessageEntry(entryId(), sid, null, "user", "root", 0);
+    const e2 = makeMessageEntry(entryId(), sid, e1.id, "assistant", "reply", 1);
+    const comp = makeCompactionEntry(entryId(), sid, e2.id, e2.id);
+    const bs = makeBranchSummaryEntry(entryId(), sid, comp.id, e1.id);
+    await flushPendingEntries([e1, e2, comp, bs], sid, bs.id, env.SESSIONS_DB);
+
+    const newSid = await forkSession(
+      sid,
+      undefined,
+      bs.id,
+      "user-1",
+      "anthropic/claude-sonnet-4-5",
+      env.SESSIONS_DB,
+    );
+    const newRows = await getEntries(env.SESSIONS_DB, newSid);
+    const newByType = newRows.map((r) => JSON.parse(r.data) as Record<string, unknown>);
+    const newIds = new Set(newRows.map((r) => r.id));
+
+    const compData = newByType.find((d) => "firstKeptEntryId" in d);
+    const branchData = newByType.find((d) => "fromId" in d);
+    expect(typeof compData?.["firstKeptEntryId"]).toBe("string");
+    expect(typeof branchData?.["fromId"]).toBe("string");
+    expect(newIds.has(String(compData?.["firstKeptEntryId"]))).toBe(true);
+    expect(newIds.has(String(branchData?.["fromId"]))).toBe(true);
+    expect(compData?.["firstKeptEntryId"]).not.toBe(e2.id);
+    expect(branchData?.["fromId"]).not.toBe(e1.id);
   });
 });

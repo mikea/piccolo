@@ -5,6 +5,7 @@ import type { DbEntryRow } from "../../src/db/entry-types.ts";
 import {
   deleteSession,
   getEntries,
+  getPathEntriesBackward,
   getSession,
   insertEntries,
   insertEntry,
@@ -273,7 +274,10 @@ describe("insertEntry + getEntries", () => {
     await insertEntry(env.SESSIONS_DB, entry);
     const rows = await getEntries(env.SESSIONS_DB, "ie-s1");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual(entry);
+    expect(rows[0]).toEqual({
+      ...entry,
+      append_seq: expect.any(Number),
+    });
   });
 
   it("data JSON string is preserved exactly", async () => {
@@ -289,7 +293,7 @@ describe("insertEntry + getEntries", () => {
     expect(JSON.parse(rows[0]?.data ?? "{}")).toEqual(data);
   });
 
-  it("entries are returned in timestamp ASC order", async () => {
+  it("entries are returned in append order", async () => {
     await insertSession(env.SESSIONS_DB, makeSession({ id: "ie-s3" }));
     const timestamps = [
       "2024-01-03T00:00:00.000Z",
@@ -304,12 +308,38 @@ describe("insertEntry + getEntries", () => {
       );
     }
     const rows = await getEntries(env.SESSIONS_DB, "ie-s3");
-    expect(rows.map((r) => r.timestamp)).toEqual([...timestamps].sort());
+    expect(rows.map((r) => r.id)).toEqual(["ie-ts0", "ie-ts1", "ie-ts2"]);
+    expect(rows.map((r) => r.append_seq)).toEqual([
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+    ]);
   });
 
   it("getEntries returns empty array for unknown session", async () => {
     const rows = await getEntries(env.SESSIONS_DB, "no-such-session");
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("getPathEntriesBackward", () => {
+  it("returns path rows from leaf to root in append-desc order", async () => {
+    await insertSession(env.SESSIONS_DB, makeSession({ id: "path-s1" }));
+    await insertEntry(
+      env.SESSIONS_DB,
+      makeEntry({ id: "p1", session_id: "path-s1", parent_id: null }),
+    );
+    await insertEntry(
+      env.SESSIONS_DB,
+      makeEntry({ id: "p2", session_id: "path-s1", parent_id: "p1" }),
+    );
+    await insertEntry(
+      env.SESSIONS_DB,
+      makeEntry({ id: "p3", session_id: "path-s1", parent_id: "p2" }),
+    );
+
+    const rows = await getPathEntriesBackward(env.SESSIONS_DB, "path-s1", "p3", 10);
+    expect(rows.map((r) => r.id)).toEqual(["p3", "p2", "p1"]);
   });
 });
 

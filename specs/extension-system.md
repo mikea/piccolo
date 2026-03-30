@@ -300,12 +300,8 @@ export default class TodoExtension extends WorkerEntrypoint {
   async getTools() { return [TodoExtension.todoDescriptor]; }
 
   async execute(toolCallId, params, ctx) {
-    // Rebuild state from custom entries (survives compaction since entries are in the session tree)
-    const entries = await ctx.getEntries("todo");
-    let items: Array<{ text: string; done: boolean }> = [];
-    for (const e of entries) {
-      items = (e.data as any).items;
-    }
+    // Rebuild state from extension-owned storage (KV/D1/R2).
+    let items: Array<{ text: string; done: boolean }> = await loadItems(this.env, ctx.sessionId());
 
     if (params.action === "list") {
       const text = items.length === 0
@@ -322,8 +318,8 @@ export default class TodoExtension extends WorkerEntrypoint {
       items = items.filter(i => i.text !== params.item);
     }
 
-    // Persist new state
-    await ctx.appendCustomEntry("todo", { items });
+    // Persist new state in extension-owned storage
+    await saveItems(this.env, await ctx.sessionId(), items);
     return { content: [{ type: "text" as const, text: `Todo list updated.` }], details: { items } };
   }
 }
@@ -406,7 +402,7 @@ export default class HelpExtension extends WorkerEntrypoint {
         `Context: ${Math.round(usage.usedFraction * 100)}% (${usage.inputTokens} / ${usage.contextWindowTokens} tokens)`,
         `Session: ${await ctx.getName() ?? ctx.sessionId}`,
       ].join("\n");
-      await ctx.appendCustomMessage("status-reply", text, true);
+      await ctx.sendUserMessage(text);
       return { action: "handled" as const };
     }
     return { action: "continue" as const };

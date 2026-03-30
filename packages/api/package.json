@@ -6,6 +6,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "dependencies": {
+    "@ai-sdk/provider-utils": "^4.0.21",
     "ai": "^6.0.138"
   },
   "devDependencies": {

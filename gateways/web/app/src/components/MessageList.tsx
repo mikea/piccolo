@@ -1,7 +1,7 @@
 /**
  * MessageList.tsx — Scrollable list of chat history entries.
  *
- * Accepts HistoryEntry[] directly from the server (via ISession.getHistory()).
+ * Accepts AnyEntry[] directly from the server (via ISession.getEntries()).
  * No client-side Message type — the server is the source of truth.
  */
 

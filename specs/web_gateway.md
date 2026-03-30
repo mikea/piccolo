@@ -78,7 +78,7 @@ Static assets are served from `gateways/web/app/static` (configured as Vite `pub
 
 The UI holds **no conversation state**. All state lives server-side in `AgentSessionDO`. The SPA:
 
-1. Calls `ISession.getHistory()`, `ISession.getModel()`, `ISession.getName()`, and `ISession.getCurrentTurn()` in parallel on mount.
+1. Calls `ISession.getEntries()`, `ISession.getModel()`, `ISession.getName()`, and `ISession.getCurrentTurn()` in parallel on mount.
 2. Calls `session.subscribe(observer)` once — all `AgentEvent`s from all turns arrive through this single subscription. `isStreaming` is driven by `start` / `finish` events.
 3. Calls `ISession.getCurrentTurn()` on mount — non-undefined means a turn is already in progress (e.g. page reload mid-turn); set `isStreaming=true` immediately.
 4. On user send: calls `ISession.prompt(text)`. Events arrive via the existing session subscription. No per-turn observable needed.
@@ -87,7 +87,7 @@ This means reloading the page while a turn is streaming reconnects and displays 
 
 ### Reasoning display
 
-`reasoning-delta` events are accumulated into an ephemeral `reasoning: string` field on the streaming `UIEntry` (an extension of the `assistant` `HistoryEntry`). This field is **not** persisted — it exists only for the duration of the streaming turn.
+`reasoning-delta` events are accumulated into an ephemeral `reasoning: string` field on the streaming assistant UI entry. This field is **not** persisted — it exists only for the duration of the streaming turn.
 
 The `ReasoningBlock` component renders the reasoning text:
 

@@ -229,13 +229,29 @@ export async function forkSession(
     const newId = generateEntryId();
     idMap.set(entry.id, newId);
     const newParentId = entry.parentId !== null ? (idMap.get(entry.parentId) ?? null) : null;
-    const newData =
-      entry.type === "message"
-        ? {
-            ...entry.data,
-            id: newId,
-          }
-        : entry.data;
+    let newData: unknown = entry.data;
+    if (entry.type === "message") {
+      newData = {
+        ...entry.data,
+        id: newId,
+      };
+    } else if (entry.type === "compaction") {
+      const firstKept = entry.data.firstKeptEntryId;
+      newData = {
+        ...entry.data,
+        firstKeptEntryId: firstKept ? (idMap.get(firstKept) ?? firstKept) : firstKept,
+      };
+    } else if (entry.type === "branch_summary") {
+      newData = {
+        ...entry.data,
+        fromId: idMap.get(entry.data.fromId) ?? entry.data.fromId,
+      };
+    } else if (entry.type === "label") {
+      newData = {
+        ...entry.data,
+        targetId: idMap.get(entry.data.targetId) ?? entry.data.targetId,
+      };
+    }
     return {
       ...entry,
       id: newId,

@@ -77,16 +77,17 @@ CREATE TABLE sessions (
 );
 
 CREATE TABLE entries (
+  append_seq  INTEGER PRIMARY KEY AUTOINCREMENT,  -- canonical append order within DB
   id          TEXT    NOT NULL,             -- UUID v4; for message rows this also matches IMessage.id
   session_id  TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   parent_id   TEXT,                         -- null for root entry
   type        TEXT    NOT NULL,             -- discriminant (see Entry Types)
   timestamp   TEXT    NOT NULL,             -- ISO 8601
   data        TEXT    NOT NULL CHECK (json_valid(data)),  -- JSON payload; DB-level validity enforced
-  PRIMARY KEY (session_id, id)
+  UNIQUE (session_id, id)
 );
 
-CREATE INDEX entries_session     ON entries(session_id);
+CREATE INDEX entries_session     ON entries(session_id, append_seq);
 CREATE INDEX entries_parent      ON entries(session_id, parent_id);
 CREATE INDEX sessions_user       ON sessions(user_id, updated_at DESC);
 ```
@@ -129,8 +130,6 @@ type EntryType =
   | "thinking_level_change"
   | "compaction"
   | "branch_summary"
-  | "custom"
-  | "custom_message"
   | "label"
   | "session_info";
 ```
@@ -166,18 +165,6 @@ interface CompactionEntry extends EntryBase {
 interface BranchSummaryEntry extends EntryBase {
   type: "branch_summary";
   data: { summary: string; fromId: string; fromHook?: boolean };
-}
-
-// "custom" — opaque extension state, NOT sent to LLM
-interface CustomEntry extends EntryBase {
-  type: "custom";
-  data: { customType: string; payload?: unknown };
-}
-
-// "custom_message" — extension-defined content sent to LLM
-interface CustomMessageEntry extends EntryBase {
-  type: "custom_message";
-  data: { customType: string; content: string | UserContent; display: boolean; details?: unknown };
 }
 
 // "label" — user bookmark on an entry
@@ -292,11 +279,6 @@ interface DOState {
   createdAt: number;   // Unix ms; 0 = session not yet committed to D1
   updatedAt: number;
 
-  // In-memory message list; rebuilt from D1 on cold start
-  // Every append clones messages via structuredClone before storing, so
-  // session state never retains external object references.
-  messages: IMessage[];
-
   // Inlined agent state (no separate Agent class)
   model: LanguageModel;
   error: string | undefined;
@@ -312,19 +294,9 @@ interface DOState {
   assembledSystemPrompt: string;  // cached; populated lazily on first getSystemPrompt()
   tools: ITool[] | undefined;     // cached; populated lazily on first getSystemPrompt()
 
-  // In-memory cache of all AnyEntry objects on the current branch path (root→leaf order).
-  // Populated on cold start from D1. New custom/custom_message entries appended here
-  // when appendCustomEntry/appendCustomMessage are called.
-  // Used by ISession.getEntries() to avoid a D1 round-trip.
-  branchEntries: AnyEntry[];
-
   // Token counts from the last completed agent turn.
   // lastInputTokens: updated from finish.totalUsage; used for compaction threshold.
   lastInputTokens: number;
-
-  // Count of #messages at the start of the current prompt() call.
-  // #onAgentEnd() slices from this index to find new messages to persist.
-  messagesAtTurnStart: number;
 }
 ```
 
@@ -335,18 +307,9 @@ When the DO starts cold (evicted and restarted), `initialize()` runs before any 
 ```
 1. Read sessionId from DO storage (set on first prompt)
 2. If not found: treat as a brand-new session, skip D1 load
-3. Query D1: SELECT * FROM entries WHERE session_id = ? ORDER BY timestamp ASC
-4. buildSessionContext(entries, leafId):
-   a. Walk from leafId → root via parentId links; reverse to root-first order
-   b. Find the last "compaction" entry on the path
-   c. If compaction found:
-      - messages = [ synthetic summary UserMessage, ...entries after firstKeptEntryId ]
-   d. Else:
-      - messages = all "message" and "custom_message" entries on path, in order
-   e. Extract modelId from last "model_change" entry, or sessions.model_id
-5. Restore agent.messages = reconstructed messages
-6. Restore agent.modelId
-7. Discover `EXTENSION_*` bindings and initialise `ExtensionRunner`
+3. Restore metadata (`userId`, `leafId`, `name`, timestamps)
+4. Discover `EXTENSION_*` bindings and initialise `ExtensionRunner`
+5. Runtime context is reconstructed from D1 per turn via `ContextIterator`
 ```
 
 ### `newSession()` (DO public RPC)
@@ -415,7 +378,7 @@ off when the RPC call frame completes.
 
 #### Per-message append
 
-When a persistent entry is created (user/assistant/tool/system message, model change, custom entry, compaction):
+When a persistent entry is created (user/assistant/tool/system message, model change, compaction):
 
 ```
 1. For each new ModelMessage in agent.state.messages since last persistence point:
@@ -637,13 +600,13 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-Compaction is implemented by `compact()` in `packages/core/src/compact.ts`, called by `AgentSessionDO.compact()`. It reads `IMessage[]`, returns a `CompactionEntry` plus the replacement message list, and the DO persists the entry immediately.
+Compaction is implemented by `compact()` in `packages/core/src/compact.ts`, called by `AgentSessionDO.compact()`. The DO first reconstructs context from D1, then compacts that reconstructed message list.
 
 ```
 1. Emit before_compact to extensions → BeforeCompactResult
    - If cancel: return (no entry written)
    - If summary provided: use it, skip LLM call
-   - Otherwise: call agentCompact(#messages, keepRecentTokens, #model)
+   - Otherwise: call agentCompact(reconstructedMessages, keepRecentTokens, #model)
 
 2. If summary === "" and no extension summary: return (nothing to summarise)
 
@@ -651,7 +614,7 @@ Compaction is implemented by `compact()` in `packages/core/src/compact.ts`, call
 
 4. Build CompactionEntry, persist immediately, advance #leafId
 
-5. Replace #messages = [summaryMessage, ...toKeep]
+5. Persist the compaction entry immediately (no deferred flush)
 ```
 
 No deferred flush is required — compaction entries are persisted immediately.
@@ -664,7 +627,7 @@ No deferred flush is required — compaction entries are persisted immediately.
 
 `SessionTarget extends RpcTarget` is a thin JSRPC-serialisable proxy that delegates every `ISession` method to the owning `AgentSessionDO`. One `SessionTarget` is created per DO lifetime (in `#initialize()`) and stored as `#rpcCtx`. It is passed to extension workers and threaded into tool `execute()` calls — this is the JSRPC-correct approach since `DurableObject` instances cannot be passed directly over dispatch RPC.
 
-All persistent mutations (model changes, custom entries, messages, compaction) write directly to D1 as soon as they are created, and also append to `#branchEntries` in-memory.
+All persistent mutations (model changes, custom entries, messages, compaction) write directly to D1 as soon as they are created. There is no persistent in-memory message cache.
 
 ### Context injection into tool execute()
 
@@ -672,56 +635,26 @@ All persistent mutations (model changes, custom entries, messages, compaction) w
 
 ---
 
-## Context Reconstruction — `buildSessionContext`
+## Context Reconstruction — `ContextIterator` + `buildSessionContextFromDb`
 
-Called on cold start and after forking. Produces the `IMessage[]` list the agent receives.
+Context is reconstructed directly from D1 whenever needed (`prompt()`, `getEntries()`, `compact()`, `getContextUsage()`).
 
 ```typescript
-function buildSessionContext(
-  entries: EntryBase[],
-  leafId: string | null,
-): { messages: IMessage[]; modelId: string } {
-  // 1. Walk from leafId → root collecting entry IDs, then reverse
-  const path = walkToRoot(entries, leafId).reverse();
+class ContextIterator implements AsyncIterable<AnyEntry> {
+  // Pages path rows from D1 using recursive CTE, newest -> oldest, ordered by append_seq DESC.
+  // When a branch_summary entry is seen, jumps to branch_summary.data.fromId and starts a new query.
+}
 
-  // 2. Find the most recent compaction entry on the path
-  const lastCompaction = [...path].reverse().find(e => e.type === "compaction") as CompactionEntry | undefined;
-
-  // 3. Determine which entries to include
-  const relevant = lastCompaction
-    ? path.filter(e => e.id === lastCompaction.id || comesAfter(e, lastCompaction, path))
-    : path;
-
-  // 4. Convert to IMessage[], checking each against modelMessageSchema (log only)
-  const messages: IMessage[] = [];
-  for (const entry of relevant) {
-    let msg: ModelMessage | undefined;
-    if (entry.type === "compaction") {
-      // Replace all summarised history with a single synthetic user message
-      msg = { role: "user", content: `[Conversation Summary]\n\n${entry.data.summary}` };
-    } else if (entry.type === "message") {
-      msg = entry.data as ModelMessage;
-    } else if (entry.type === "custom_message" && entry.data.display) {
-      msg = { role: "user", content: entry.data.content };
-    } else if (entry.type === "branch_summary") {
-      msg = { role: "assistant", content: `[Previous branch summary]\n\n${entry.data.summary}` };
-    }
-    // All other entry types skipped
-    if (msg !== undefined) {
-      // Check against AI SDK schema for diagnostics; messages are never dropped.
-      const result = modelMessageSchema.safeParse(msg);
-      if (!result.success) {
-        console.error(`[context] invalid ModelMessage in entry ${entry.id}:`, msg, result.error.issues);
-      }
-      messages.push({ ...msg, id: entry.id });
-    }
-  }
-
-  // 5. Extract most recent modelId from model_change entries
-  const lastModelChange = [...path].reverse().find(e => e.type === "model_change") as ModelChangeEntry | undefined;
-  const modelId = lastModelChange?.data.modelId ?? DEFAULT_MODEL_ID;
-
-  return { messages, modelId };
+async function buildSessionContextFromDb(...): Promise<{ messages: IMessage[]; modelId: string }> {
+  // 1. Iterate newest -> oldest via ContextIterator.
+  // 2. Stop when one of:
+  //    - root/end reached
+  //    - context token budget reached
+  //    - compaction entry encountered
+  // 3. If compaction encountered, keep reading until firstKeptEntryId is reached
+  //    (or path end if missing).
+  // 4. Convert selected entries to IMessage[] in root -> leaf order.
+  // 5. Emit a synthetic summary message for compaction entries.
 }
 ```
 
@@ -751,6 +684,9 @@ async function forkSession(
 
   // 4. Copy all path entries with new IDs into new session
   // Remap parentId references: old ID → new ID
+  // Also remap internal references in entry payloads:
+  //   message.data.id, compaction.data.firstKeptEntryId,
+  //   branch_summary.data.fromId, label.data.targetId
   const idMap = new Map<string, string>();
   const newEntries = path.map(e => {
     const newId = generateEntryId();
@@ -804,13 +740,13 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
 
 The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`, with helper functions in `packages/core/src/compact.ts` and `packages/core/src/agent-tools.ts`.
 
-The DO stores in-memory turn history in a `Messages` helper (`packages/core/src/messages.ts`). `Messages` is intentionally array-compatible and iterable so existing array consumers such as `streamText(...)`, compaction, and persistence can read it directly.
+The DO does not keep a persistent in-memory conversation cache. For each turn it reconstructs context from D1, keeps only turn-local streaming state in memory, and discards it after persistence.
 
-### `#startTurn(initialMessages)`
+### `#startTurn()`
 
-Pushes `initialMessages` onto `#messages`, creates an `AbortController` stored as `#agentAbortController`, and registers the stream with the Workers runtime via `ctx.waitUntil(this.#runStream(ac.signal))`.
+Creates an `AbortController` stored as `#agentAbortController`, and registers the stream with the Workers runtime via `ctx.waitUntil(this.#runStream(ac.signal, turnMessages))`.
 
-### `#runStream(signal)`
+### `#runStream(signal, turnMessages)`
 
 Core LLM loop. Validates messages, calls `streamText(...)` from the `ai` SDK, and dispatches every AI SDK callback to `#emitTurnEvent(event)`. In the `finally` block (non-abort path) it emits the `finish` event and registers `#onAgentEnd()` via `ctx.waitUntil`.
 
@@ -818,7 +754,7 @@ Key callbacks:
 - `prepareStep` — emits `step-start`; on step > 0 dequeues one steering message from `#steeringQueue` via `#dequeueSteer()`
 - `onChunk` — emits `text-delta`, `reasoning-delta`, `tool-call`, `tool-result`
 - `onStepFinish` — emits `tool-result` for tool errors, then `step-finish`
-- `onFinish` — captures `totalUsage`, appends `response.messages` to `#messages`
+- `onFinish` — captures `totalUsage`, persists generated messages directly to D1
 - `onError` / catch — emits `error`, clears `#agentAbortController`
 
 ### `#emitTurnEvent(event)`
@@ -829,15 +765,15 @@ Calls `#onTurnEvent(event)` (side effects) then `#observable.emit(event)` (subsc
 
 Called synchronously for every `AgentEvent`. Handles:
 
-1. **In-flight history** — accumulates `#streamingAssistantText` and `#streamingToolCalls` for `getHistory()` mid-turn
+1. **In-flight history** — accumulates `#streamingAssistantText` for streaming UI events mid-turn
 2. **Token counts** — updates `#lastInputTokens` from `step-finish.usage` and `finish.totalUsage`; emits a `usage` event after each
 3. **Listener dispatch** — calls `#notifyListeners(event)` (extension runner etc.)
 
 ### `#onAgentEnd()`
 
-Called via `ctx.waitUntil` when finish fires. Persists new messages to D1, then:
-- If `#followUpQueue` is non-empty: dequeues one text, advances `#messagesAtTurnStart`, calls `#startTurn([userMessage])` and returns without clearing `#currentTurn`
-- Otherwise: clears `#currentTurn = null`, fires `turn_flushed` to listeners
+Called via `ctx.waitUntil` when finish fires, then:
+- If `#followUpQueue` is non-empty: dequeues one text, persists it immediately as a user message, rebuilds context from D1, calls `#startTurn()`, and returns without clearing `#currentTurn`
+- Otherwise: sets `#currentTurn = null`, fires `turn_flushed` to listeners
 
 ### `getSystemPrompt()` — lazy assembly
 

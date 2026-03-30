@@ -96,3 +96,9 @@ Keeping spec and code in sync is not a housekeeping task. It is the core discipl
 ## Code verification
 
 - run `just all` to verify all the changes before finishing work
+
+## Type Discipline
+
+- Avoid `unknown` in application/domain typing when a concrete SDK or API type exists.
+- For AI message parts, use exported SDK types (e.g. `AssistantContent`, `ReasoningPart`, `ToolCallPart`, `ToolResultPart`) re-exported from `@piccolo/api`.
+- Type guard helpers must return concrete predicates (`value is SomeSpecificPartType`), not broad/object-shaped fallbacks.

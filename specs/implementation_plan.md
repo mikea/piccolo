@@ -390,12 +390,12 @@ extension handler call and every tool `execute()` call. Eliminates the former
 **Deliverables:**
 - `IAgentSession` — minimal empty interface in `packages/agent`; typed as `ctx` in `IAgentTool.execute()`
 - `Agent.setContext(ctx: IAgentSession)` + `toAiSdkTools(tools, ctx)` — threads session into tool execute calls
-- `ISession extends IAgentSession` in `packages/core/src/types.ts` — full unified surface; all extension-specific methods merged in (`sendUserMessage`, `appendCustomMessage`, `appendCustomEntry`, `getEntries`, `getSystemPrompt`, `listModels`, `getActiveTools`, `setActiveTools`)
+- `ISession extends IAgentSession` in `packages/core/src/types.ts` — full unified surface; extension-specific methods merged in (`sendUserMessage`, `getSystemPrompt`, `listModels`, `getActiveTools`, `setActiveTools`)
 - `packages/core/src/do/do-state.ts` — extracted `DOState` interface; adds `branchEntries: AnyEntry[]` and `session: ISession | null`
 - `packages/core/src/do/context.ts` — `SessionImpl extends RpcTarget implements ISession`; holds live `DOState` reference; delegates all methods; no D1 flush (flush at `finish`)
 - `ExtensionRunner` stores `ITool[]` directly from extensions (no adapter layer)
 - `AgentSessionDO` wired: creates `SessionImpl` before `extensionRunner.initialize()`, stores in `doState.session`, calls `agent.setContext(session)` at start of each `prompt()`
-- `doState.branchEntries` populated from D1 on cold start; `appendCustomEntry`/`appendCustomMessage` append to both `pendingEntries` and `branchEntries`; `getEntries()` reads from `branchEntries` (no D1 roundtrip)
+- Session context is reconstructed from D1 when needed (no branchEntries cache)
 - `test/mocks/extension-stub.ts` — `createMockSession()` helper; all `ctx` params updated to `ISession`
 - 38 unit tests for `SessionImpl` in `test/do/context.test.ts`
 
@@ -432,8 +432,8 @@ extension handler call and every tool `execute()` call. Eliminates the former
 | Caller | Receives | Purpose |
 |---|---|---|
 | Gateways (step 9) | `ISession` via `IPiccoloCore.newSession()` | Start prompts, manage session metadata |
-| Extension handlers | `ISession` as `ctx` param | React to events, append entries, steer messages |
-| Tool `execute()` | `ISession` as `ctx` param (via `agent.setContext`) | Access session state, append custom entries |
+| Extension handlers | `ISession` as `ctx` param | React to events, steer messages |
+| Tool `execute()` | `ISession` as `ctx` param (via `agent.setContext`) | Access session state |
 
 #### `IAgentSession` rationale
 
@@ -444,11 +444,8 @@ always a full `ISession`. Tools cast to `ISession` inside `execute()`.
 
 #### `branchEntries` and cold start
 
-On cold start, `AgentSessionDO.#initialize()` calls `walkToRoot(allEntries, leafId)`
-and stores the result in `doState.branchEntries`. New entries from
-`appendCustomEntry`/`appendCustomMessage`/`setName`/`setModel` are pushed to both
-`pendingEntries` (for D1 flush) and `branchEntries` (for `getEntries()` queries).
-This avoids a D1 roundtrip on every `getEntries()` call.
+On cold start, `AgentSessionDO.#initialize()` restores metadata from the `sessions`
+row. Conversation context/messages are loaded from D1 on demand.
 
 #### Direct `ITool` dispatch
 

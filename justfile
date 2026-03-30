@@ -1,29 +1,38 @@
 all: compile test check
 
 check:
-    pnpm check
+    mise x -- pnpm check
 
 compile:
-    pnpm tsc
+    mise x -- pnpm tsc
 
 test:
-    pnpm test
+    mise x -- pnpm test
 
-deploy-all: deploy-extensions deploy-core deploy-web
+lint:
+    mise x -- pnpm lint
+
+deploy-all: deploy-core deploy-web deploy-extensions
 
 deploy-core:
-    pnpm deploy:core
+    mise x -- pnpm deploy:core
 
 deploy-extensions: deploy-fetch deploy-r2 deploy-instructions
 
 deploy-web:
-    pnpm deploy:web
+    mise x -- pnpm deploy:web
 
 deploy-fetch:
-    pnpm wrangler deploy --config extensions/fetch-tool/wrangler.jsonc
+    mise x -- pnpm wrangler deploy --config extensions/fetch-tool/wrangler.jsonc
 
 deploy-r2:
-    pnpm wrangler deploy --config extensions/r2-tool/wrangler.jsonc
+    mise x -- pnpm wrangler deploy --config extensions/r2-tool/wrangler.jsonc
 
 deploy-instructions:
-    pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc
+    mise x -- pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc
+
+migrations:
+    mise x -- pnpm wrangler d1 migrations apply mikea-piccolo-sessions --remote -c packages/core/wrangler.jsonc
+
+dev:
+    mise x -- pnpm wrangler dev -c packages/core/wrangler.dev.jsonc

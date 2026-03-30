@@ -97,6 +97,21 @@ export async function updateSessionLeaf(
 }
 
 /**
+ * Update the active model and updated_at timestamp for a session.
+ */
+export async function updateSessionModel(
+  db: D1Database,
+  sessionId: string,
+  modelId: string,
+  updatedAt: number,
+): Promise<void> {
+  await db
+    .prepare("UPDATE sessions SET model_id = ?, updated_at = ? WHERE id = ?")
+    .bind(modelId, updatedAt, sessionId)
+    .run();
+}
+
+/**
  * Fetch a single session row by ID.
  * Returns null if the session does not exist (does not throw).
  */
@@ -180,18 +195,49 @@ export async function insertEntries(db: D1Database, rows: DbEntryRow[]): Promise
 }
 
 /**
- * Fetch all entry rows for a session, ordered by timestamp ascending.
+ * Fetch all entry rows for a session, ordered by DB append sequence ascending.
  * Returns raw DbEntryRow[] — callers use parseEntry() to get typed AnyEntry[].
  */
 export async function getEntries(db: D1Database, sessionId: string): Promise<DbEntryRow[]> {
   const result = await db
     .prepare(
-      `SELECT id, session_id, parent_id, type, timestamp, data
+      `SELECT append_seq, id, session_id, parent_id, type, timestamp, data
        FROM entries
        WHERE session_id = ?
-       ORDER BY timestamp ASC`,
+       ORDER BY append_seq ASC`,
     )
     .bind(sessionId)
+    .all<DbEntryRow>();
+  return result.results;
+}
+
+/**
+ * Walk a session path backwards from a starting entry ID, returning at most
+ * `limit` rows in append-descending order.
+ */
+export async function getPathEntriesBackward(
+  db: D1Database,
+  sessionId: string,
+  fromEntryId: string,
+  limit: number,
+): Promise<DbEntryRow[]> {
+  const result = await db
+    .prepare(
+      `WITH RECURSIVE path AS (
+         SELECT append_seq, id, session_id, parent_id, type, timestamp, data
+         FROM entries
+         WHERE session_id = ? AND id = ?
+         UNION ALL
+         SELECT e.append_seq, e.id, e.session_id, e.parent_id, e.type, e.timestamp, e.data
+         FROM entries e
+         JOIN path p ON e.session_id = p.session_id AND e.id = p.parent_id
+       )
+       SELECT append_seq, id, session_id, parent_id, type, timestamp, data
+       FROM path
+       ORDER BY append_seq DESC
+       LIMIT ?`,
+    )
+    .bind(sessionId, fromEntryId, limit)
     .all<DbEntryRow>();
   return result.results;
 }

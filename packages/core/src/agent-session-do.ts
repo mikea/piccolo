@@ -21,11 +21,10 @@
 import { DurableObject, RpcTarget } from "cloudflare:workers";
 import type {
   AgentEvent,
+  AnyEntry as ApiAnyEntry,
   Attachment,
   BeforeAgentStartResult,
   ContextUsage,
-  CustomEntry as CustomEntryType,
-  HistoryEntry,
   IDisposable,
   IGatewayCallback,
   IMessage,
@@ -47,18 +46,15 @@ import { toAiSdkTools } from "./agent-tools.ts";
 import { compact as compactImpl } from "./compact.ts";
 import type {
   AnyEntry,
-  CustomEntry,
-  CustomMessageEntry,
   MessageEntry,
   ModelChangeEntry,
   SessionInfoEntry,
 } from "./db/entry-types.ts";
 import { generateEntryId, parseEntry } from "./db/entry-types.ts";
-import { getEntries, getSession } from "./db/schema.ts";
+import { getEntries as getEntryRows, getSession, updateSessionModel } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
-import { Messages } from "./messages.ts";
 import { ObservableImpl } from "./observable-impl.ts";
-import { buildSessionContext, walkToRoot } from "./session/context.ts";
+import { buildSessionContextFromDb, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
   deleteSession,
@@ -132,17 +128,8 @@ export class SessionTarget extends RpcTarget implements ISession {
   getActiveTools(): Promise<ToolDescriptor[]> {
     return this.#do.getActiveTools();
   }
-  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void> {
-    return this.#do.appendCustomMessage(customType, content, display);
-  }
-  appendCustomEntry(customType: string, data?: unknown): Promise<void> {
-    return this.#do.appendCustomEntry(customType, data);
-  }
-  getEntries(customType?: string): Promise<CustomEntryType[]> {
-    return this.#do.getEntries(customType);
-  }
-  getHistory(): Promise<HistoryEntry[]> {
-    return this.#do.getHistory();
+  getEntries(): Promise<ApiAnyEntry[]> {
+    return this.#do.getEntries();
   }
   subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
     return this.#do.subscribe(observer);
@@ -184,10 +171,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #name: string | undefined = undefined;
   #createdAt = 0;
   #updatedAt = 0;
-
-  // ─── In-memory session state ──────────────────────────────────────────────
-  #messages = new Messages([]);
-  #branchEntries: AnyEntry[] = [];
 
   // ─── Listeners ────────────────────────────────────────────────────────────
   #listeners = new Set<ISessionListener>();
@@ -238,13 +221,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   #currentTurn: TurnImpl | null = null;
   #followUpQueue: string[] = [];
   #lastInputTokens = 0;
-  #messagesAtTurnStart = 0;
-
-  // ─── Live streaming state (for getHistory / subscribe) ────────────────────
-  // Tracks in-flight assistant content so getHistory() can return it before
-  // the turn completes and commits to D1. Cleared on finish / error.
-  #streamingAssistantText = "";
-  #streamingToolCalls: Map<string, { toolName: string; input: unknown }> = new Map();
+  #activeTurnInputTokens = 0;
 
   // ─── Test helpers ─────────────────────────────────────────────────────────
   #modelOverridden = false;
@@ -279,15 +256,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         this.#name = sessionRow.name ?? this.#sessionId;
         this.#createdAt = sessionRow.created_at;
         this.#updatedAt = sessionRow.updated_at;
-
-        const rawRows = await getEntries(db, sessionId);
-        const allEntries = rawRows.map(parseEntry);
-        const { messages, modelId } = buildSessionContext(allEntries, this.#leafId);
-        this.#messages = new Messages(messages);
-        if (allEntries.some((e) => e.type === "model_change")) {
-          this.#modelId = modelId;
-        }
-        this.#branchEntries = walkToRoot(allEntries, this.#leafId);
       }
     }
 
@@ -434,20 +402,19 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         },
         ctx,
       )) as BeforeAgentStartResult;
-      if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
-        this.#messages.pushAll(beforeStart.contextMessages);
-      }
       this.#assembledSystemPrompt = beforeStart.systemPrompt ?? this.#assembledSystemPrompt;
 
-      if (this.#computeContextUsage().inputTokens > this.#compactTokens()) {
+      let turnMessages = await this.#loadContextMessages(this.#compactTokens());
+      if (estimateTokens(turnMessages) > this.#compactTokens()) {
         await this.compact();
+        turnMessages = await this.#loadContextMessages(this.#compactTokens());
+      }
+      if (beforeStart.contextMessages && beforeStart.contextMessages.length > 0) {
+        turnMessages.push(...beforeStart.contextMessages);
       }
 
       // Start the agent turn — events flow via #runStream, which calls #onTurnEvent.
-      this.#startTurn([userMessage]);
-      // The prompt() entry is already persisted above; only assistant/tool output
-      // from this turn should be flushed by #persistNewMessages().
-      this.#messagesAtTurnStart = this.#messages.length;
+      this.#startTurn(turnMessages);
     } catch (e) {
       // If anything above throws, release the turn reservation so the caller
       // can retry rather than being permanently locked out.
@@ -480,105 +447,10 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── ISession: History & live subscription ────────────────────────────────
 
-  async getHistory(): Promise<HistoryEntry[]> {
-    const entries: HistoryEntry[] = [];
-    const isStreaming = this.#currentTurn !== null;
-
-    // Walk committed messages to build history entries.
-    // #messages are the ModelMessage[] currently held (committed after finish).
-    // We also need a map from toolCallId → entry index to fill in tool results.
-    const toolEntryIndex = new Map<string, number>();
-
-    for (const msg of this.#messages) {
-      const id = msg.id;
-      if (msg.role === "user") {
-        const content = typeof msg.content === "string" ? msg.content : "[attachment]";
-        entries.push({ type: "user", id, content });
-      } else if (msg.role === "assistant") {
-        let text = "";
-        if (typeof msg.content === "string") {
-          text = msg.content;
-        } else if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (typeof part === "object" && part !== null && "type" in part) {
-              if (part.type === "text" && "text" in part) {
-                text += String(part.text);
-              } else if (
-                part.type === "tool-call" &&
-                "toolName" in part &&
-                "input" in part &&
-                "toolCallId" in part
-              ) {
-                const toolCallId = String(part.toolCallId);
-                const toolIdx = entries.length;
-                toolEntryIndex.set(toolCallId, toolIdx);
-                entries.push({
-                  type: "tool",
-                  id: toolCallId,
-                  toolName: String(part.toolName),
-                  input: part.input,
-                  output: undefined,
-                  isError: false,
-                  isStreaming: false,
-                });
-              }
-            }
-          }
-        }
-        if (text.length > 0) {
-          entries.push({ type: "assistant", id, content: text, isStreaming: false });
-        }
-      } else if (msg.role === "tool") {
-        // tool role messages carry tool results — fill in the matching tool entry.
-        if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (
-              typeof part === "object" &&
-              part !== null &&
-              "type" in part &&
-              part.type === "tool-result" &&
-              "toolCallId" in part
-            ) {
-              const toolCallId = String(part.toolCallId);
-              const idx = toolEntryIndex.get(toolCallId);
-              if (idx !== undefined) {
-                const existing = entries[idx];
-                if (existing?.type === "tool") {
-                  const isError = "isError" in part ? Boolean(part.isError) : false;
-                  const output = "result" in part ? part.result : undefined;
-                  entries[idx] = { ...existing, output, isError };
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Append in-flight streaming content if a turn is active.
-    if (isStreaming) {
-      for (const [toolCallId, tc] of this.#streamingToolCalls) {
-        entries.push({
-          type: "tool",
-          id: toolCallId,
-          toolName: tc.toolName,
-          input: tc.input,
-          output: undefined,
-          isError: false,
-          isStreaming: true,
-        });
-      }
-      if (this.#streamingAssistantText.length > 0) {
-        entries.push({
-          type: "assistant",
-          id: "streaming",
-          content: this.#streamingAssistantText,
-          isStreaming: true,
-        });
-      }
-    }
-
-    return entries;
+  async getEntries(): Promise<ApiAnyEntry[]> {
+    const rows = await getEntryRows(this.env.SESSIONS_DB, this.#sessionId);
+    const all = rows.map(parseEntry);
+    return walkToRoot(all, this.#leafId);
   }
 
   async subscribe(observer: IObserver<AgentEvent>): Promise<IDisposable> {
@@ -596,6 +468,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   async setModel(modelId: string): Promise<void> {
     this.#modelId = modelId;
     this.#model = createModel(this.env, modelId);
+    await this.ctx.storage.put("modelId", modelId);
     const entry: ModelChangeEntry = {
       id: generateEntryId(),
       sessionId: this.#sessionId,
@@ -605,6 +478,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       data: { modelId },
     };
     await this.#appendEntry(entry);
+    await updateSessionModel(this.env.SESSIONS_DB, this.#sessionId, modelId, Date.now());
   }
 
   async listModels(): Promise<string[]> {
@@ -620,55 +494,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return Promise.all(this.#tools.map((t) => t.getDescriptor()));
   }
 
-  // ─── ISession: Custom entries ─────────────────────────────────────────────
-
-  async appendCustomMessage(customType: string, content: string, display: boolean): Promise<void> {
-    const entry: CustomMessageEntry = {
-      id: generateEntryId(),
-      sessionId: this.#sessionId,
-      parentId: this.#leafId,
-      type: "custom_message",
-      timestamp: new Date().toISOString(),
-      data: { customType, content, display },
-    };
-    await this.#appendEntry(entry);
-  }
-
-  async appendCustomEntry(customType: string, data?: unknown): Promise<void> {
-    const entry: CustomEntry = {
-      id: generateEntryId(),
-      sessionId: this.#sessionId,
-      parentId: this.#leafId,
-      type: "custom",
-      timestamp: new Date().toISOString(),
-      data: { customType, payload: data },
-    };
-    await this.#appendEntry(entry);
-  }
-
-  async getEntries(customType?: string): Promise<CustomEntryType[]> {
-    return this.#branchEntries
-      .filter((e): e is CustomEntry => {
-        if (e.type !== "custom") return false;
-        if (customType === undefined) return true;
-        return (e.data as { customType: string }).customType === customType;
-      })
-      .map((e) => {
-        const d = e.data as { customType: string; payload?: unknown };
-        return { id: e.id, customType: d.customType, data: d.payload, timestamp: e.timestamp };
-      });
-  }
-
   // ─── ISession: Context usage ──────────────────────────────────────────────
 
   async getContextUsage(): Promise<ContextUsage> {
-    return this.#computeContextUsage();
+    return { inputTokens: estimateTokens(await this.#loadContextMessages(this.#compactTokens())) };
   }
 
   async compact(options?: CompactOptions): Promise<void> {
+    const messages = await this.#loadContextMessages();
     const result = await compactImpl({
       keepRecentTokens: options?.keepRecentTokens ?? 20_000,
-      messages: this.#messages.get(),
+      messages,
       extensionRunner: this.#extensionRunner,
       ctx: this.#rpcCtx,
       model: this.#model,
@@ -681,9 +517,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       return;
     }
 
-    const { messages, compactionEntry } = result;
+    const { compactionEntry } = result;
     await this.#appendEntry(compactionEntry);
-    this.#messages = new Messages(messages);
   }
 
   // ─── ISession: System prompt ──────────────────────────────────────────────
@@ -707,13 +542,16 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async branch(entryId: string): Promise<void> {
     this.#leafId = entryId;
-    const rawRows = await getEntries(this.env.SESSIONS_DB, this.#sessionId);
-    const allEntries = rawRows.map(parseEntry);
-    const context = buildSessionContext(allEntries, entryId);
-    this.#messages = new Messages(context.messages);
+    const context = await buildSessionContextFromDb({
+      db: this.env.SESSIONS_DB,
+      sessionId: this.#sessionId,
+      leafId: entryId,
+    });
     if (context.modelId !== this.#modelId) {
       this.#modelId = context.modelId;
-      this.#model = createModel(this.env, context.modelId);
+      if (!this.#modelOverridden) {
+        this.#model = createModel(this.env, context.modelId);
+      }
     }
   }
 
@@ -737,7 +575,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       await deleteSession(this.#sessionId, this.env.SESSIONS_DB);
     }
     this.#agentAbortController?.abort();
-    this.#messages = new Messages([]);
     this.#leafId = null;
   }
 
@@ -781,20 +618,12 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── Inlined agent loop ───────────────────────────────────────────────────
 
-  /**
-   * Start a new agent turn. Pushes initialMessages onto #messages, creates an
-   * AbortController, and runs #runStream via ctx.waitUntil so the Workers
-   * runtime keeps the isolate alive until the stream completes.
-   *
-   * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
-   */
-  #startTurn(initialMessages: IMessage[]): void {
-    if (initialMessages.length > 0) {
-      this.#messages.pushAll(initialMessages);
-    }
+  /** Start a new agent turn from provided messages. */
+  #startTurn(turnMessages: IMessage[]): void {
+    this.#activeTurnInputTokens = estimateTokens(turnMessages);
     const ac = new AbortController();
     this.#agentAbortController = ac;
-    this.ctx.waitUntil(this.#runStream(ac.signal));
+    this.ctx.waitUntil(this.#runStream(ac.signal, turnMessages));
   }
 
   /**
@@ -805,7 +634,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    *
    * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
    */
-  async #runStream(signal: AbortSignal): Promise<void> {
+  async #runStream(signal: AbortSignal, turnMessages: IMessage[]): Promise<void> {
     this.#error = undefined;
 
     this.#emitTurnEvent({ type: "start" });
@@ -827,11 +656,13 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       },
     };
 
+    let persistGeneratedPromise: Promise<void> | undefined;
+
     try {
       const result = streamText({
         model: this.#model,
         system: this.#assembledSystemPrompt,
-        messages: this.#messages.get(),
+        messages: turnMessages,
         tools: toolSet,
         stopWhen: stepCountIs(DEFAULT_MAX_STEPS),
         abortSignal: signal,
@@ -896,7 +727,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
         onFinish: ({ totalUsage, response }) => {
           finalUsage = totalUsage;
-          this.#messages.pushAll(response.messages.map((m) => ({ ...m, id: generateEntryId() })));
+          persistGeneratedPromise = this.#persistGeneratedMessages(response.messages);
         },
 
         onError: ({ error }) => {
@@ -912,6 +743,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       });
 
       await result.consumeStream();
+      await persistGeneratedPromise;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (!aborted) {
@@ -951,53 +783,41 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    * All event-driven side effects for the DO live here.
    *
    * Handles:
-   *   1. In-flight history tracking (for getHistory() mid-turn)
+   *   1. In-flight history tracking (for subscribe() mid-turn)
    *   2. Token count updates (for getContextUsage() and compaction threshold)
    *   3. Extension dispatch (fire-and-forget)
    *
    * Spec ref: specs/core.md §AgentSessionDO §#onTurnEvent
    */
   #onTurnEvent(event: AgentEvent): void {
-    // 1. In-flight history tracking
+    // 1. In-flight streaming bookkeeping
     switch (event.type) {
       case "start":
-        this.#streamingAssistantText = "";
-        this.#streamingToolCalls.clear();
         break;
       case "text-delta":
-        this.#streamingAssistantText += event.delta;
         break;
       case "tool-call":
-        this.#streamingToolCalls.set(event.toolCallId, {
-          toolName: event.toolName,
-          input: event.input,
-        });
-        break;
       case "tool-result":
-        this.#streamingToolCalls.delete(event.toolCallId);
         break;
       case "step-finish":
         // 2. Token count from per-step usage
         this.#lastInputTokens = event.usage.inputTokens ?? this.#lastInputTokens;
-        this.#streamingAssistantText = "";
         this.#observable.emit({
           type: "usage",
-          inputTokens: this.#computeContextUsage().inputTokens,
+          inputTokens:
+            this.#lastInputTokens === 0 ? this.#activeTurnInputTokens : this.#lastInputTokens,
         });
         break;
       case "finish":
         // 2. Token count from total usage
         this.#lastInputTokens = event.totalUsage.inputTokens ?? this.#lastInputTokens;
-        this.#streamingAssistantText = "";
-        this.#streamingToolCalls.clear();
         this.#observable.emit({
           type: "usage",
-          inputTokens: this.#computeContextUsage().inputTokens,
+          inputTokens:
+            this.#lastInputTokens === 0 ? this.#activeTurnInputTokens : this.#lastInputTokens,
         });
         break;
       case "error":
-        this.#streamingAssistantText = "";
-        this.#streamingToolCalls.clear();
         break;
     }
 
@@ -1012,17 +832,21 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    * again when they finish, processing the queue recursively.
    */
   async #onAgentEnd(): Promise<void> {
-    await this.#persistNewMessages().catch((err) => {
-      console.error(`[session:${this.#sessionId}] persistNewMessages error`, err);
-    });
-
     if (this.#followUpQueue.length > 0) {
-      // Start the next follow-up turn — it will emit through #runStream
-      // and trigger #onAgentEnd again when it finishes.
       const followUpText = this.#followUpQueue.shift() ?? "";
-      this.#messagesAtTurnStart = this.#messages.length;
-      this.#startTurn([{ role: "user", content: followUpText, id: generateEntryId() }]);
-      return; // don't clear #currentTurn or notify yet
+      const followUpId = generateEntryId();
+      const followUpEntry: MessageEntry = {
+        id: followUpId,
+        sessionId: this.#sessionId,
+        parentId: this.#leafId,
+        type: "message",
+        timestamp: new Date().toISOString(),
+        data: { role: "user", content: followUpText, id: followUpId },
+      };
+      await this.#appendEntry(followUpEntry);
+      const followUpContext = await this.#loadContextMessages(this.#compactTokens());
+      this.#startTurn(followUpContext);
+      return;
     }
 
     this.#currentTurn = null;
@@ -1030,7 +854,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
   }
 
   async #appendEntry(entry: AnyEntry): Promise<void> {
-    this.#branchEntries.push(entry);
     this.#leafId = entry.id;
     await this.#ensureSessionCommitted();
     await persistEntry(entry, this.env.SESSIONS_DB);
@@ -1042,30 +865,32 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return Number.isFinite(val) && val > 0 ? val : 100_000;
   }
 
-  #computeContextUsage(): ContextUsage {
-    const extra = estimateTokens(
-      this.#messages.get().slice(this.#lastInputTokens === 0 ? 0 : undefined),
-    );
-    return { inputTokens: this.#lastInputTokens + extra };
-  }
-
-  /** Persist all new agent messages to D1 since the last flush point. */
-  async #persistNewMessages(): Promise<void> {
-    const newMessages = this.#messages.get().slice(this.#messagesAtTurnStart);
-    for (const msg of newMessages) {
-      const entryId = msg.id;
+  async #persistGeneratedMessages(messages: ModelMessage[]): Promise<void> {
+    for (const message of messages) {
+      const entryId = generateEntryId();
       const entry: MessageEntry = {
         id: entryId,
         sessionId: this.#sessionId,
         parentId: this.#leafId,
         type: "message",
         timestamp: new Date().toISOString(),
-        data: msg,
+        data: {
+          ...message,
+          id: entryId,
+        },
       };
       await this.#appendEntry(entry);
     }
-    // Advance the start index so the next call only picks up genuinely new messages
-    this.#messagesAtTurnStart = this.#messages.length;
+  }
+
+  async #loadContextMessages(contextTokenLimit?: number): Promise<IMessage[]> {
+    const context = await buildSessionContextFromDb({
+      db: this.env.SESSIONS_DB,
+      sessionId: this.#sessionId,
+      leafId: this.#leafId,
+      ...(contextTokenLimit !== undefined ? { contextTokenLimit } : {}),
+    });
+    return context.messages;
   }
 
   async #ensureSessionCommitted(): Promise<void> {

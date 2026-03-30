@@ -13,11 +13,11 @@
     "deploy:web": "pnpm --filter @piccolo/web-gateway run deploy"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.8",
-    "@cloudflare/vitest-pool-workers": "^0.13.4",
-    "@vitest/coverage-v8": "^4.1.1",
+    "@biomejs/biome": "^2.4.10",
+    "@cloudflare/vitest-pool-workers": "^0.13.5",
+    "@vitest/coverage-v8": "^4.1.2",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.0",
-    "wrangler": "^4.77.0"
+    "vitest": "^4.1.2",
+    "wrangler": "^4.78.0"
   }
 }

@@ -13,6 +13,14 @@
  * Spec ref: specs/api.md
  */
 
+export type {
+  AssistantContent,
+  ReasoningPart,
+  TextPart,
+  ToolCallPart,
+  ToolContent,
+  ToolResultPart,
+} from "@ai-sdk/provider-utils";
 // ── Re-export ai types used in the public API ─────────────────────────────────
 export type {
   FinishReason,
@@ -33,6 +41,67 @@ export type { JsonSchema7 };
 export type IMessage = ModelMessage & {
   id: string;
 };
+
+export type EntryType =
+  | "message"
+  | "model_change"
+  | "thinking_level_change"
+  | "compaction"
+  | "branch_summary"
+  | "label"
+  | "session_info";
+
+export interface EntryBase {
+  id: string;
+  sessionId: string;
+  parentId: string | null;
+  type: EntryType;
+  timestamp: string;
+}
+
+export interface MessageEntry extends EntryBase {
+  type: "message";
+  data: IMessage;
+}
+
+export interface ModelChangeEntry extends EntryBase {
+  type: "model_change";
+  data: { modelId: string };
+}
+
+export interface ThinkingLevelChangeEntry extends EntryBase {
+  type: "thinking_level_change";
+  data: { thinkingLevel: string };
+}
+
+export interface CompactionEntry extends EntryBase {
+  type: "compaction";
+  data: { summary: string; firstKeptEntryId: string | undefined; tokensBefore: number };
+}
+
+export interface BranchSummaryEntry extends EntryBase {
+  type: "branch_summary";
+  data: { summary: string; fromId: string; fromHook?: boolean };
+}
+
+export interface LabelEntry extends EntryBase {
+  type: "label";
+  data: { targetId: string; label: string | undefined };
+}
+
+export interface SessionInfoEntry extends EntryBase {
+  type: "session_info";
+  data: { name?: string };
+}
+
+export type AnyEntry =
+  | MessageEntry
+  | ModelChangeEntry
+  | ThinkingLevelChangeEntry
+  | CompactionEntry
+  | BranchSummaryEntry
+  | LabelEntry
+  | SessionInfoEntry;
 
 // ─── Shared data types ────────────────────────────────────────────────────────
 
@@ -270,35 +339,6 @@ export interface ContextUsage {
   inputTokens: number;
 }
 
-/** Entry returned by ISession.getEntries(). */
-export interface CustomEntry {
-  id: string;
-  customType: string;
-  data: unknown;
-  timestamp: string; // ISO 8601
-}
-
-// ─── History ──────────────────────────────────────────────────────────────────
-
-/**
- * A single renderable entry in a session's conversation history.
- * Returned by ISession.getHistory().
- * Spec ref: specs/api.md §Shared Types
- */
-export type HistoryEntry =
-  | { type: "user"; id: string; content: string }
-  | { type: "assistant"; id: string; content: string; isStreaming: boolean }
-  | {
-      type: "tool";
-      id: string;
-      toolName: string;
-      input: unknown;
-      output: unknown;
-      isError: boolean;
-      isStreaming: boolean;
-    }
-  | { type: "error"; id: string; message: string };
-
 // ─── ISession ────────────────────────────────────────────────────────────────
 
 /**
@@ -340,15 +380,9 @@ export interface ISession extends IObservable<AgentEvent> {
 
   getActiveTools(): Promise<ToolDescriptor[]>;
 
-  // ─── Custom session entries ───────────────────────────────────────────────────
-
-  appendCustomMessage(customType: string, content: string, display: boolean): Promise<void>;
-  appendCustomEntry(customType: string, data?: unknown): Promise<void>;
-  getEntries(customType?: string): Promise<CustomEntry[]>;
-
   // ─── History & live subscription ─────────────────────────────────────────────
 
-  getHistory(): Promise<HistoryEntry[]>;
+  getEntries(): Promise<AnyEntry[]>;
 
   // ─── Context usage ────────────────────────────────────────────────────────────
 

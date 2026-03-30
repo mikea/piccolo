@@ -322,8 +322,6 @@ export function createMockContext(overrides: Partial<IExtensionContext> = {}): I
     setActiveTools: vi.fn().mockResolvedValue(undefined),
     sendUserMessage: vi.fn().mockResolvedValue(undefined),
     sendFollowUp: vi.fn().mockResolvedValue(undefined),
-    appendCustomMessage: vi.fn().mockResolvedValue(undefined),
-    appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     getEntries: vi.fn().mockResolvedValue([]),
     abort: vi.fn().mockResolvedValue(undefined),
     getContextUsage: vi.fn().mockResolvedValue({ inputTokens: 0, contextWindowTokens: 200000, usedFraction: 0 }),

@@ -17,10 +17,10 @@ import type {
   AnyEntry,
   BranchSummaryEntry,
   CompactionEntry,
-  CustomMessageEntry,
   MessageEntry,
   ModelChangeEntry,
 } from "../db/entry-types.ts";
+import { ContextIterator } from "./context-iterator.ts";
 
 // ─── Message schema validation ────────────────────────────────────────────────
 
@@ -85,13 +85,6 @@ function entryToMessage(entry: AnyEntry): IMessage | undefined {
     case "message": {
       return (entry as MessageEntry).data;
     }
-    case "custom_message": {
-      const cm = entry as CustomMessageEntry;
-      if (cm.data.display) {
-        return { role: "user", content: cm.data.content as string, id: entry.id };
-      }
-      return undefined;
-    }
     case "branch_summary": {
       const bs = entry as BranchSummaryEntry;
       return {
@@ -100,7 +93,7 @@ function entryToMessage(entry: AnyEntry): IMessage | undefined {
         id: entry.id,
       };
     }
-    // compaction, model_change, thinking_level_change, custom, label, session_info → skip
+    // compaction, model_change, thinking_level_change, label, session_info → skip
     default:
       return undefined;
   }
@@ -203,6 +196,115 @@ export function buildSessionContext(
     if (e !== undefined && e.type === "model_change") {
       modelId = (e as ModelChangeEntry).data.modelId;
       break;
+    }
+  }
+
+  return { messages, modelId };
+}
+
+function estimateMessageTokens(msg: IMessage): number {
+  let chars = 0;
+  if (typeof msg.content === "string") {
+    chars += msg.content.length;
+  } else if (Array.isArray(msg.content)) {
+    for (const part of msg.content) {
+      if (
+        typeof part === "object" &&
+        part !== null &&
+        "type" in part &&
+        part.type === "text" &&
+        "text" in part
+      ) {
+        chars += String(part.text).length;
+      } else {
+        chars += 50;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
+interface BuildSessionContextFromDbOptions {
+  db: D1Database;
+  sessionId: string;
+  leafId: string | null;
+  contextTokenLimit?: number;
+}
+
+/**
+ * DB-backed context builder used by runtime code.
+ *
+ * Traverses entries newest->oldest via ContextIterator, then materialises the
+ * LLM message list in root->leaf order.
+ */
+export async function buildSessionContextFromDb(
+  options: BuildSessionContextFromDbOptions,
+): Promise<{ messages: IMessage[]; modelId: string }> {
+  const { db, sessionId, leafId, contextTokenLimit } = options;
+  if (leafId === null) {
+    return { messages: [], modelId: DEFAULT_MODEL_ID };
+  }
+
+  const newestToOldest: AnyEntry[] = [];
+  let modelId = DEFAULT_MODEL_ID;
+  let tokens = 0;
+  let compaction: CompactionEntry | undefined;
+  let cutoffId: string | undefined;
+
+  const iter = new ContextIterator({ db, sessionId, leafId });
+  for await (const entry of iter) {
+    newestToOldest.push(entry);
+
+    if (modelId === DEFAULT_MODEL_ID && entry.type === "model_change") {
+      modelId = (entry as ModelChangeEntry).data.modelId;
+    }
+
+    if (compaction === undefined && entry.type === "compaction") {
+      compaction = entry as CompactionEntry;
+      cutoffId = compaction.data.firstKeptEntryId;
+      if (cutoffId === undefined) {
+        break;
+      }
+      continue;
+    }
+
+    if (compaction !== undefined) {
+      if (cutoffId !== undefined && entry.id === cutoffId) {
+        break;
+      }
+      continue;
+    }
+
+    if (contextTokenLimit !== undefined) {
+      const msg = entryToMessage(entry);
+      if (msg !== undefined) {
+        const delta = estimateMessageTokens(msg);
+        if (tokens + delta > contextTokenLimit) {
+          newestToOldest.pop();
+          break;
+        }
+        tokens += delta;
+      }
+    }
+  }
+
+  const messages: IMessage[] = [];
+  const oldestToNewest = [...newestToOldest].reverse();
+
+  if (compaction !== undefined) {
+    messages.push({
+      role: "user",
+      content: `[Conversation Summary]\n\n${compaction.data.summary}`,
+      id: compaction.id,
+    });
+  }
+
+  for (const entry of oldestToNewest) {
+    if (entry.type === "compaction") continue;
+    const msg = entryToMessage(entry);
+    if (msg !== undefined) {
+      checkMessage(msg, entry.id);
+      messages.push(msg);
     }
   }
 

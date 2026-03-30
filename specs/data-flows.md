@@ -92,8 +92,7 @@ Step 1: ExtensionRunner.emitContext(messages)
         │
         ▼
 Step 2: Filter non-LLM entries
-        - Remove entries with custom roles not understood by the LLM
-        - Convert "custom_message" display entries to user messages
+        - Keep only persisted IMessage entries from D1 context reconstruction
         → ModelMessage[]
         │
         ▼

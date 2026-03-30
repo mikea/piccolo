@@ -6,7 +6,13 @@
  * needing to know the internal file layout.
  */
 
-export { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "./context.ts";
+export {
+  buildSessionContext,
+  buildSessionContextFromDb,
+  DEFAULT_MODEL_ID,
+  walkToRoot,
+} from "./context.ts";
+export { ContextIterator } from "./context-iterator.ts";
 export {
   appendEntry,
   type CommitSessionOptions,

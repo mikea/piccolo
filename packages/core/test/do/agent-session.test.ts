@@ -19,6 +19,7 @@ import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 import type { AgentEvent, Attachment, ISessionListener, SessionEvent } from "@piccolo/api";
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import type { AgentSessionDO } from "../../src/agent-session-do.ts";
+import type { MessageEntry } from "../../src/db/entry-types.ts";
 import { parseEntry } from "../../src/db/entry-types.ts";
 import { getEntries, getSession } from "../../src/db/schema.ts";
 import { setupTestDb } from "../mocks/d1.ts";
@@ -472,6 +473,53 @@ describe("AgentSessionDO — tool events", () => {
     expect(events.find((e) => e.type === "tool-call")).toBeDefined();
     expect(events.find((e) => e.type === "tool-result")).toBeDefined();
   });
+
+  it("persists tool-call and tool-result message parts to D1", async () => {
+    const sid = uniqueId();
+    const stub = getStub(sid);
+
+    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
+      instance._setModelForTest(
+        createMockModel({
+          toolCalls: [{ name: "mock_tool", input: { query: "persist-me" } }],
+          response: "done",
+        }),
+      );
+      await instance._init(sid, "user-1");
+      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
+      await drainTurn(instance, "use a tool");
+      await flushed;
+    });
+
+    const rows = await getEntries(env.SESSIONS_DB, sid);
+    const messages = rows
+      .map(parseEntry)
+      .filter((entry): entry is MessageEntry => entry.type === "message");
+
+    const hasToolCallPart = messages.some((entry) => {
+      const content = entry.data.content;
+      return (
+        Array.isArray(content) &&
+        content.some(
+          (part) => typeof part === "object" && part !== null && part.type === "tool-call",
+        )
+      );
+    });
+
+    const hasToolResultPart = messages.some((entry) => {
+      if (entry.data.role !== "tool") return false;
+      const content = entry.data.content;
+      return (
+        Array.isArray(content) &&
+        content.some(
+          (part) => typeof part === "object" && part !== null && part.type === "tool-result",
+        )
+      );
+    });
+
+    expect(hasToolCallPart).toBe(true);
+    expect(hasToolResultPart).toBe(true);
+  });
 });
 
 describe("AgentSessionDO — compaction extension paths", () => {
@@ -599,24 +647,6 @@ describe("AgentSessionDO — estimateTokens with non-text content", () => {
   });
 });
 
-describe("AgentSessionDO — getEntries with customType filter", () => {
-  it("getEntries(customType) filters to matching entries only", async () => {
-    const sid = uniqueId();
-    const stub = getStub(sid);
-    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
-      instance._setModelForTest(createMockModel({ response: "ok" }));
-      await instance._init(sid, "user-1");
-      await instance.appendCustomEntry("foo", { x: 1 });
-      await instance.appendCustomEntry("bar", { y: 2 });
-    });
-    const entries = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getEntries("foo"),
-    );
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.customType).toBe("foo");
-  });
-});
-
 describe("AgentSessionDO — TurnImpl.getCallback", () => {
   it("getCurrentTurn() returns a TurnImpl; getCallback() returns undefined when no callback", async () => {
     const sid = uniqueId();
@@ -690,36 +720,46 @@ describe("AgentSessionDO — individual getters", () => {
   });
 });
 
-describe("AgentSessionDO — getHistory", () => {
-  it("getHistory() returns [] before any prompts", async () => {
+describe("AgentSessionDO — getEntries", () => {
+  it("getEntries() returns [] before any prompts", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
     await runInDurableObject(stub, (instance: AgentSessionDO) => instance._init(sid, "user-1"));
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getHistory(),
+      instance.getEntries(),
     );
     expect(history).toEqual([]);
   });
 
-  it("getHistory() returns user and assistant entries after a turn", async () => {
+  it("getEntries() returns message entries after a turn", async () => {
     const sid = uniqueId();
     await runPrompt(sid, "hello world", "assistant response text");
     const stub = getStub(sid);
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getHistory(),
+      instance.getEntries(),
     );
-    const userEntry = history.find((e) => e.type === "user");
-    const assistantEntry = history.find((e) => e.type === "assistant");
+    const messages = history.filter((e) => e.type === "message");
+    const userEntry = messages.find((e) => e.type === "message" && e.data.role === "user");
+    const assistantEntry = messages.find(
+      (e) => e.type === "message" && e.data.role === "assistant",
+    );
     expect(userEntry).toBeDefined();
-    if (userEntry?.type === "user") expect(userEntry.content).toBe("hello world");
+    if (userEntry?.type === "message" && userEntry.data.role === "user") {
+      expect(userEntry.data.content).toBe("hello world");
+    }
     expect(assistantEntry).toBeDefined();
-    if (assistantEntry?.type === "assistant") {
-      expect(assistantEntry.content).toBe("assistant response text");
-      expect(assistantEntry.isStreaming).toBe(false);
+    if (assistantEntry?.type === "message" && assistantEntry.data.role === "assistant") {
+      if (typeof assistantEntry.data.content === "string") {
+        expect(assistantEntry.data.content).toBe("assistant response text");
+      } else {
+        expect(assistantEntry.data.content).toEqual([
+          { type: "text", text: "assistant response text" },
+        ]);
+      }
     }
   });
 
-  it("getHistory() accumulates entries across multiple turns", async () => {
+  it("getEntries() accumulates entries across multiple turns", async () => {
     const sid = uniqueId();
     const stub = getStub(sid);
     await runInDurableObject(stub, async (instance: AgentSessionDO) => {
@@ -734,10 +774,12 @@ describe("AgentSessionDO — getHistory", () => {
       await flushed2;
     });
     const history = await runInDurableObject(stub, (instance: AgentSessionDO) =>
-      instance.getHistory(),
+      instance.getEntries(),
     );
-    const userEntries = history.filter((e) => e.type === "user");
-    const assistantEntries = history.filter((e) => e.type === "assistant");
+    const userEntries = history.filter((e) => e.type === "message" && e.data.role === "user");
+    const assistantEntries = history.filter(
+      (e) => e.type === "message" && e.data.role === "assistant",
+    );
     expect(userEntries.length).toBeGreaterThanOrEqual(2);
     expect(assistantEntries.length).toBeGreaterThanOrEqual(2);
   });
