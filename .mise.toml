@@ -1,0 +1,5 @@
+[tools]
+just = "latest"
+pnpm = "latest"
+node = "latest"
+wrangler = "latest"
