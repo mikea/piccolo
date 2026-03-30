@@ -24,9 +24,11 @@ import type {
   BeforeCompactResult,
   ContextResult,
   ExtensionEvent,
+  IExtensionWorker,
   InputResult,
   ISession,
   ToolCallResult,
+  ToolDescriptor,
   ToolResultOverride,
 } from "@piccolo/api";
 import { describe, expect, it } from "vitest";
@@ -211,6 +213,29 @@ describe("initialize()", () => {
     expect(await runner.getTools(ctx)).toHaveLength(1);
   });
 
+  it("keeps discovered tools even if getDescriptor() fails", async () => {
+    const brokenDescriptorTool = {
+      async getDescriptor(): Promise<ToolDescriptor> {
+        throw new Error("descriptor unavailable");
+      },
+      async execute() {
+        return { content: [] };
+      },
+    };
+
+    const ext = createMockExtension({
+      name: "ext-a",
+      tools: [brokenDescriptorTool],
+    });
+    const runner = await makeRunner({ "ext-a": ext });
+
+    const tools = await runner.getTools(ctx);
+    expect(tools).toHaveLength(1);
+
+    const descriptor = await tools[0]!.getDescriptor();
+    expect(descriptor.name).toContain("unavailable_extension_ext-a_0");
+  });
+
   it("multiple extensions: commands and additions from all are merged", async () => {
     const extA = createMockExtension({
       name: "ext-a",
@@ -281,6 +306,26 @@ describe("initialize()", () => {
       ctx,
     );
     expect(await runner.getSystemPromptAdditions(ctx)).toHaveLength(1);
+  });
+
+  it("caches missing getCommands() implementation after first probe", async () => {
+    let probes = 0;
+    const missingCommands = {
+      async init() {
+        return undefined;
+      },
+      get getCommands() {
+        probes += 1;
+        return undefined;
+      },
+    } as unknown as IExtensionWorker;
+
+    const runner = new ExtensionRunner();
+    await runner.initialize(createMockExtensionEnv({ EXTENSION_MISSING: missingCommands }), ctx);
+
+    await expect(runner.getCommands(ctx)).resolves.toEqual([]);
+    await expect(runner.getCommands(ctx)).resolves.toEqual([]);
+    expect(probes).toBe(1);
   });
 });
 
@@ -681,6 +726,33 @@ describe("emit()", () => {
     await expect(
       runner.emit({ type: "input", text: "hi", attachments: [], source: "user" }, ctx),
     ).resolves.toEqual({ action: "continue" });
+  });
+
+  it("caches missing onEvent() implementation after first probe", async () => {
+    let probes = 0;
+    const missingOnEvent = {
+      async init() {
+        return undefined;
+      },
+      async getCommands() {
+        return [];
+      },
+      get onEvent() {
+        probes += 1;
+        return undefined;
+      },
+    } as unknown as IExtensionWorker;
+
+    const runner = new ExtensionRunner();
+    await runner.initialize(createMockExtensionEnv({ EXTENSION_MISSING: missingOnEvent }), ctx);
+
+    await expect(
+      runner.emit({ type: "input", text: "hi", attachments: [], source: "user" }, ctx),
+    ).resolves.toEqual({ action: "continue" });
+    await expect(
+      runner.emit({ type: "tool_call", toolCallId: "t1", toolName: "x", input: {} }, ctx),
+    ).resolves.toEqual({ block: false });
+    expect(probes).toBe(1);
   });
 });
 

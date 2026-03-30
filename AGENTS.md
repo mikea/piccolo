@@ -92,3 +92,7 @@ Run this checklist after every non-trivial change:
 Piccolo is intentionally AI-implemented. The human's role is to drive direction and verify correctness — not to manually reconcile spec and code after the fact. If an AI agent allows the spec and code to drift, the human has no reliable source of truth to verify against. The entire model breaks down.
 
 Keeping spec and code in sync is not a housekeeping task. It is the core discipline that makes AI-driven development trustworthy.
+
+## Code verification
+
+- run `just all` to verify all the changes before finishing work

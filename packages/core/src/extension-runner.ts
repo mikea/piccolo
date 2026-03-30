@@ -43,42 +43,46 @@ import type {
  * Wraps a remote ITool stub (received over JSRPC from an extension Worker) so
  * that any RPC failure in getDescriptor(), execute(), or getGatewayUI() is
  * caught here and never propagates to the browser.
- *
- * The descriptor is resolved once at construction time (callers must use the
- * static factory). Tools whose descriptor cannot be fetched are dropped by
- * getTools() before they are ever returned to the caller.
  */
 class SafeToolWrapper implements ITool {
   readonly #remote: ITool;
   readonly #extensionName: string;
-  readonly #cachedDescriptor: ToolDescriptor;
+  readonly #fallbackDescriptor: ToolDescriptor;
+  readonly #timeoutMs: number;
+  #lastKnownDescriptor: ToolDescriptor | undefined;
 
-  private constructor(remote: ITool, extensionName: string, cachedDescriptor: ToolDescriptor) {
+  constructor(remote: ITool, extensionName: string, timeoutMs: number, toolIndex: number) {
     this.#remote = remote;
     this.#extensionName = extensionName;
-    this.#cachedDescriptor = cachedDescriptor;
+    this.#timeoutMs = timeoutMs;
+    const fallbackName = `unavailable_${extensionName.toLowerCase()}_${toolIndex}`;
+    this.#fallbackDescriptor = {
+      name: fallbackName,
+      label: fallbackName,
+      description: `Fallback descriptor for ${extensionName} tool #${toolIndex}`,
+      inputSchema: {},
+    };
   }
 
-  /**
-   * Resolve the descriptor once. Returns null if the RPC call fails so the
-   * caller can skip this tool rather than storing a broken wrapper.
-   */
-  static async create(
-    remote: ITool,
-    extensionName: string,
-    safeCall: <T>(
-      extensionName: string,
-      operation: string,
-      fn: () => Promise<T | undefined> | undefined,
-    ) => Promise<T | undefined>,
-  ): Promise<SafeToolWrapper | null> {
-    const desc = await safeCall(extensionName, "getDescriptor", () => remote.getDescriptor());
-    if (desc === undefined) return null;
-    return new SafeToolWrapper(remote, extensionName, desc);
-  }
-
-  getDescriptor(): Promise<ToolDescriptor> {
-    return Promise.resolve(this.#cachedDescriptor);
+  async getDescriptor(): Promise<ToolDescriptor> {
+    try {
+      const descriptor = await withTimeout(
+        this.#extensionName,
+        "getDescriptor",
+        this.#remote.getDescriptor(),
+        this.#timeoutMs,
+      );
+      if (descriptor === undefined) {
+        return this.#lastKnownDescriptor ?? this.#fallbackDescriptor;
+      }
+      this.#lastKnownDescriptor = descriptor;
+      return descriptor;
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#extensionName} op=getDescriptor failed error=${formatError(error)}`,
+      );
+      return this.#lastKnownDescriptor ?? this.#fallbackDescriptor;
+    }
   }
 
   async execute(toolCallId: string, params: unknown, ctx: ISession, signal?: IAbortSignal) {
@@ -86,13 +90,13 @@ class SafeToolWrapper implements ITool {
       return await this.#remote.execute(toolCallId, params, ctx, signal);
     } catch (error) {
       console.warn(
-        `[extensions] extension=${this.#extensionName} tool=${this.#cachedDescriptor.name} execute failed error=${formatError(error)}`,
+        `[extensions] extension=${this.#extensionName} tool=${this.#lastKnownDescriptor?.name ?? this.#fallbackDescriptor.name} execute failed error=${formatError(error)}`,
       );
       return {
         content: [
           {
             type: "text" as const,
-            text: `Tool "${this.#cachedDescriptor.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
+            text: `Tool "${this.#lastKnownDescriptor?.name ?? this.#fallbackDescriptor.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
         isError: true,
@@ -106,7 +110,7 @@ class SafeToolWrapper implements ITool {
       return await this.#remote.getGatewayUI(gatewayId);
     } catch (error) {
       console.warn(
-        `[extensions] extension=${this.#extensionName} tool=${this.#cachedDescriptor.name} getGatewayUI failed error=${formatError(error)}`,
+        `[extensions] extension=${this.#extensionName} tool=${this.#lastKnownDescriptor?.name ?? this.#fallbackDescriptor.name} getGatewayUI failed error=${formatError(error)}`,
       );
       return undefined;
     }
@@ -130,6 +134,186 @@ export type ExtensionEventResult =
   | ToolResultOverride
   | BeforeCompactResult
   | undefined;
+
+async function withTimeout<T>(
+  extensionName: string,
+  operation: string,
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T | undefined> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race<T | undefined>([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          console.warn(
+            `[extensions] extension=${extensionName} op=${operation} timed out after ${timeoutMs}ms`,
+          );
+          resolve(undefined);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
+}
+
+class ExtensionWorkerWrapper implements IExtensionWorker {
+  readonly #bindingName: string;
+  readonly #remote: IExtensionWorker;
+  readonly #timeoutMs: number;
+
+  #hasInit: boolean | undefined;
+  #hasGetTools: boolean | undefined;
+  #hasGetCommands: boolean | undefined;
+  #hasGetSystemPromptAdditions: boolean | undefined;
+  #hasOnEvent: boolean | undefined;
+
+  constructor(bindingName: string, remote: IExtensionWorker, timeoutMs: number) {
+    this.#bindingName = bindingName;
+    this.#remote = remote;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  get bindingName(): string {
+    return this.#bindingName;
+  }
+
+  async init(ctx: ISession): Promise<void> {
+    if (this.#hasInit === undefined) {
+      try {
+        const candidate = await this.#remote.init;
+        this.#hasInit = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=init_probe failed error=${formatError(error)}`,
+        );
+        this.#hasInit = false;
+      }
+    }
+    if (!this.#hasInit) return;
+
+    try {
+      const result = this.#remote.init?.(ctx);
+      if (result === undefined) return;
+      await withTimeout(this.#bindingName, "session_start", result, this.#timeoutMs);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=session_start failed error=${formatError(error)}`,
+      );
+    }
+  }
+
+  async getTools(ctx: ISession): Promise<ITool[] | undefined> {
+    if (this.#hasGetTools === undefined) {
+      try {
+        const candidate = await this.#remote.getTools;
+        this.#hasGetTools = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=getTools_probe failed error=${formatError(error)}`,
+        );
+        this.#hasGetTools = false;
+      }
+    }
+    if (!this.#hasGetTools) return undefined;
+
+    try {
+      const result = this.#remote.getTools?.(ctx);
+      if (result === undefined) return undefined;
+      return await withTimeout(this.#bindingName, "getTools", result, this.#timeoutMs);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=getTools failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
+
+  async getCommands(ctx: ISession): Promise<ICommand[] | undefined> {
+    if (this.#hasGetCommands === undefined) {
+      try {
+        const candidate = await this.#remote.getCommands;
+        this.#hasGetCommands = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=getCommands_probe failed error=${formatError(error)}`,
+        );
+        this.#hasGetCommands = false;
+      }
+    }
+    if (!this.#hasGetCommands) return undefined;
+
+    try {
+      const result = this.#remote.getCommands?.(ctx);
+      if (result === undefined) return undefined;
+      return await withTimeout(this.#bindingName, "getCommands", result, this.#timeoutMs);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=getCommands failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
+
+  async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[] | undefined> {
+    if (this.#hasGetSystemPromptAdditions === undefined) {
+      try {
+        const candidate = await this.#remote.getSystemPromptAdditions;
+        this.#hasGetSystemPromptAdditions = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=getSystemPromptAdditions_probe failed error=${formatError(error)}`,
+        );
+        this.#hasGetSystemPromptAdditions = false;
+      }
+    }
+    if (!this.#hasGetSystemPromptAdditions) return undefined;
+
+    try {
+      const result = this.#remote.getSystemPromptAdditions?.(ctx);
+      if (result === undefined) return undefined;
+      return await withTimeout(
+        this.#bindingName,
+        "getSystemPromptAdditions",
+        result,
+        this.#timeoutMs,
+      );
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=getSystemPromptAdditions failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
+
+  async onEvent(event: ExtensionEvent, ctx: ISession): Promise<ExtensionEventResult> {
+    if (this.#hasOnEvent === undefined) {
+      try {
+        const candidate = await this.#remote.onEvent;
+        this.#hasOnEvent = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=onEvent_probe failed error=${formatError(error)}`,
+        );
+        this.#hasOnEvent = false;
+      }
+    }
+    if (!this.#hasOnEvent) return undefined;
+
+    try {
+      const result = this.#remote.onEvent?.(event, ctx);
+      if (result === undefined) return undefined;
+      return await withTimeout(this.#bindingName, event.type, result, this.#timeoutMs);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=${event.type} failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
+}
 
 // ─── IExtensionRunner ─────────────────────────────────────────────────────────
 
@@ -198,7 +382,7 @@ export function parseCommand(
 export class ExtensionRunner implements IExtensionRunner {
   static readonly CALL_TIMEOUT_MS = 5000;
 
-  #extensions: Array<{ bindingName: string; worker: IExtensionWorker }> = [];
+  #extensions: ExtensionWorkerWrapper[] = [];
 
   /**
    * Discover extension bindings, build worker stubs, and fire init(ctx) on each.
@@ -221,56 +405,18 @@ export class ExtensionRunner implements IExtensionRunner {
     if (discovered.length === 0) return;
 
     for (const [bindingName, binding] of discovered) {
-      this.#extensions.push({ bindingName, worker: binding as IExtensionWorker });
+      this.#extensions.push(
+        new ExtensionWorkerWrapper(
+          bindingName,
+          binding as IExtensionWorker,
+          ExtensionRunner.CALL_TIMEOUT_MS,
+        ),
+      );
     }
 
-    await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "session_start", () => worker.init?.(ctx)),
-      ),
-    );
+    await Promise.all(this.#extensions.map((extension) => extension.init(ctx)));
 
     console.log(`[extensions] loaded=${this.#extensions.length}`);
-  }
-
-  async #safeCall<T>(
-    extensionName: string,
-    operation: string,
-    fn: () => Promise<T | undefined> | undefined,
-  ): Promise<T | undefined> {
-    try {
-      const result = fn();
-      if (result === undefined) return undefined;
-      return await this.#withTimeout(extensionName, operation, result);
-    } catch (error) {
-      console.warn(
-        `[extensions] extension=${extensionName} op=${operation} failed error=${formatError(error)}`,
-      );
-      return undefined;
-    }
-  }
-
-  async #withTimeout<T>(
-    extensionName: string,
-    operation: string,
-    promise: Promise<T>,
-  ): Promise<T | undefined> {
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race<T | undefined>([
-        promise,
-        new Promise<undefined>((resolve) => {
-          timeoutHandle = setTimeout(() => {
-            console.warn(
-              `[extensions] extension=${extensionName} op=${operation} timed out after ${ExtensionRunner.CALL_TIMEOUT_MS}ms`,
-            );
-            resolve(undefined);
-          }, ExtensionRunner.CALL_TIMEOUT_MS);
-        }),
-      ]);
-    } finally {
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-    }
   }
 
   // ─── Registration methods (caller-driven, ctx passed at call time) ─────────
@@ -278,21 +424,18 @@ export class ExtensionRunner implements IExtensionRunner {
   /**
    * Collect tools from all extensions. Wraps each remote ITool stub in
    * SafeToolWrapper so RPC failures in execute() are isolated per tool.
-   * Tools whose descriptor cannot be fetched are dropped.
    *
    * Must be called outside blockConcurrencyWhile.
    */
   async getTools(ctx: ISession): Promise<ITool[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(async ({ bindingName, worker }) => {
-        const rawTools = await this.#safeCall(bindingName, "getTools", () =>
-          worker.getTools?.(ctx),
-        );
+      this.#extensions.map(async (extension) => {
+        const rawTools = await extension.getTools(ctx);
         if (!rawTools) return [];
-        const wrapped = await Promise.all(
-          rawTools.map((t) => SafeToolWrapper.create(t, bindingName, this.#safeCall.bind(this))),
+        return rawTools.map(
+          (t, index) =>
+            new SafeToolWrapper(t, extension.bindingName, ExtensionRunner.CALL_TIMEOUT_MS, index),
         );
-        return wrapped.filter((w): w is SafeToolWrapper => w !== null);
       }),
     );
     return perExtension.flat();
@@ -304,9 +447,7 @@ export class ExtensionRunner implements IExtensionRunner {
    */
   async getCommands(ctx: ISession): Promise<ICommand[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "getCommands", () => worker.getCommands?.(ctx)),
-      ),
+      this.#extensions.map((extension) => extension.getCommands(ctx)),
     );
     return perExtension.flatMap((cmds) => cmds ?? []);
   }
@@ -317,11 +458,7 @@ export class ExtensionRunner implements IExtensionRunner {
    */
   async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "getSystemPromptAdditions", () =>
-          worker.getSystemPromptAdditions?.(ctx),
-        ),
-      ),
+      this.#extensions.map((extension) => extension.getSystemPromptAdditions(ctx)),
     );
     return perExtension.flatMap((additions) => additions ?? []);
   }
@@ -375,9 +512,7 @@ export class ExtensionRunner implements IExtensionRunner {
     // Commands list is built on demand from the current extensions.
     // For routing we need the full list — call synchronously from each worker.
     const commandsPerExtension = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "getCommands", () => worker.getCommands?.(ctx)),
-      ),
+      this.#extensions.map((extension) => extension.getCommands(ctx)),
     );
     const commands = commandsPerExtension.flatMap((cmds) => cmds ?? []);
 
@@ -387,9 +522,7 @@ export class ExtensionRunner implements IExtensionRunner {
       : event;
 
     const results = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "input", () => worker.onEvent?.(enrichedEvent, ctx)),
-      ),
+      this.#extensions.map((extension) => extension.onEvent(enrichedEvent, ctx)),
     );
     const winner = results.find(
       (r): r is InputResult =>
@@ -408,9 +541,7 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "before_start", () => worker.onEvent?.(event, ctx)),
-      ),
+      this.#extensions.map((extension) => extension.onEvent(event, ctx)),
     );
     const typed = results.filter(
       (r): r is BeforeAgentStartResult =>
@@ -432,9 +563,7 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ContextResult | undefined> {
     const results = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "context", () => worker.onEvent?.(event, ctx)),
-      ),
+      this.#extensions.map((extension) => extension.onEvent(event, ctx)),
     );
     return [...results]
       .reverse()
@@ -450,9 +579,7 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ToolCallResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "tool_call", () => worker.onEvent?.(event, ctx)),
-      ),
+      this.#extensions.map((extension) => extension.onEvent(event, ctx)),
     );
     const blocked = results.find(
       (r): r is ToolCallResult =>
@@ -471,13 +598,11 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ToolResultOverride | undefined> {
     let current: ToolResultOverride | undefined;
-    for (const { bindingName, worker } of this.#extensions) {
+    for (const extension of this.#extensions) {
       const chainedEvent: Extract<ExtensionEvent, { type: "tool_result" }> = current
         ? { ...event, output: current }
         : event;
-      const result = await this.#safeCall(bindingName, "tool_result", () =>
-        worker.onEvent?.(chainedEvent, ctx),
-      );
+      const result = await extension.onEvent(chainedEvent, ctx);
       if (
         result != null &&
         typeof result === "object" &&
@@ -499,9 +624,7 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<BeforeCompactResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ bindingName, worker }) =>
-        this.#safeCall(bindingName, "before_compact", () => worker.onEvent?.(event, ctx)),
-      ),
+      this.#extensions.map((extension) => extension.onEvent(event, ctx)),
     );
     const typed = results.filter(
       (r): r is BeforeCompactResult =>

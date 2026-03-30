@@ -55,7 +55,7 @@ Changing the extension set (add/remove/rename `EXTENSION_*` bindings) requires r
 
 ## Extension API Summary
 
-Extensions implement any subset of `IExtensionWorker`. The core checks method existence before dispatching; unimplemented methods are silently skipped.
+Extensions implement any subset of `IExtensionWorker`. The core checks method existence before dispatching by probing `await stub.method` on first use, caches that decision per extension+method for the session lifetime, and silently skips unimplemented methods thereafter.
 
 **Registration methods** (called at session start):
 

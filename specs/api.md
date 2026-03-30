@@ -132,8 +132,9 @@ interface IAbortSignal {
 }
 
 interface ITool {
-  // Returns the descriptor for this tool. Called once by ExtensionRunner at
-  // session start; the result is cached in SafeToolWrapper and never re-fetched.
+  // Returns the descriptor for this tool. The core may call this multiple times.
+  // If descriptor fetch fails or times out, the core keeps the tool and uses a
+  // generated fallback descriptor for that call.
   getDescriptor(): Promise<ToolDescriptor>;
 
   // Called by the core when the LLM invokes this tool.

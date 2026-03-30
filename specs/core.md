@@ -449,6 +449,11 @@ Extension discovery order is deterministic: bindings are sorted lexicographicall
 calls pass `ISession` (an RPC stub) to remote Workers, which may call back into the
 session DO. Calling them inside `blockConcurrencyWhile` would deadlock.
 
+For each optional `IExtensionWorker` method (`init`, `getTools`, `getCommands`,
+`getSystemPromptAdditions`, `onEvent`), `ExtensionRunner` probes support on first use via
+`await worker.<method>`. The boolean result is cached per extension for the rest of the
+session; methods determined to be unimplemented are never called again.
+
 The caller (`AgentSessionDO`) drives registration explicitly, outside `blockConcurrencyWhile`:
 
 ```typescript
