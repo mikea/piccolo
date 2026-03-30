@@ -1,8 +1,8 @@
 /**
  * ExtensionRunner — discovers, initialises, and dispatches to extension Workers.
  *
- * initialize() reads the extension registry from CONFIG KV and obtains a
- * dispatch stub for each extension name. It does NOT call getTools(),
+ * initialize() discovers extension bindings from the core Worker environment
+ * (all bindings named EXTENSION_<something>). It does NOT call getTools(),
  * getCommands(), or getSystemPromptAdditions() — those are driven by the caller
  * (AgentSessionDO) outside blockConcurrencyWhile, passing ISession at call time.
  *
@@ -187,8 +187,8 @@ export function parseCommand(
 // ─── ExtensionRunner ──────────────────────────────────────────────────────────
 
 /**
- * Real ExtensionRunner — reads the extension registry from CONFIG KV and
- * dispatches to extension Workers via the EXTENSIONS dispatch namespace.
+ * Real ExtensionRunner — discovers extension Workers from env bindings named
+ * EXTENSION_<something>.
  *
  * initialize() only loads workers; it does not call getTools/getCommands/
  * getSystemPromptAdditions. Those are driven by the caller with ISession.
@@ -198,50 +198,35 @@ export function parseCommand(
 export class ExtensionRunner implements IExtensionRunner {
   static readonly CALL_TIMEOUT_MS = 5000;
 
-  #extensions: Array<{ name: string; worker: IExtensionWorker }> = [];
+  #extensions: Array<{ bindingName: string; worker: IExtensionWorker }> = [];
 
   /**
-   * Load the extension registry, build worker stubs, and fire init(ctx) on each.
+   * Discover extension bindings, build worker stubs, and fire init(ctx) on each.
    *
    * Does NOT call getTools(), getCommands(), or getSystemPromptAdditions() —
    * those pass ISession to remote workers which may call back into the session DO.
    * The caller (AgentSessionDO) drives those explicitly outside blockConcurrencyWhile
    * via #ensureTools() and #ensureSystemPrompt().
    *
+   * Bindings are discovered by enumerating env keys with the EXTENSION_ prefix
+   * and sorting them lexicographically for deterministic ordering.
+   *
    * Spec ref: specs/core.md §ExtensionRunner §initialize
    */
-  async initialize(kv: KVNamespace, extensions: DispatchNamespace, ctx: ISession): Promise<void> {
-    let names: string[] = [];
-    try {
-      const raw = await kv.get("extensions:registry");
-      if (raw !== null) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          names = parsed.filter((n): n is string => typeof n === "string");
-        }
-      }
-    } catch (error) {
-      console.warn(`[extensions] failed to parse extensions:registry error=${formatError(error)}`);
-      names = [];
-    }
+  async initialize(env: Record<string, unknown>, ctx: ISession): Promise<void> {
+    const discovered = Object.entries(env)
+      .filter(([bindingName, binding]) => bindingName.startsWith("EXTENSION_") && binding != null)
+      .sort(([a], [b]) => a.localeCompare(b));
 
-    if (names.length === 0) return;
+    if (discovered.length === 0) return;
 
-    for (const name of names) {
-      try {
-        const worker = extensions.get(name) as unknown as IExtensionWorker;
-        console.debug("[extensions] ", worker, Object.keys(worker));
-        this.#extensions.push({ name, worker });
-      } catch (error) {
-        console.warn(
-          `[extensions] dispatch lookup failed extension=${name} error=${formatError(error)}`,
-        );
-      }
+    for (const [bindingName, binding] of discovered) {
+      this.#extensions.push({ bindingName, worker: binding as IExtensionWorker });
     }
 
     await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "session_start", () => worker.init?.(ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "session_start", () => worker.init?.(ctx)),
       ),
     );
 
@@ -299,11 +284,13 @@ export class ExtensionRunner implements IExtensionRunner {
    */
   async getTools(ctx: ISession): Promise<ITool[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(async ({ name, worker }) => {
-        const rawTools = await this.#safeCall(name, "getTools", () => worker.getTools?.(ctx));
+      this.#extensions.map(async ({ bindingName, worker }) => {
+        const rawTools = await this.#safeCall(bindingName, "getTools", () =>
+          worker.getTools?.(ctx),
+        );
         if (!rawTools) return [];
         const wrapped = await Promise.all(
-          rawTools.map((t) => SafeToolWrapper.create(t, name, this.#safeCall.bind(this))),
+          rawTools.map((t) => SafeToolWrapper.create(t, bindingName, this.#safeCall.bind(this))),
         );
         return wrapped.filter((w): w is SafeToolWrapper => w !== null);
       }),
@@ -317,8 +304,8 @@ export class ExtensionRunner implements IExtensionRunner {
    */
   async getCommands(ctx: ISession): Promise<ICommand[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "getCommands", () => worker.getCommands?.(ctx)),
       ),
     );
     return perExtension.flatMap((cmds) => cmds ?? []);
@@ -330,8 +317,8 @@ export class ExtensionRunner implements IExtensionRunner {
    */
   async getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]> {
     const perExtension = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "getSystemPromptAdditions", () =>
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "getSystemPromptAdditions", () =>
           worker.getSystemPromptAdditions?.(ctx),
         ),
       ),
@@ -388,8 +375,8 @@ export class ExtensionRunner implements IExtensionRunner {
     // Commands list is built on demand from the current extensions.
     // For routing we need the full list — call synchronously from each worker.
     const commandsPerExtension = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "getCommands", () => worker.getCommands?.(ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "getCommands", () => worker.getCommands?.(ctx)),
       ),
     );
     const commands = commandsPerExtension.flatMap((cmds) => cmds ?? []);
@@ -400,8 +387,8 @@ export class ExtensionRunner implements IExtensionRunner {
       : event;
 
     const results = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "input", () => worker.onEvent?.(enrichedEvent, ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "input", () => worker.onEvent?.(enrichedEvent, ctx)),
       ),
     );
     const winner = results.find(
@@ -421,8 +408,8 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<BeforeAgentStartResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "before_start", () => worker.onEvent?.(event, ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "before_start", () => worker.onEvent?.(event, ctx)),
       ),
     );
     const typed = results.filter(
@@ -445,8 +432,8 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ContextResult | undefined> {
     const results = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "context", () => worker.onEvent?.(event, ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "context", () => worker.onEvent?.(event, ctx)),
       ),
     );
     return [...results]
@@ -463,8 +450,8 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ToolCallResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "tool_call", () => worker.onEvent?.(event, ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "tool_call", () => worker.onEvent?.(event, ctx)),
       ),
     );
     const blocked = results.find(
@@ -484,11 +471,11 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<ToolResultOverride | undefined> {
     let current: ToolResultOverride | undefined;
-    for (const { name, worker } of this.#extensions) {
+    for (const { bindingName, worker } of this.#extensions) {
       const chainedEvent: Extract<ExtensionEvent, { type: "tool_result" }> = current
         ? { ...event, output: current }
         : event;
-      const result = await this.#safeCall(name, "tool_result", () =>
+      const result = await this.#safeCall(bindingName, "tool_result", () =>
         worker.onEvent?.(chainedEvent, ctx),
       );
       if (
@@ -512,8 +499,8 @@ export class ExtensionRunner implements IExtensionRunner {
     ctx: ISession,
   ): Promise<BeforeCompactResult> {
     const results = await Promise.all(
-      this.#extensions.map(({ name, worker }) =>
-        this.#safeCall(name, "before_compact", () => worker.onEvent?.(event, ctx)),
+      this.#extensions.map(({ bindingName, worker }) =>
+        this.#safeCall(bindingName, "before_compact", () => worker.onEvent?.(event, ctx)),
       ),
     );
     const typed = results.filter(

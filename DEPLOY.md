@@ -10,7 +10,7 @@ only component with a deployable UI today is **piccolo-core** + **piccolo-web-ga
 
 | Requirement | Notes |
 |---|---|
-| Cloudflare account | **Workers Paid plan** required (Durable Objects + Workers for Platforms) |
+| Cloudflare account | Workers enabled (Paid plan recommended for production scale) |
 | `wrangler` CLI | Installed via `pnpm install`; authenticate with `pnpm wrangler login` |
 | Node.js 22+ | Required by Wrangler 4 |
 | pnpm | Used for all package management |
@@ -41,19 +41,9 @@ Run each command once. Copy the IDs printed — you need them in Step 3.
 # D1 database — session records and conversation history
 pnpm wrangler d1 create piccolo-sessions
 
-# KV namespace — extension registry, model catalog, per-session config
-pnpm wrangler kv namespace create piccolo-config
-
 # R2 bucket — tool file storage and (future) web component assets
 pnpm wrangler r2 bucket create piccolo-assets
-
-# Workers for Platforms dispatch namespace — hosts extension Workers
-pnpm wrangler dispatch-namespace create piccolo-extensions
 ```
-
-> **Workers for Platforms** requires the Workers Paid plan. If you get a
-> permission error on the dispatch namespace, verify your plan in the
-> Cloudflare dashboard.
 
 ### Create an AI Gateway
 
@@ -96,13 +86,13 @@ Open `packages/core/wrangler.jsonc` and replace all `<PLACEHOLDER>` values:
       "database_id": "PASTE_D1_ID_HERE"        // ← from Step 2: d1 create output
     }
   ],
-  "kv_namespaces": [
-    {
-      "binding": "CONFIG",
-      "id": "PASTE_KV_ID_HERE"                 // ← from Step 2: kv namespace create output
-    }
+  // R2 bucket is referenced by name — no ID needed
+  // Add extension service bindings here (every EXTENSION_* binding is auto-discovered)
+  "services": [
+    { "binding": "EXTENSION_FETCH_TOOL", "service": "ext-fetch-tool" },
+    { "binding": "EXTENSION_R2_TOOL", "service": "ext-r2-tool" },
+    { "binding": "EXTENSION_INSTRUCTIONS", "service": "ext-instructions" }
   ],
-  // R2 and dispatch namespace are referenced by name — no IDs needed
   "vars": {
     "CF_ACCOUNT_ID": "PASTE_ACCOUNT_ID_HERE",  // ← from dash sidebar
     "CF_AI_GATEWAY_NAME": "piccolo",            // ← your gateway slug from Step 2
@@ -113,6 +103,15 @@ Open `packages/core/wrangler.jsonc` and replace all `<PLACEHOLDER>` values:
 ```
 
 **`MODELS`** is a comma-separated list of model IDs that the agent can use. IDs must match the provider routing format understood by your AI Gateway (e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-4o`, `workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast`). The list is shown in the model picker in the web UI and controls which models users can select.
+
+### Extension binding naming recommendations
+
+`piccolo-core` discovers extensions by scanning bindings prefixed with `EXTENSION_` and sorting by binding name. To keep ordering explicit and stable:
+
+- Use a numeric priority prefix: `EXTENSION_10_GUARD`, `EXTENSION_20_SKILLS`, `EXTENSION_30_TEMPLATES`.
+- Leave gaps (`10`, `20`, `30`) so you can insert future extensions without renaming everything.
+- Keep names uppercase snake case after the prefix.
+- Bindings without the `EXTENSION_` prefix are ignored by extension discovery.
 
 ---
 
@@ -254,25 +253,28 @@ D1 migrations only need to be re-applied when there are new migration files.
 
 The fetch tool gives the agent the ability to make HTTPS GET and HEAD requests to the public internet, including ranged GET for large files. It requires no Cloudflare bindings.
 
-### 8a. Deploy the tool Worker into the dispatch namespace
+### 8a. Deploy the extension Worker
 
 ```bash
 pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc \
-  --dispatch-namespace piccolo-extensions
+  --name ext-fetch-tool
 ```
 
-### 8b. Register in the extension registry KV
+### 8b. Bind it in `piccolo-core`
 
-Replace the registry value with the current list of extensions you want active.
-If this is your first extension, the value is just the fetch tool:
+Add a service binding to `packages/core/wrangler.jsonc`:
+
+```jsonc
+"services": [
+  { "binding": "EXTENSION_FETCH_TOOL", "service": "ext-fetch-tool" }
+]
+```
+
+### 8c. Redeploy `piccolo-core`
 
 ```bash
-pnpm wrangler kv key put --remote --binding CONFIG \
-  --config packages/core/wrangler.jsonc \
-  extensions:registry '["ext-fetch-tool"]'
+pnpm deploy:core
 ```
-
-No `piccolo-core` redeploy is needed. The extension registry is polled at session start.
 
 ---
 
@@ -307,24 +309,25 @@ Open `extensions/r2-tool/wrangler.jsonc` and replace the placeholder with your b
 ]
 ```
 
-### 9c. Deploy the extension Worker into the dispatch namespace
+### 9c. Deploy the extension Worker
 
 ```bash
-pnpm wrangler deploy --config extensions/r2-tool/wrangler.jsonc \
-  --dispatch-namespace piccolo-extensions
+pnpm wrangler deploy --config extensions/r2-tool/wrangler.jsonc
 ```
 
-### 9d. Register in the extension registry KV
+### 9d. Add binding in core config and redeploy core
 
-Add `ext-r2-tool` to the registry alongside any other active extensions. Adjust the array to include everything you have deployed so far:
+Add this binding in `packages/core/wrangler.jsonc`:
+
+```jsonc
+{ "binding": "EXTENSION_R2_TOOL", "service": "ext-r2-tool" }
+```
+
+Then redeploy core:
 
 ```bash
-pnpm wrangler kv key put --remote --binding CONFIG \
-  --config packages/core/wrangler.jsonc \
-  extensions:registry '["ext-fetch-tool","ext-r2-tool"]'
+pnpm deploy:core
 ```
-
-No `piccolo-core` redeploy is needed. The extension registry is polled at session start.
 
 ---
 
@@ -369,24 +372,25 @@ pnpm wrangler d1 migrations apply piccolo-instructions \
 
 This creates the `instructions` table. Safe to re-run.
 
-### 10d. Deploy the extension Worker into the dispatch namespace
+### 10d. Deploy the extension Worker
 
 ```bash
-pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc \
-  --dispatch-namespace piccolo-extensions
+pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc
 ```
 
-### 10e. Register in the extension registry KV
+### 10e. Add binding in core config and redeploy core
 
-Add `ext-instructions` to the registry alongside any other active extensions:
+Add this binding in `packages/core/wrangler.jsonc`:
+
+```jsonc
+{ "binding": "EXTENSION_INSTRUCTIONS", "service": "ext-instructions" }
+```
+
+Then redeploy core:
 
 ```bash
-pnpm wrangler kv key put --remote --binding CONFIG \
-  --config packages/core/wrangler.jsonc \
-  extensions:registry '["ext-fetch-tool","ext-r2-tool","ext-instructions"]'
+pnpm deploy:core
 ```
-
-No `piccolo-core` redeploy is needed.
 
 ---
 
@@ -396,10 +400,9 @@ No `piccolo-core` redeploy is needed.
 |---|---|---|
 | D1 database | `piccolo-sessions` | piccolo-core (`SESSIONS_DB`) |
 | D1 database | `piccolo-instructions` | ext-instructions (`INSTRUCTIONS_DB`) |
-| KV namespace | `piccolo-config` | piccolo-core (`CONFIG`) |
 | R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) — infrastructure / SPA assets |
 | R2 bucket | your bucket name (e.g. `piccolo-workspace`) | ext-r2-tool (`BUCKET`) — agent-writable workspace |
-| Dispatch namespace | `piccolo-extensions` | piccolo-core (`EXTENSIONS`) |
+| Service binding | `EXTENSION_*` in core config | piccolo-core extension discovery |
 | AI Gateway | `piccolo` (or your slug) | piccolo-core via `CF_AI_GATEWAY_NAME` |
 
 ## Summary of secrets set

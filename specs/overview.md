@@ -16,7 +16,7 @@ Piccolo is composed of the following independently deployed Cloudflare Workers:
 | `piccolo-core` | Worker + DOs | Agent session orchestration, agent loop, and JSRPC hub |
 | Web UI gateway | Worker + DO | Browser chat interface |
 | Telegram gateway | Worker + DO | Telegram bot interface |
-| Extensions | Workers (dispatch namespace) | Tools, event handlers, custom capabilities |
+| Extensions | Workers (service bindings) | Tools, event handlers, custom capabilities |
 
 LLM calls go through the **Cloudflare AI Gateway** unified API using the `ai` and `ai-gateway-provider` packages. There is no piccolo-owned LLM provider layer.
 
@@ -33,7 +33,7 @@ piccolo-core   (implements @piccolo/api; agent loop + session orchestration)
   ▲
   │  (JSRPC)
   │
-Extensions     (Workers in dispatch namespace; depend on @piccolo/api)
+Extensions     (Workers bound to core as EXTENSION_* services; depend on @piccolo/api)
   ▲
   │  (JSRPC)
   │
@@ -74,7 +74,7 @@ Agent loop and session coordination layer. Provides:
 - **`AgentEvent` stream**: events flow through `#observable` for gateway consumption and DO side-effects
 - **Session persistence** backed by Cloudflare Durable Objects + D1
 - **Context compaction** (LLM-based summarisation when context window fills, inlined as `#compact()` on the DO)
-- **Extension host**: loads extensions from the Workers for Platforms dispatch namespace, dispatches events via JSRPC
+- **Extension host**: discovers extensions from `EXTENSION_*` service bindings, dispatches events via JSRPC
 - **System prompt assembly** from registered skills, agent context, and tool guidelines
 - **Model management**: active model stored per session, switchable at runtime
 
@@ -93,7 +93,7 @@ Additional gateways (Slack, CLI, API) can be added without modifying the core.
 
 ### Extensions
 
-Independent Workers deployed into the piccolo dispatch namespace. Each extension implements the piccolo extension contract (a typed `WorkerEntrypoint` surface) and is invoked by the core via JSRPC. Extensions add tools, event handlers, compaction strategies, custom system prompt content, and more.
+Independent Workers deployed as normal services. Each extension is added to `piccolo-core` as a service binding whose name starts with `EXTENSION_`, then discovered and invoked by the core via JSRPC. Extensions add tools, event handlers, compaction strategies, custom system prompt content, and more.
 
 See [extension-system.md](extension-system.md) for the extension contract.
 
@@ -130,9 +130,9 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | LLM client library | `ai` + `ai-gateway-provider` packages |
 | Agent session compute | Durable Objects |
 | Session / conversation storage | Durable Objects storage + D1 |
-| Extension registry | Workers KV |
-| Extension code | Workers for Platforms dispatch namespace |
-| Config and settings | Workers KV |
+| Extension discovery | `piccolo-core` service bindings (`EXTENSION_*`) |
+| Extension code | Independent Worker services |
+| Config and settings | Worker vars / extension-owned stores |
 | LLM API keys | CF AI Gateway secrets (not in Workers env) |
 | File / asset storage | R2 |
 | Gateway compute | Workers |
@@ -147,7 +147,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | Document | Contents |
 |---|---|
 | [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
-| [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/KV schema, compaction, fork, listing |
+| [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/R2 schema, compaction, fork, listing |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |
 | [d1_tool.md](d1_tool.md) | D1 tool (provided): schema, select, insert, update, delete, schema_change, sql |
@@ -161,7 +161,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | [instructions_extension.md](instructions_extension.md) | Instructions extension: persistent per-scope instructions appended to the system prompt |
 | [session-format.md](session-format.md) | Redirect → core.md (session schema now in core.md) |
 | [data-flows.md](data-flows.md) | External flows: gateway→core→LLM→response; internal flows redirect to core.md |
-| [infrastructure.md](infrastructure.md) | Deployment topology, CI/CD, gateway bindings, extension namespace |
+| [infrastructure.md](infrastructure.md) | Deployment topology, CI/CD, gateway bindings, extension service bindings |
 | [code.md](code.md) | TypeScript standards, `any` policy, pnpm, Vite/Vitest, mocking patterns, naming |
 | [piccolo_differences.md](piccolo_differences.md) | Design differences from pi: minimal core, cloud-native, CF infra, JSRPC, extension model |
 | [implementation_plan.md](implementation_plan.md) | Ordered high-level implementation plan |

@@ -49,11 +49,11 @@ Skills are loaded from a **source list** — a JSON array of URLs stored in the 
 The source list is updated at runtime via a JSRPC endpoint on the extension itself — no redeployment needed:
 
 ```typescript
-// Gateways or admin tools call this directly via dispatch namespace
-await env.EXTENSIONS.get("ext-skills").addSource("https://example.com/skills/skills.json");
-await env.EXTENSIONS.get("ext-skills").removeSource("https://example.com/skills/skills.json");
-await env.EXTENSIONS.get("ext-skills").listSources(); // → string[]
-await env.EXTENSIONS.get("ext-skills").reloadSkills(); // force re-fetch all sources
+// Gateways or admin tools call this directly via a service binding
+await env.EXTENSION_SKILLS.addSource("https://example.com/skills/skills.json");
+await env.EXTENSION_SKILLS.removeSource("https://example.com/skills/skills.json");
+await env.EXTENSION_SKILLS.listSources(); // → string[]
+await env.EXTENSION_SKILLS.reloadSkills(); // force re-fetch all sources
 ```
 
 ---
@@ -182,7 +182,7 @@ On `reloadSkills()` JSRPC call, all `skill:*` cache entries are purged before re
 
 ## JSRPC Extension Endpoints
 
-The extension exposes additional JSRPC methods beyond `IExtensionWorker`, callable from gateways or admin tools via the dispatch namespace:
+The extension exposes additional JSRPC methods beyond `IExtensionWorker`, callable from gateways or admin tools via a service binding:
 
 ```typescript
 class SkillsExtension extends WorkerEntrypoint {
@@ -236,11 +236,8 @@ curl -X POST https://piccolo.example.com/api/extensions/ext-skills/addSource \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"url": "https://raw.githubusercontent.com/badlogic/pi-skills/main/skills.json"}'
 
-# Or call directly via wrangler
-wrangler dispatch-namespace execute piccolo-extensions \
-  --binding ext-skills \
-  --method addSource \
-  --args '["https://raw.githubusercontent.com/badlogic/pi-skills/main/skills.json"]'
+# Or call from an admin Worker bound to EXTENSION_SKILLS
+# await env.EXTENSION_SKILLS.addSource("https://raw.githubusercontent.com/badlogic/pi-skills/main/skills.json")
 ```
 
 ---

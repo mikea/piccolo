@@ -58,7 +58,7 @@ The core exposes a minimal, stable API surface. Feature growth happens in the ex
 | Compute / agent process | Local process or Docker container | Cloudflare Workers / Durable Objects |
 | Scheduled / periodic tasks | Watched JSON files (pi-mom) | Cloudflare Cron Triggers |
 | Real-time streaming to clients | SSE / WebSocket from local server | Cloudflare Workers streaming responses + Durable Objects for connection state |
-| Extension distribution | Local `.ts`/`.js` files on disk | Workers for Platforms dispatch namespace (see §3.2) |
+| Extension distribution | Local `.ts`/`.js` files on disk | Independent Worker services bound to core (`EXTENSION_*`) (see §3.2) |
 | Inter-component communication | In-process function calls | Workers RPC / JSRPC (see §3.1) |
 
 The spec for piccolo must describe each subsystem in terms of these CF primitives, not in terms of local file paths or process APIs.
@@ -82,29 +82,28 @@ All communication between piccolo's internal components — and between the core
 - Streaming events (LLM token deltas, tool progress updates) are carried as `ReadableStream` values over RPC, not as custom SSE or WebSocket frames at the internal layer.
 - The extension API (`ExtensionAPI` equivalent) that pi passes as an in-process object is instead an `RpcTarget` stub — extensions call back to the core over RPC, and the core calls into extensions over RPC.
 
-### 3.2 Post-Deployment Extension Installation via Workers for Platforms
+### 3.2 Extension Installation via Core Service Bindings
 
 **Pi:** Extensions are `.ts`/`.js` files on the local filesystem. Adding an extension requires placing a file in `~/.pi/agent/extensions/` or a project-local `.pi/extensions/` directory and restarting the agent. Users must have write access to the host machine.
 
-**Piccolo:** Extensions are deployed Workers, and installing an extension after piccolo is already deployed must not require redeploying piccolo's core. This is achieved using **Cloudflare Workers for Platforms** (dynamic dispatch namespaces).
+**Piccolo:** Extensions are deployed Workers and wired into `piccolo-core` through service bindings named `EXTENSION_<something>`.
 
 **How it works:**
 
-- Piccolo maintains a **dispatch namespace** — a named bucket of Workers managed via the Cloudflare API. Each extension is an independently deployed Worker inside this namespace.
-- The piccolo core holds a binding to the dispatch namespace. At runtime, when an extension needs to be invoked, the core dispatches to the correct Worker by name: `await env.EXTENSIONS_NAMESPACE.get(extensionName).someMethod(...)`.
-- Installing a new extension = uploading a new Worker to the dispatch namespace via the Cloudflare API. No redeployment of piccolo's core is required.
-- Updating an extension = re-uploading the extension Worker to the namespace.
-- Uninstalling = deleting the Worker from the namespace.
-- Each extension Worker extends `WorkerEntrypoint` and exposes the piccolo extension contract as RPC methods. The core discovers and calls extensions entirely via JSRPC through the dispatch namespace.
+- Each extension is a normal Worker service (e.g. `ext-skills`, `ext-r2-tool`).
+- `piccolo-core` declares one service binding per enabled extension (e.g. `EXTENSION_10_GUARD`, `EXTENSION_20_SKILLS`).
+- At runtime, `ExtensionRunner` enumerates env keys prefixed `EXTENSION_`, sorts them lexicographically, and calls each binding as an `IExtensionWorker` RPC stub.
+- Installing/uninstalling an extension in the core means editing `piccolo-core` service bindings and redeploying core.
+- Updating extension code does not require a core redeploy as long as binding and service names are unchanged.
 
 **Consequences for the spec:**
 
 - Extensions are Workers, not TypeScript files. They are authored, versioned, and deployed as first-class Cloudflare Workers.
 - The extension API contract (the set of RPC methods an extension must/may implement) is the primary extension specification surface.
-- The extension registry (which extensions are installed and active) is stored in Workers KV or D1, not on a filesystem.
+- The enabled extension set is encoded in `piccolo-core` service bindings, not in a filesystem registry.
 - There is no Jiti/in-process TypeScript evaluation. Extensions run in isolated Worker sandboxes, giving each extension its own CPU and memory limits, security boundary, and independent deployability.
 - Extensions that need to call back into the core (e.g., to send a message, access session state, or invoke another tool) receive an `RpcTarget` stub from the core at invocation time, and call it over RPC.
-- **Limitation to resolve**: Workers for Platforms dispatch namespaces require the core to know the extension's Worker name at dispatch time. The extension registry in KV/D1 provides the name→Worker mapping. Dynamic discovery (analogous to pi's filesystem scan) is replaced by an explicit registry lookup before dispatch.
+- **Tradeoff**: changing which extensions are enabled requires a core redeploy because binding changes are part of core configuration.
 
 ---
 
@@ -120,8 +119,8 @@ All communication between piccolo's internal components — and between the core
 | LLM provider layer | Custom per-provider code (`pi-ai` package) | CF AI Gateway unified API (`ai` + `ai-gateway-provider`) |
 | LLM API keys | Per-provider env vars / `auth.json` | Managed in CF AI Gateway; `CF_AI_GATEWAY_TOKEN` only |
 | Deployment target | Local binary (macOS, Linux, Windows) | CF Workers / Durable Objects |
-| Extension loading | Jiti (in-process TS eval from local fs) | Workers for Platforms dispatch namespace |
-| Extension installation | File copy to `~/.pi/extensions/` + restart | Upload Worker to dispatch namespace via CF API (no core redeploy) |
+| Extension loading | Jiti (in-process TS eval from local fs) | `EXTENSION_*` service binding discovery in core |
+| Extension installation | File copy to `~/.pi/extensions/` + restart | Deploy Worker + add core service binding (core redeploy required for set changes) |
 | Inter-component communication | In-process function calls | Workers RPC (JSRPC) — `WorkerEntrypoint` / `RpcTarget` classes |
 | Streaming (LLM deltas, tool updates) | Custom event emitters / SSE frames | `ReadableStream` over Workers RPC |
 | Core size principle | Batteries included | Minimal — everything optional is an extension |

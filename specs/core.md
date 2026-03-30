@@ -16,7 +16,7 @@ The agent loop (`AgentSessionDO`, `toAiSdkTools`, `agentCompact`) lives directly
 | Own one `AgentSessionDO` per session | Durable Object |
 | Run the agent loop | `AgentSessionDO` private methods + helpers in `compact.ts` / `agent-tools.ts` |
 | Persist conversation history | D1 + DO storage |
-| Dispatch events to extensions | `ExtensionRunner` via dispatch namespace |
+| Dispatch events to extensions | `ExtensionRunner` via `EXTENSION_*` service bindings |
 | Assemble the system prompt | `SystemPromptAssembler` |
 | Manage model selection | Stored per session in D1 |
 | Trigger and persist context compaction | `compact()` in `compact.ts`, called by DO |
@@ -35,17 +35,16 @@ Declared in `packages/core/wrangler.template.jsonc`:
       { "name": "AGENT_SESSION", "class_name": "AgentSessionDO" }
     ]
   },
-  "kv_namespaces": [
-    { "binding": "CONFIG", "id": "<KV_NAMESPACE_ID>" }
-  ],
   "d1_databases": [
     { "binding": "SESSIONS_DB", "database_name": "piccolo-sessions", "database_id": "<D1_ID>" }
   ],
   "r2_buckets": [
     { "binding": "ASSETS", "bucket_name": "piccolo-assets" }
   ],
-  "dispatch_namespaces": [
-    { "binding": "EXTENSIONS", "namespace": "piccolo-extensions" }
+  "services": [
+    { "binding": "EXTENSION_FETCH_TOOL", "service": "ext-fetch-tool" },
+    { "binding": "EXTENSION_R2_TOOL", "service": "ext-r2-tool" },
+    { "binding": "EXTENSION_INSTRUCTIONS", "service": "ext-instructions" }
   ],
   "vars": {
     "CF_ACCOUNT_ID": "<account_id>",
@@ -94,16 +93,9 @@ CREATE INDEX sessions_user       ON sessions(user_id, updated_at DESC);
 
 ---
 
-## KV Schema
+The extension set is configured by core service bindings: every binding whose name starts with `EXTENSION_` is treated as an extension worker.
 
-Namespace bound as `CONFIG`:
-
-| Key | Value | Description |
-|---|---|---|
-| `extensions:registry` | `string[]` JSON array | Ordered list of active extension Worker names |
-| `extensions:meta:{name}` | `{ version, description }` JSON | Extension metadata |
-| `settings:global` | JSON object | Global piccolo settings |
-| `settings:user:{userId}` | JSON object | Per-user settings overrides |
+Changing the enabled extension set (adding/removing/renaming `EXTENSION_*` bindings) requires a `piccolo-core` redeploy.
 
 ---
 
@@ -354,7 +346,7 @@ When the DO starts cold (evicted and restarted), `initialize()` runs before any 
    e. Extract modelId from last "model_change" entry, or sessions.model_id
 5. Restore agent.messages = reconstructed messages
 6. Restore agent.modelId
-7. Load extension registry and initialise ExtensionRunner
+7. Discover `EXTENSION_*` bindings and initialise `ExtensionRunner`
 ```
 
 ### `newSession()` (DO public RPC)
@@ -448,9 +440,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 
 Manages dispatch to all installed extension Workers.
 
+Extension discovery order is deterministic: bindings are sorted lexicographically by binding name (for example `EXTENSION_10_GUARD` before `EXTENSION_20_SKILLS`). This order controls all "first wins" merge rules.
+
 ### Initialization (per session start)
 
-`initialize()` only reads the registry and builds worker stubs. It does **not** call
+`initialize()` only discovers extension bindings and builds worker stubs. It does **not** call
 `getTools()`, `getCommands()`, or `getSystemPromptAdditions()` on extensions — those
 calls pass `ISession` (an RPC stub) to remote Workers, which may call back into the
 session DO. Calling them inside `blockConcurrencyWhile` would deadlock.
@@ -459,10 +453,12 @@ The caller (`AgentSessionDO`) drives registration explicitly, outside `blockConc
 
 ```typescript
 class ExtensionRunner {
-  // Only reads the registry and builds dispatch stubs. No ISession involved.
-  async initialize(kv: KVNamespace, extensions: DispatchNamespace): Promise<void> {
-    // 1. Read extensions:registry from CONFIG KV → string[]
-    // 2. For each name: worker = extensions.get(name); push to #extensions list
+  // Only discovers env bindings and builds worker stubs. No ISession involved.
+  async initialize(env: Record<string, unknown>): Promise<void> {
+    // 1. Enumerate Object.entries(env)
+    // 2. Keep entries where bindingName starts with "EXTENSION_"
+    // 3. Sort by bindingName lexicographically
+    // 4. Treat each binding value as an extension worker and push to #extensions list
   }
 
   // Called by AgentSessionDO outside blockConcurrencyWhile.

@@ -6,48 +6,50 @@ Complete reference for writing, deploying, and integrating extensions in piccolo
 
 ## Overview
 
-Extensions are independent Cloudflare Workers deployed into piccolo's dispatch namespace (`piccolo-extensions`). Each extension implements `IExtensionWorker` — a typed `WorkerEntrypoint` surface defined in [api.md §8](api.md) — and is invoked by the core via JSRPC.
+Extensions are independent Cloudflare Workers deployed as normal services. Each extension implements `IExtensionWorker` — a typed `WorkerEntrypoint` surface defined in [api.md §8](api.md) — and is invoked by the core via JSRPC through a service binding.
 
-There is no in-process extension loading, no TypeScript evaluation at runtime, and no filesystem scanning. Users install an extension by deploying a Worker and registering its name in the extension registry (Workers KV). No core redeploy is required.
+There is no in-process extension loading, no TypeScript evaluation at runtime, and no filesystem scanning. The core discovers extensions by enumerating bindings named `EXTENSION_<something>` in its own environment.
 
 All types (`IExtensionWorker`, `ISession`, `ToolDescriptor`, event and result types) are defined in [api.md](api.md).
 
 ---
 
-## Extension Registry
+## Extension Discovery
 
-The registry is a JSON array in Workers KV under `extensions:registry`:
+At session start, the core enumerates all env bindings whose names start with `EXTENSION_`, sorts them lexicographically by binding name, and treats each binding value as an extension worker stub.
 
-```json
-["ext-skills", "ext-templates", "ext-permissions", "ext-usage-tracker"]
+Example:
+
+```jsonc
+"services": [
+  { "binding": "EXTENSION_10_GUARD", "service": "ext-permissions" },
+  { "binding": "EXTENSION_20_SKILLS", "service": "ext-skills" }
+]
 ```
 
-At session start, the core reads this key, obtains a dispatch stub for each name, and calls the lifecycle / registration methods (`getTools()`, `getCommands()`, `getSystemPromptAdditions()`) to bootstrap the session.
+The sorted order controls extension merge precedence for "first wins" hooks.
 
 ---
 
 ## Installing / Updating / Removing
 
-No user installation of code is required. Operators deploy Workers into the dispatch namespace:
+No user installation of code is required. Operators deploy each extension as a normal Worker service, then wire it into `piccolo-core`:
 
 ```bash
-# Install
-wrangler deploy --name ext-my-extension \
-  --dispatch-namespace piccolo-extensions
+# Install/update extension worker
+wrangler deploy --config extensions/my-extension/wrangler.jsonc
 
-wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-my-extension", "ext-existing"]'
+# Add binding in packages/core/wrangler.jsonc
+# { "binding": "EXTENSION_MY_EXTENSION", "service": "ext-my-extension" }
 
-# Update — re-deploy, no registry change
-wrangler deploy --name ext-my-extension \
-  --dispatch-namespace piccolo-extensions
+# Remove by deleting the EXTENSION_* binding from core config
 
-# Remove
-wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-existing"]'
+# Apply binding changes
+wrangler deploy --config packages/core/wrangler.jsonc
 ```
 
-No piccolo-core redeploy is required.
+Updating extension code does not require a core redeploy if binding and service names are unchanged.
+Changing the extension set (add/remove/rename `EXTENSION_*` bindings) requires redeploying `piccolo-core`.
 
 ---
 
@@ -436,7 +438,7 @@ export default class ModelRouterExtension extends WorkerEntrypoint {
 
 ### 12. JSRPC-Exposed Extension Endpoints
 
-Extensions can expose additional JSRPC methods beyond `IExtensionWorker` — gateways or other extensions can call these directly via the dispatch namespace. This is how extensions provide rich capabilities without users installing anything.
+Extensions can expose additional JSRPC methods beyond `IExtensionWorker` — gateways or other extensions can call these directly via service bindings. This is how extensions provide rich capabilities without users installing anything.
 
 ```typescript
 export default class SearchExtension extends WorkerEntrypoint {
@@ -446,7 +448,7 @@ export default class SearchExtension extends WorkerEntrypoint {
   async execute(toolCallId, params, ctx) { /* ... */ }
 
   // Additional JSRPC endpoint — callable from gateways or other extensions
-  // e.g.: env.EXTENSIONS.get("ext-search").suggest(prefix)
+  // e.g.: env.EXTENSION_SEARCH.suggest(prefix)
   async suggest(prefix: string): Promise<string[]> {
     const results = await this.env.SEARCH_INDEX.list({ prefix });
     return results.keys.map(k => k.name).slice(0, 10);

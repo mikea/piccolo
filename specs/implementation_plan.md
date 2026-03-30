@@ -320,7 +320,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 | `packages/core/src/do/compaction.ts` | Updated to use `IExtensionRunner` interface (not `ExtensionRunnerStub`) |
 | `packages/core/src/do/agent-session.ts` | Updated to instantiate and call `ExtensionRunner`; `DOState.extensionRunner` typed as `ExtensionRunner` |
 | `packages/core/test/do/extension-runner.test.ts` | 40 unit tests covering all merge rules, error isolation, command parsing |
-| `packages/core/test/mocks/extension-stub.ts` | `createMockExtension()`, `createMockKv()`, `createMockDispatchNamespace()` |
+| `packages/core/test/mocks/extension-stub.ts` | `createMockExtension()`, `createMockExtensionEnv()` |
 
 #### Key design decisions
 
@@ -334,7 +334,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 **`onSessionStart` timing**: Called during `initialize()` after all registration data is collected. Fire-and-forget — errors from `onSessionStart` are swallowed so they do not block DO startup.
 
-**`DispatchNamespace` in Miniflare**: The Miniflare test environment does not support `DispatchNamespace` locally (warning emitted at test startup). `AgentSessionDO.#initialize()` calls `extensionRunner.initialize()` with the real `env.EXTENSIONS` binding, which Miniflare stubs as a no-op that returns no stubs. This means existing agent-session integration tests are unaffected: the extension list is empty, and all emit calls return their neutral defaults — identical to the prior `ExtensionRunnerStub` behaviour.
+**Extension discovery in tests**: `AgentSessionDO.#initialize()` calls `extensionRunner.initialize()` with the full env object. `ExtensionRunner` discovers only bindings prefixed with `EXTENSION_`, sorted lexicographically. Miniflare tests can stay unchanged unless they need specific extension bindings; by default no such bindings exist, so emit calls return neutral defaults.
 
 ---
 
@@ -475,7 +475,7 @@ The public JSRPC surface that gateways connect to.
 - `newSession(userId, options?)` → initiates DO, returns `SessionImpl` RpcTarget directly
 - `getSession(sessionId)` → returns `SessionImpl` RpcTarget (no D1 round-trip)
 - `listSessions(userId)` → queries D1, returns `ISession[]` (live RpcTarget stubs, not `SessionInfo[]`)
-- `listModels()` → tries `CONFIG KV "models:catalog"`, falls back to `MODEL_CATALOG`
+- `listModels()` → reads and validates `MODELS` env var as the authoritative catalog
 - No separate `Session` stub class — `SessionImpl` IS the gateway-facing RpcTarget (JSRPC passes `RpcTarget` across Worker boundaries natively)
 - `SessionImpl.fork()` → calls `forkSession()` + `initSession()` on new DO + returns new `SessionImpl` via `getSession()`
 - `SessionImpl.prompt()` → delegates to `doState.promptFn` (bound to `AgentSessionDO.prompt()` during `#initialize()`)

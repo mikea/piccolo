@@ -546,7 +546,7 @@ class ITelegramChatDO extends DurableObject {
 
 ## 8. Extension API — `IExtensionWorker`
 
-Implemented by each extension Worker. Called by `ExtensionRunner` inside `piccolo-core` via the Workers for Platforms dispatch namespace.
+Implemented by each extension Worker. Called by `ExtensionRunner` inside `piccolo-core` via core service bindings whose names start with `EXTENSION_`.
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";

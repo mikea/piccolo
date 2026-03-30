@@ -32,7 +32,7 @@ All piccolo components run on the **Cloudflare Workers runtime** (V8 isolates). 
 │                              └──────────────────────────────┘  │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Extension Dispatch Namespace (piccolo-extensions)        │   │
+│  │ Extension Worker Services                                │   │
 │  │   ext-fetch-tool / ext-r2-tool / ext-d1-tool            │   │
 │  │   ext-instructions / ext-skills / ext-templates          │   │
 │  └─────────────────────────────────────────────────────────┘   │
@@ -98,25 +98,22 @@ For `piccolo-core` bindings see [core.md — Bindings](core.md#bindings).
 
 ---
 
-## Extension Dispatch Namespace
+## Extension Service Bindings
 
-Extensions are deployed as Workers into the `piccolo-extensions` dispatch namespace, managed via the Cloudflare API.
+Extensions are deployed as normal Workers. `piccolo-core` discovers extension workers from service bindings whose names start with `EXTENSION_`.
 
 ```bash
-# Deploy an extension into the namespace
-pnpm wrangler deploy --name ext-my-tool \
-  --dispatch-namespace piccolo-extensions \
-  --compatibility-date 2024-04-03
+# Deploy an extension Worker
+pnpm wrangler deploy --config extensions/my-tool/wrangler.jsonc
 
-# Register in KV so core discovers it
-pnpm wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-my-tool", "ext-existing"]'
+# Bind it in piccolo-core (packages/core/wrangler.jsonc)
+# services: [{ "binding": "EXTENSION_MY_TOOL", "service": "ext-my-tool" }]
 
-# Update: re-deploy with the same name (no registry change needed)
-# Remove: update registry key, then optionally delete the Worker
+# Re-deploy piccolo-core so binding changes take effect
+pnpm wrangler deploy --config packages/core/wrangler.jsonc
 ```
 
-No `piccolo-core` redeploy is required for any extension operation.
+Updating extension code does not require a core redeploy if the service name and binding stay unchanged. Adding/removing/renaming extension bindings requires redeploying `piccolo-core`.
 
 ---
 
@@ -128,6 +125,7 @@ No `piccolo-core` redeploy is required for any extension operation.
 3. piccolo-web-gateway
 4. piccolo-telegram-gateway
 5. Extensions           (deployed independently; any order)
+6. piccolo-core         (re-deploy after any EXTENSION_* binding change)
 ```
 
 ---

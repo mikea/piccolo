@@ -2,12 +2,12 @@
  * Unit tests for ExtensionRunner and parseCommand.
  *
  * Pure unit tests — no Miniflare, no D1. All extension stubs are in-process
- * mocks created via createMockExtension(). KV and DispatchNamespace are
+ * mocks created via createMockExtension(). Extension env bindings are
  * lightweight mocks from test/mocks/extension-stub.ts.
  *
  * Test groups:
  *   1. parseCommand()
- *   2. initialize() — empty registry, single, multiple, error isolation
+ *   2. initialize() — empty bindings, single, multiple, error isolation
  *   3. emitInput() — merge rules
  *   4. emitBeforeStart() — merge rules
  *   5. emitContext() — last wins
@@ -32,9 +32,8 @@ import type {
 import { describe, expect, it } from "vitest";
 import { ExtensionRunner, parseCommand } from "../../src/extension-runner.ts";
 import {
-  createMockDispatchNamespace,
   createMockExtension,
-  createMockKv,
+  createMockExtensionEnv,
   createMockSession,
 } from "../mocks/extension-stub.ts";
 
@@ -95,11 +94,14 @@ const ctx = createMockSession({ sessionId: "sess-1", userId: "user-1" });
 
 async function makeRunner(
   stubs: Record<string, ReturnType<typeof createMockExtension>>,
-  registryNames?: string[],
+  extras: Record<string, unknown> = {},
 ): Promise<ExtensionRunner> {
-  const names = registryNames ?? Object.keys(stubs);
+  const extensionBindings: Record<string, ReturnType<typeof createMockExtension>> = {};
+  for (const [name, stub] of Object.entries(stubs)) {
+    extensionBindings[`EXTENSION_${name.toUpperCase()}`] = stub;
+  }
   const runner = new ExtensionRunner();
-  await runner.initialize(createMockKv(names), createMockDispatchNamespace(stubs), ctx);
+  await runner.initialize(createMockExtensionEnv(extensionBindings, extras), ctx);
   return runner;
 }
 
@@ -157,25 +159,33 @@ describe("parseCommand()", () => {
 // ─── 2. initialize() ─────────────────────────────────────────────────────────
 
 describe("initialize()", () => {
-  it("empty registry → no stubs, empty commands and additions", async () => {
+  it("no extension bindings → no stubs, empty commands and additions", async () => {
     const runner = new ExtensionRunner();
-    await runner.initialize(createMockKv([]), createMockDispatchNamespace({}), ctx);
+    await runner.initialize(createMockExtensionEnv({}), ctx);
     expect(await runner.getCommands(ctx)).toEqual([]);
     expect(await runner.getSystemPromptAdditions(ctx)).toEqual([]);
     expect(await runner.getTools(ctx)).toEqual([]);
   });
 
-  it("absent KV key → treated as empty registry", async () => {
+  it("no EXTENSION_ bindings present → treated as empty", async () => {
     const runner = new ExtensionRunner();
-    await runner.initialize(createMockKv(undefined), createMockDispatchNamespace({}), ctx);
+    await runner.initialize(createMockExtensionEnv({}, { CONFIG: {}, CORE: {} }), ctx);
     expect(await runner.getCommands(ctx)).toEqual([]);
   });
 
-  it("malformed KV JSON → treated as empty registry", async () => {
+  it("non-extension bindings are ignored", async () => {
     const runner = new ExtensionRunner();
-    const kv = createMockKv(undefined);
-    await kv.put("extensions:registry", "not-json");
-    await runner.initialize(kv, createMockDispatchNamespace({}), ctx);
+    await runner.initialize(
+      createMockExtensionEnv(
+        {},
+        {
+          EXTENSIONS: {},
+          CONFIG: {},
+          FOO: "bar",
+        },
+      ),
+      ctx,
+    );
     expect(await runner.getCommands(ctx)).toEqual([]);
   });
 
@@ -221,6 +231,21 @@ describe("initialize()", () => {
     expect(sections).toContain("context");
   });
 
+  it("extensions are initialised in lexicographic binding-name order", async () => {
+    const seen: string[] = [];
+    const extB = createMockExtension({ name: "b", onInit: () => seen.push("b") });
+    const extA = createMockExtension({ name: "a", onInit: () => seen.push("a") });
+    const runner = new ExtensionRunner();
+    await runner.initialize(
+      createMockExtensionEnv({
+        EXTENSION_20_B: extB,
+        EXTENSION_10_A: extA,
+      }),
+      ctx,
+    );
+    expect(seen).toEqual(["a", "b"]);
+  });
+
   it("init() is called on all stubs by initialize()", async () => {
     const extA = createMockExtension({ name: "ext-a" });
     const extB = createMockExtension({ name: "ext-b" });
@@ -237,8 +262,7 @@ describe("initialize()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(
-      createMockKv(["bad", "good"]),
-      createMockDispatchNamespace({ bad: throwing, good }),
+      createMockExtensionEnv({ EXTENSION_BAD: throwing, EXTENSION_GOOD: good }),
       ctx,
     );
     const names = (await runner.getCommands(ctx)).map((c) => c.name);
@@ -253,8 +277,7 @@ describe("initialize()", () => {
     });
     const runner = new ExtensionRunner();
     await runner.initialize(
-      createMockKv(["bad", "good"]),
-      createMockDispatchNamespace({ bad: throwing, good }),
+      createMockExtensionEnv({ EXTENSION_BAD: throwing, EXTENSION_GOOD: good }),
       ctx,
     );
     expect(await runner.getSystemPromptAdditions(ctx)).toHaveLength(1);
@@ -320,7 +343,7 @@ describe("emitInput()", () => {
       },
     });
     const runner = new ExtensionRunner();
-    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), ctx);
+    await runner.initialize(createMockExtensionEnv({ EXTENSION_A: ext }), ctx);
     const result = await emitInput(runner, inputEvent("/my-cmd extra args"), ctx);
     expect(result.action).toBe("handled");
   });
@@ -336,7 +359,7 @@ describe("emitInput()", () => {
       },
     });
     const runner = new ExtensionRunner();
-    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), ctx);
+    await runner.initialize(createMockExtensionEnv({ EXTENSION_A: ext }), ctx);
     await emitInput(runner, inputEvent("/skill:test arg1 arg2"), ctx);
     expect(capturedArgs).toBe("arg1 arg2");
   });
@@ -363,7 +386,7 @@ describe("emitBeforeStart()", () => {
     const ext = createMockExtension({
       name: "a",
       onBeforeStart: () => ({
-        contextMessages: [{ role: "user", content: "ctx msg" }],
+        contextMessages: [{ id: "m1", role: "user", content: "ctx msg" }],
       }),
     });
     const runner = await makeRunner({ a: ext });
@@ -376,13 +399,13 @@ describe("emitBeforeStart()", () => {
     const extA = createMockExtension({
       name: "a",
       onBeforeStart: () => ({
-        contextMessages: [{ role: "user", content: "from A" }],
+        contextMessages: [{ id: "m2", role: "user", content: "from A" }],
       }),
     });
     const extB = createMockExtension({
       name: "b",
       onBeforeStart: () => ({
-        contextMessages: [{ role: "user", content: "from B" }],
+        contextMessages: [{ id: "m3", role: "user", content: "from B" }],
       }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
@@ -408,7 +431,7 @@ describe("emitBeforeStart()", () => {
     const extA = createMockExtension({
       name: "a",
       onBeforeStart: () => ({
-        contextMessages: [{ role: "user", content: "ctx" }],
+        contextMessages: [{ id: "m4", role: "user", content: "ctx" }],
       }),
     });
     const extB = createMockExtension({
@@ -427,7 +450,7 @@ describe("emitBeforeStart()", () => {
 describe("emitContext()", () => {
   const contextEvent = {
     type: "context" as const,
-    messages: [{ role: "user" as const, content: "hi" }],
+    messages: [{ id: "m5", role: "user" as const, content: "hi" }],
   };
 
   it("no extensions → undefined", async () => {
@@ -444,11 +467,11 @@ describe("emitContext()", () => {
   it("last extension returning a non-void ContextResult wins", async () => {
     const extA = createMockExtension({
       name: "a",
-      onContext: () => ({ messages: [{ role: "user", content: "from A" }] }),
+      onContext: () => ({ messages: [{ id: "m6", role: "user", content: "from A" }] }),
     });
     const extB = createMockExtension({
       name: "b",
-      onContext: () => ({ messages: [{ role: "user", content: "from B" }] }),
+      onContext: () => ({ messages: [{ id: "m7", role: "user", content: "from B" }] }),
     });
     const runner = await makeRunner({ a: extA, b: extB });
     const result = await emitContext(runner, contextEvent, ctx);
@@ -458,7 +481,7 @@ describe("emitContext()", () => {
   it("first returns result, second returns void → first wins (it IS the last non-void)", async () => {
     const extA = createMockExtension({
       name: "a",
-      onContext: () => ({ messages: [{ role: "user", content: "from A" }] }),
+      onContext: () => ({ messages: [{ id: "m8", role: "user", content: "from A" }] }),
     });
     const extB = createMockExtension({ name: "b", onContext: () => undefined });
     const runner = await makeRunner({ a: extA, b: extB });
@@ -698,7 +721,7 @@ describe("initialize() — init(ctx) propagation", () => {
     const ext = createMockExtension({ name: "a" });
     const session = createMockSession({ sessionId: "real-sid", userId: "real-uid" });
     const runner = new ExtensionRunner();
-    await runner.initialize(createMockKv(["a"]), createMockDispatchNamespace({ a: ext }), session);
+    await runner.initialize(createMockExtensionEnv({ EXTENSION_A: ext }), session);
     expect(ext.calls.onInit).toHaveLength(1);
     expect(ext.calls.onInit[0]).toBeDefined();
   });

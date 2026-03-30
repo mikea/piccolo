@@ -1,5 +1,5 @@
 packages:
-  - "packages/*"
-  - "extensions/*"
-  - "gateways/*"
-  - "gateways/web/app"
+  - packages/*
+  - extensions/*
+  - gateways/*
+  - gateways/web/app

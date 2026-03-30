@@ -298,14 +298,17 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     this.#model = createModel(this.env, this.#modelId);
 
     // 5. Set up extension runner and system prompt infrastructure.
-    // initialize() only reads the registry and builds worker stubs — it does
+    // initialize() only discovers extension bindings and builds worker stubs — it does
     // NOT call getTools/getCommands/getSystemPromptAdditions, which would make
     // reverse RPC calls back into this DO and deadlock inside blockConcurrencyWhile.
     this.#extensionRunner = new ExtensionRunner();
     this.#assembler = new SystemPromptAssembler();
     this.#rpcCtx = new SessionTarget(this);
 
-    await this.#extensionRunner.initialize(this.env.CONFIG, this.env.EXTENSIONS, this.#rpcCtx);
+    await this.#extensionRunner.initialize(
+      this.env as unknown as Record<string, unknown>,
+      this.#rpcCtx,
+    );
   }
 
   // ─── Test-only helpers ────────────────────────────────────────────────────

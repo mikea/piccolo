@@ -48,10 +48,10 @@ Templates are loaded from a **source list** — a JSON array of URLs stored in `
 ### Source list management (JSRPC)
 
 ```typescript
-await env.EXTENSIONS.get("ext-templates").addSource("https://example.com/templates.json");
-await env.EXTENSIONS.get("ext-templates").removeSource("https://example.com/templates.json");
-await env.EXTENSIONS.get("ext-templates").listSources();    // → string[]
-await env.EXTENSIONS.get("ext-templates").reloadTemplates(); // force re-fetch
+await env.EXTENSION_TEMPLATES.addSource("https://example.com/templates.json");
+await env.EXTENSION_TEMPLATES.removeSource("https://example.com/templates.json");
+await env.EXTENSION_TEMPLATES.listSources();    // → string[]
+await env.EXTENSION_TEMPLATES.reloadTemplates(); // force re-fetch
 ```
 
 ---
@@ -263,10 +263,8 @@ class TemplatesExtension extends WorkerEntrypoint {
 ### Add a template source
 
 ```bash
-wrangler dispatch-namespace execute piccolo-extensions \
-  --binding ext-templates \
-  --method addSource \
-  --args '["https://raw.githubusercontent.com/myorg/piccolo-templates/main/templates.json"]'
+# From an admin Worker bound to EXTENSION_TEMPLATES:
+# await env.EXTENSION_TEMPLATES.addSource("https://raw.githubusercontent.com/myorg/piccolo-templates/main/templates.json")
 ```
 
 ### Template index file format (`templates.json`)

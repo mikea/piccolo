@@ -352,14 +352,14 @@ The following constraints are enforced in `execute()` at runtime:
 ## Deployment
 
 ```bash
-# 1. Deploy the extension Worker into the dispatch namespace
-pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc \
-  --dispatch-namespace piccolo-extensions
+# 1. Deploy the extension Worker
+pnpm wrangler deploy --config extensions/fetch-tool/wrangler.template.jsonc
 
-# 2. Register in KV
-pnpm wrangler kv key put --binding CONFIG \
-  --config packages/core/wrangler.jsonc \
-  extensions:registry '["ext-fetch-tool"]'
+# 2. Add core service binding (packages/core/wrangler.jsonc)
+# { "binding": "EXTENSION_FETCH_TOOL", "service": "ext-fetch-tool" }
+
+# 3. Re-deploy core so binding changes apply
+pnpm wrangler deploy --config packages/core/wrangler.jsonc
 ```
 
-No additional bindings are required. No `piccolo-core` redeploy needed — the extension registry is polled at session start. See [tools.md](tools.md) for the general deployment checklist.
+No additional bindings are required for the extension Worker itself. Updating the fetch extension code does not require core redeploy if names are unchanged. See [tools.md](tools.md) for the general deployment checklist.

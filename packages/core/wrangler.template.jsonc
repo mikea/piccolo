@@ -33,15 +33,6 @@
     }
   ],
 
-  // ── KV ─────────────────────────────────────────────────────────────────
-  "kv_namespaces": [
-    {
-      // Extension registry, model catalog, and per-session config.
-      "binding": "CONFIG",
-      "id": "<PICCOLO_KV_ID>"
-    }
-  ],
-
   // ── R2 ─────────────────────────────────────────────────────────────────
   "r2_buckets": [
     {
@@ -51,12 +42,12 @@
     }
   ],
 
-  // ── Workers for Platforms (extension dispatch namespace) ───────────────
-  "dispatch_namespaces": [
-    {
-      "binding": "EXTENSIONS",
-      "namespace": "piccolo-extensions"
-    }
+  // ── Extension service bindings ─────────────────────────────────────────
+  // Add one service binding per extension. Any binding whose name starts
+  // with EXTENSION_ is auto-discovered by ExtensionRunner.
+  "services": [
+    // Example:
+    // { "binding": "EXTENSION_FETCH_TOOL", "service": "ext-fetch-tool" }
   ],
 
   // ── Environment variables ──────────────────────────────────────────────

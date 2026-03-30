@@ -214,11 +214,13 @@ wrangler d1 create piccolo-instructions
 wrangler d1 migrations apply piccolo-instructions
 
 # Deploy the extension Worker
-wrangler deploy --name ext-instructions --dispatch-namespace piccolo-extensions
+wrangler deploy --name ext-instructions
 
-# Register in the extension registry
-wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-instructions", "...other extensions..."]'
+# Add core service binding in packages/core/wrangler.jsonc
+# { "binding": "EXTENSION_INSTRUCTIONS", "service": "ext-instructions" }
+
+# Re-deploy core so binding changes apply
+wrangler deploy --config packages/core/wrangler.jsonc
 ```
 
-No piccolo-core redeploy required.
+Updating extension code does not require core redeploy if binding/service names stay unchanged.

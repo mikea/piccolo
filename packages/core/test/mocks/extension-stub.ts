@@ -203,50 +203,21 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
   return stub;
 }
 
-// ─── Minimal KV mock ──────────────────────────────────────────────────────────
+// ─── Minimal Env mock for extension discovery ─────────────────────────────────
 
 /**
- * Minimal KVNamespace mock that stores a registry string.
- * Passes to ExtensionRunner.initialize() in unit tests.
+ * Minimal env-like object used by ExtensionRunner.initialize().
+ *
+ * Every key beginning with EXTENSION_ is treated as an extension binding.
  */
-export function createMockKv(registry?: string[]): KVNamespace {
-  const store = new Map<string, string>();
-  if (registry !== undefined) {
-    store.set("extensions:registry", JSON.stringify(registry));
-  }
+export function createMockExtensionEnv(
+  extensionBindings: Record<string, IExtensionWorker>,
+  extraBindings: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
-    async get(key: string) {
-      return store.get(key) ?? null;
-    },
-    async put(key: string, value: string) {
-      store.set(key, value);
-    },
-    async delete(key: string) {
-      store.delete(key);
-    },
-    async list() {
-      return { keys: [], list_complete: true, cursor: "" };
-    },
-    async getWithMetadata(key: string) {
-      return { value: store.get(key) ?? null, metadata: null };
-    },
-  } as unknown as KVNamespace;
-}
-
-/**
- * Minimal DispatchNamespace mock.
- * Returns pre-registered stubs by name.
- */
-export function createMockDispatchNamespace(
-  stubs: Record<string, IExtensionWorker>,
-): DispatchNamespace {
-  return {
-    get(name: string) {
-      const stub = stubs[name];
-      if (!stub) throw new Error(`No stub registered for extension: ${name}`);
-      return stub as unknown as Fetcher;
-    },
-  } as unknown as DispatchNamespace;
+    ...extraBindings,
+    ...extensionBindings,
+  };
 }
 
 // ─── Mock ISession ────────────────────────────────────────────────────────────

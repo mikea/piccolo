@@ -32,7 +32,7 @@ All communications use jsrpc/capnweb
 
 ### Extensions are Workers
 
-Each extension is a Cloudflare Worker deployed into a dispatch namespace. Adding or updating an extension requires no core redeploy.
+Each extension is a Cloudflare Worker deployed as a normal service and wired into core via an `EXTENSION_*` service binding. Updating extension code needs no core redeploy, but changing which extensions are enabled requires redeploying core.
 
 ---
 

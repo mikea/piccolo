@@ -235,19 +235,20 @@ Each tool Worker declares its own Cloudflare bindings (R2, D1, KV, etc.) in its 
 
 ## Deployment
 
-Tools are deployed as extension Workers into the piccolo dispatch namespace:
+Tools are deployed as extension Workers and bound to `piccolo-core` via `EXTENSION_*` service bindings:
 
 ```bash
 # 1. Deploy the tool Worker
-wrangler deploy --name ext-my-tool \
-  --dispatch-namespace piccolo-extensions
+wrangler deploy --name ext-my-tool
 
-# 2. Register in KV
-wrangler kv key put --binding CONFIG \
-  extensions:registry '["ext-my-tool", "ext-existing"]'
+# 2. Add a core service binding (packages/core/wrangler.jsonc)
+# { "binding": "EXTENSION_MY_TOOL", "service": "ext-my-tool" }
+
+# 3. Re-deploy core so binding changes apply
+wrangler deploy --config packages/core/wrangler.jsonc
 ```
 
-No core redeploy is needed. See [extension-system.md](extension-system.md) for the full lifecycle.
+Updating tool code needs no core redeploy as long as service and binding names stay unchanged. Changing enabled tool bindings requires a core redeploy. See [extension-system.md](extension-system.md) for the full lifecycle.
 
 ---
 
