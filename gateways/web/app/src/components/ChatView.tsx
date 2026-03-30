@@ -36,6 +36,8 @@ type ToolLiveEntry = {
 type ErrorLiveEntry = { type: "error"; id: string; message: string };
 type LocalUserEntry = { type: "local_user"; id: string; content: string };
 
+const TRUNCATED_RECONNECT_PREFIX = "<Truncated, Will Update When Finished>";
+
 export type UIEntry =
   | AnyEntry
   | StreamingAssistantEntry
@@ -55,15 +57,28 @@ export const ChatView: Component<Props> = (props) => {
 
   let aborted = false;
   let subscription: IDisposable | undefined;
+  let joinedActiveTurn = false;
 
-  function createStreamingAssistantEntry(): StreamingAssistantEntry {
+  function createStreamingAssistantEntry(truncated = false): StreamingAssistantEntry {
     return {
       type: "streaming_assistant",
       id: "streaming",
-      content: "",
+      content: truncated ? `${TRUNCATED_RECONNECT_PREFIX}\n` : "",
       reasoning: "",
       isStreaming: true,
     };
+  }
+
+  async function refreshEntriesFromServer(): Promise<void> {
+    if (aborted) return;
+    try {
+      const history = await session.getEntries();
+      if (!aborted) {
+        setEntries(history);
+      }
+    } catch (err) {
+      console.error("[rpc] refresh entries error:", err);
+    }
   }
 
   onCleanup(() => {
@@ -188,6 +203,10 @@ export const ChatView: Component<Props> = (props) => {
         break;
       case "finish":
         finishStreamingEntry();
+        if (joinedActiveTurn) {
+          joinedActiveTurn = false;
+          void refreshEntriesFromServer();
+        }
         break;
       case "error":
         finishStreamingEntry();
@@ -226,8 +245,9 @@ export const ChatView: Component<Props> = (props) => {
           session.getCurrentTurn(),
           session.getContextUsage(),
         ]);
+        joinedActiveTurn = turn !== undefined;
         const initialEntries: UIEntry[] =
-          turn !== undefined ? [...history, createStreamingAssistantEntry()] : history;
+          turn !== undefined ? [...history, createStreamingAssistantEntry(true)] : history;
         setEntries(initialEntries);
         setContextUsage(usage);
         setIsStreaming(turn !== undefined);
