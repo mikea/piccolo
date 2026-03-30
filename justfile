@@ -9,12 +9,12 @@ compile:
 test:
     pnpm test
 
-deploy-all: deploy-core deploy-web deploy-fetch
+deploy-all: deploy-extensions deploy-core deploy-web
 
 deploy-core:
     pnpm deploy:core
 
-deploy-extensions: deploy-fetch deploy-r2 deploy-instructions deploy-core
+deploy-extensions: deploy-fetch deploy-r2 deploy-instructions
 
 deploy-web:
     pnpm deploy:web
