@@ -1,7 +1,11 @@
 import { Bot, webhookCallback } from "grammy";
 import { TelegramSessionDO } from "./telegram-session-do.ts";
 
-type EnvWithSecret = Env & { TELEGRAM_BOT_TOKEN: string };
+type EnvWithSecret = Env & {
+  TELEGRAM_BOT_TOKEN: string;
+  TELEGRAM_BOT_FIRST_NAME: string;
+  TELEGRAM_BOT_USERNAME: string;
+};
 
 const WEBHOOK_HASH_HEX_LENGTH = 32;
 
@@ -54,6 +58,19 @@ export function timingSafeEqual(a: string, b: string): boolean {
 
 function createBot(env: EnvWithSecret): Bot {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
+  bot.botInfo = {
+    id: Number.parseInt(env.TELEGRAM_BOT_TOKEN.split(":")[0] ?? "0", 10) || 0,
+    is_bot: true,
+    first_name: env.TELEGRAM_BOT_FIRST_NAME,
+    username: env.TELEGRAM_BOT_USERNAME,
+    can_join_groups: true,
+    can_read_all_group_messages: false,
+    supports_inline_queries: false,
+    can_connect_to_business: false,
+    has_main_web_app: false,
+    has_topics_enabled: false,
+    allows_users_to_create_topics: false,
+  };
   const allowedUsers = parseAllowedTelegramUserIds(env.ALLOWED_TELEGRAM_USER_IDS);
 
   bot.on("message:text", async (ctx) => {

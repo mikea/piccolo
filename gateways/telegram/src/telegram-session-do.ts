@@ -93,7 +93,6 @@ export class TelegramSessionDO extends DurableObject implements ITelegramSession
 
   async processIncomingText(text: string): Promise<void> {
     const session = this.#requireSession();
-    const context = this.#requireInitContext();
 
     const typingAbort = new AbortController();
     const typingPromise = sendTypingLoop(
@@ -292,7 +291,7 @@ async function sendTypingLoop(sendTyping: () => Promise<void>, signal: AbortSign
   }
 }
 
-function splitTelegramText(text: string, limit = TELEGRAM_TEXT_LIMIT): string[] {
+export function splitTelegramText(text: string, limit = TELEGRAM_TEXT_LIMIT): string[] {
   if (text.length === 0) {
     return ["..."];
   }
@@ -304,7 +303,7 @@ function splitTelegramText(text: string, limit = TELEGRAM_TEXT_LIMIT): string[] 
   return parts;
 }
 
-function isSameInitContext(a: TelegramSessionInit, b: TelegramSessionInit): boolean {
+export function isSameInitContext(a: TelegramSessionInit, b: TelegramSessionInit): boolean {
   return (
     a.telegramUserId === b.telegramUserId &&
     a.telegramChatId === b.telegramChatId &&
@@ -312,7 +311,7 @@ function isSameInitContext(a: TelegramSessionInit, b: TelegramSessionInit): bool
   );
 }
 
-function collectAssistantText(result: Exclude<TurnResult, { type: "error" }>): string {
+export function collectAssistantText(result: Exclude<TurnResult, { type: "error" }>): string {
   const chunks: string[] = [];
   for (const message of result.messages) {
     if (message.role !== "assistant") {
@@ -334,6 +333,6 @@ function collectAssistantText(result: Exclude<TurnResult, { type: "error" }>): s
   return chunks.join("\n");
 }
 
-function isTurnError(result: TurnResult): result is Extract<TurnResult, { type: "error" }> {
+export function isTurnError(result: TurnResult): result is Extract<TurnResult, { type: "error" }> {
   return "type" in result && result.type === "error";
 }

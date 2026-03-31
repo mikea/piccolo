@@ -34,7 +34,9 @@
   "vars": {
     // JSON array of allowed Telegram user IDs.
     // Example: [123456789, 987654321]
-    "ALLOWED_TELEGRAM_USER_IDS": "[]"
+    "ALLOWED_TELEGRAM_USER_IDS": "[]",
+    "TELEGRAM_BOT_FIRST_NAME": "piccolo",
+    "TELEGRAM_BOT_USERNAME": "piccolo_bot"
   }
 
   // ── Secrets (set via wrangler secret put, never committed) ─────────────

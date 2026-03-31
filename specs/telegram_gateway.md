@@ -42,6 +42,8 @@ Telegram-specific session contract is local to the gateway package (not `@piccol
 - Durable Object binding (`env.TELEGRAM_SESSION`) to `TelegramSessionDO`
 - Secret: `TELEGRAM_BOT_TOKEN`
 - Var: `ALLOWED_TELEGRAM_USER_IDS` (JSON array of numeric Telegram user IDs)
+- Var: `TELEGRAM_BOT_FIRST_NAME` (used for preloaded bot identity in runtime)
+- Var: `TELEGRAM_BOT_USERNAME` (used for preloaded bot identity in runtime)
 
 ---
 
