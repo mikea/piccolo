@@ -27,6 +27,7 @@ export type {
   ImagePart,
   LanguageModel,
   LanguageModelUsage,
+  ModelMessage,
 } from "ai";
 
 // ─── Imports for use below ───────────────────────────────────────────────────
@@ -299,7 +300,14 @@ export interface IObservable<T> {
 export interface ITurn {
   getCallback(): Promise<IGatewayCallback | undefined>;
   abort(): Promise<void>;
+  complete(): Promise<TurnResult>;
 }
+
+export type TurnResult =
+  | { type: "error"; message: string }
+  | {
+      messages: IMessage[];
+    };
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
 

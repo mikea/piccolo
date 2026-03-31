@@ -37,6 +37,7 @@ import type {
   NewSessionOptions,
   SessionEvent,
   ToolDescriptor,
+  TurnResult,
 } from "@piccolo/api";
 import type { FinishReason, LanguageModel, LanguageModelUsage, ModelMessage } from "ai";
 import { stepCountIs, streamText } from "ai";
@@ -356,6 +357,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       if (inputResult.action === "handled") {
         // Extension handled the input fully — no agent turn needed.
         // Clear the reservation and return.
+        turn.resolveComplete({ messages: [] });
         this.#currentTurn = null;
         return turn;
       }
@@ -415,6 +417,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     } catch (e) {
       // If anything above throws, release the turn reservation so the caller
       // can retry rather than being permanently locked out.
+      const message = e instanceof Error ? e.message : String(e);
+      turn.resolveComplete({ type: "error", message });
       this.#currentTurn = null;
       throw e;
     }
@@ -617,6 +621,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
    * Spec ref: specs/core.md §AgentSessionDO §Agent Loop
    */
   async #runStream(signal: AbortSignal, turnMessages: IMessage[]): Promise<void> {
+    const turn = this.#currentTurn;
     this.#error = undefined;
 
     this.#emitTurnEvent({ type: "start" });
@@ -638,7 +643,8 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       },
     };
 
-    let persistGeneratedPromise: Promise<void> | undefined;
+    let persistGeneratedPromise: Promise<IMessage[]> | undefined;
+    let completionResult: TurnResult = { messages: [] };
 
     try {
       const result = streamText({
@@ -715,6 +721,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
         onError: ({ error }) => {
           const message = error instanceof Error ? error.message : String(error);
           this.#error = message;
+          completionResult = { type: "error", message };
           this.#agentAbortController = null;
           this.#emitTurnEvent({ type: "error", message });
         },
@@ -725,11 +732,15 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       });
 
       await result.consumeStream();
-      await persistGeneratedPromise;
+      const persistedMessages = await persistGeneratedPromise;
+      if (persistedMessages !== undefined) {
+        completionResult = { messages: persistedMessages };
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (!aborted) {
         this.#error = message;
+        completionResult = { type: "error", message };
         this.#agentAbortController = null;
         this.#emitTurnEvent({ type: "error", message });
       }
@@ -738,7 +749,11 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
       if (!aborted) {
         this.#emitTurnEvent({ type: "finish", totalUsage: finalUsage });
         this.ctx.waitUntil(this.#onAgentEnd());
+      } else {
+        completionResult = { type: "error", message: "aborted" };
       }
+
+      turn?.resolveComplete(completionResult);
     }
   }
 
@@ -847,22 +862,26 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     return Number.isFinite(val) && val > 0 ? val : 100_000;
   }
 
-  async #persistGeneratedMessages(messages: ModelMessage[]): Promise<void> {
+  async #persistGeneratedMessages(messages: ModelMessage[]): Promise<IMessage[]> {
+    const persistedMessages: IMessage[] = [];
     for (const message of messages) {
       const entryId = generateEntryId();
+      const messageWithId: IMessage = {
+        ...message,
+        id: entryId,
+      };
       const entry: MessageEntry = {
         id: entryId,
         sessionId: this.#sessionId,
         parentId: this.#leafId,
         type: "message",
         timestamp: new Date().toISOString(),
-        data: {
-          ...message,
-          id: entryId,
-        },
+        data: messageWithId,
       };
       await this.#appendEntry(entry);
+      persistedMessages.push(messageWithId);
     }
+    return persistedMessages;
   }
 
   async #loadContextMessages(contextTokenLimit?: number): Promise<IMessage[]> {
@@ -896,11 +915,16 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 export class TurnImpl extends RpcTarget implements ITurn {
   readonly #callback: IGatewayCallback | undefined;
   readonly #abort: () => Promise<void>;
+  #resolveComplete: ((result: TurnResult) => void) | undefined;
+  readonly #completePromise: Promise<TurnResult>;
 
   constructor(callback: IGatewayCallback | undefined, abort: () => Promise<void>) {
     super();
     this.#callback = callback;
     this.#abort = abort;
+    this.#completePromise = new Promise<TurnResult>((resolve) => {
+      this.#resolveComplete = resolve;
+    });
   }
 
   async getCallback(): Promise<IGatewayCallback | undefined> {
@@ -909,6 +933,15 @@ export class TurnImpl extends RpcTarget implements ITurn {
 
   async abort(): Promise<void> {
     await this.#abort();
+  }
+
+  async complete(): Promise<TurnResult> {
+    return this.#completePromise;
+  }
+
+  resolveComplete(result: TurnResult): void {
+    this.#resolveComplete?.(result);
+    this.#resolveComplete = undefined;
   }
 }
 

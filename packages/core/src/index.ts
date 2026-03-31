@@ -42,6 +42,7 @@ export type {
   ToolDescriptor,
   ToolResult,
   ToolResultOverride,
+  TurnResult,
 } from "@piccolo/api";
 // ── Durable Objects ───────────────────────────────────────────────────────────
 // AgentSessionDO — must be a named export for Wrangler DO registration

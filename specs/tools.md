@@ -22,51 +22,50 @@ Every piccolo tool is a Cloudflare Worker that extends `WorkerEntrypoint` and im
 
 ```
 ITool
- ├── descriptor: ToolDescriptor      ← pure data, no logic
+ ├── getDescriptor() → ToolDescriptor      ← pure data, no logic
  │     ├── name
  │     ├── label
  │     ├── description
  │     ├── promptSnippet?
  │     ├── promptGuidelines?
  │     └── inputSchema (JSON Schema)
- ├── execute(toolCallId, params, ctx, signal) → ToolResult
- └── getGatewayUI?(gatewayId) → ITextUI | undefined   ← optional
+ └── execute(toolCallId, params, ctx, signal) → ToolResult
 ```
 
 **`ToolDescriptor`** is static and logic-free. It describes the tool to the LLM (via the system prompt) and to the piccolo core (for registration and schema generation). It carries no behaviour.
 
 **`execute`** is where all logic lives. The core calls it with params validated by the AI SDK against `descriptor.inputSchema`.
 
-**`getGatewayUI`** is optional. When present, gateways call it before rendering a tool call or result to get a custom UI stub. See [Gateway UI Integration](#gateway-ui-integration) below.
-
 ### Minimal example
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ITool, ToolDescriptor, ToolResult, IExtensionContext } from "piccolo-core";
+import type { ITool, ISession, ToolDescriptor, ToolResult } from "@piccolo/api";
 
 export default class GreetTool extends WorkerEntrypoint implements ITool {
 
-  readonly descriptor: ToolDescriptor = {
-    name: "greet",
-    label: "Greet",
-    description: "Greet a person by name. Returns a greeting string.",
-    promptSnippet: "Greet a user by name",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        name: { type: "string", description: "The name to greet" },
+  async getDescriptor(): Promise<ToolDescriptor> {
+    return {
+      name: "greet",
+      label: "Greet",
+      description: "Greet a person by name. Returns a greeting string.",
+      promptSnippet: "Greet a user by name",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", description: "The name to greet" },
+        },
+        required: ["name"],
       },
-      required: ["name"],
-    },
-  };
+    };
+  }
 
   async execute(
     toolCallId: string,
     params: { name: string },
-    ctx: IExtensionContext,
-    signal?: AbortSignal,
+    ctx: ISession,
+    signal?: { isAborted(): Promise<boolean> },
   ): Promise<ToolResult> {
     return {
       content: [{ type: "text", text: `Hello, ${params.name}!` }],
@@ -101,95 +100,9 @@ interface ToolResult {
 
 ---
 
-## Gateway UI Integration
+## Tool Output in Gateways
 
-Tools can provide custom rendering for specific gateways by implementing `getGatewayUI(gatewayId)`. The gateway calls this method before rendering a tool call or result. The returned stub implements the gateway's UI interface. Returning `undefined` causes the gateway to use its default rendering.
-
-Gateway IDs and their UI interfaces:
-
-| `gatewayId` | Interface | Spec |
-|---|---|---|
-| `"web"` | `IWebUI extends ITextUI` | [web_gateway.md](web_gateway.md) |
-| `"telegram"` | `ITelegramUI extends ITextUI` | [telegram_gateway.md](telegram_gateway.md) |
-| any | `ITextUI` | [api.md §3](api.md) |
-
-### `ITextUI` — shared minimal interface
-
-For tools that want consistent text rendering across all gateways:
-
-```typescript
-import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ITool, ITextUI, GatewayId } from "piccolo-core";
-
-class MyToolUI extends RpcTarget implements ITextUI {
-  async showStatus(text: string) { /* stored for gateway to poll */ }
-  async showResult(text: string) { /* stored for gateway to display */ }
-  async showError(text: string)  { /* stored for gateway to display as error */ }
-}
-
-export default class MyTool extends WorkerEntrypoint implements ITool {
-  // ...descriptor and execute...
-
-  async getGatewayUI(gatewayId: GatewayId): Promise<ITextUI | undefined> {
-    return new MyToolUI();   // same text UI for all gateways
-  }
-}
-```
-
-### `IWebUI` — custom React component
-
-For tools that want a rich browser experience (file trees, tables, charts, etc.):
-
-```typescript
-import type { IWebUI, WebComponentDescriptor } from "piccolo-core";
-
-class R2ToolWebUI extends RpcTarget implements IWebUI {
-  constructor(private result: R2ListDetails) { super(); }
-
-  async showStatus(text: string) { /* no-op for web, component handles it */ }
-  async showResult(text: string) { /* fallback if component fails to load */ }
-  async showError(text: string)  { /* show error in component slot */ }
-
-  async getComponent(phase: "call" | "result"): Promise<WebComponentDescriptor | undefined> {
-    if (phase === "result") {
-      return {
-        componentId: "r2-file-tree",
-        props: { objects: this.result.objects, prefixes: this.result.prefixes },
-      };
-    }
-    return undefined;  // default text rendering for the call phase
-  }
-}
-```
-
-### `ITelegramUI` — custom Telegram formatting
-
-For tools that produce output better expressed as Telegram-native formatting or actionable inline keyboards:
-
-```typescript
-import type { ITelegramUI, TelegramInlineKeyboard } from "piccolo-core";
-
-class D1ToolTelegramUI extends RpcTarget implements ITelegramUI {
-  constructor(private rows: Record<string, unknown>[]) { super(); }
-
-  async showStatus(text: string) {}
-  async showResult(text: string) {}
-  async showError(text: string)  {}
-
-  async formatCall(toolName: string, input: unknown): Promise<string | undefined> {
-    return `🗄 *Querying database*\n\`${(input as any).sql}\``;
-  }
-
-  async formatResult(toolName: string, output: unknown, isError: boolean): Promise<string | undefined> {
-    if (isError) return undefined;  // let showError handle it
-    return `✅ *${this.rows.length} rows returned*`;
-  }
-
-  async getInlineKeyboard(toolName: string, output: unknown): Promise<TelegramInlineKeyboard | undefined> {
-    return undefined;  // no inline keyboard for query results
-  }
-}
-```
+Tools are currently non-interactive. Return clear `content` text/image parts from `execute()`. Gateways render those parts directly.
 
 ---
 
@@ -285,6 +198,4 @@ Before shipping a tool spec or implementation, verify:
 - [ ] No user-supplied values are interpolated into SQL, object keys, or shell commands without validation.
 - [ ] A spec file exists in `specs/` (named `{tool}_tool.md`) before or alongside the implementation.
 - [ ] The tool is listed in the table at the top of this file.
-- [ ] If the tool produces structured output (tables, file lists, charts): `IWebUI.getComponent()` is implemented.
-- [ ] If the tool produces Telegram-relevant output: `ITelegramUI.formatResult()` is implemented.
 - [ ] `specs/overview.md` document index is updated.

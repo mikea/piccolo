@@ -157,10 +157,10 @@ const AssistantContent: Component<{ content: AssistantContentValue; isStreaming?
                   when={
                     isToolResultPart(part)
                       ? {
-                        toolName: part.toolName !== undefined ? String(part.toolName) : "tool",
-                        output: part.output,
-                        isError: false,
-                      }
+                          toolName: part.toolName !== undefined ? String(part.toolName) : "tool",
+                          output: part.output,
+                          isError: false,
+                        }
                       : null
                   }
                 >
@@ -326,17 +326,17 @@ const ToolContentMessage: Component<{ content: ToolContent }> = (props) => (
 
 const JsonMessage: Component<{
   value:
-  | AssistantPart
-  | AssistantContentValue
-  | UIEntry
-  | ToolInput
-  | ToolOutput
-  | ToolContent
-  | string
-  | number
-  | boolean
-  | null
-  | undefined;
+    | AssistantPart
+    | AssistantContentValue
+    | UIEntry
+    | ToolInput
+    | ToolOutput
+    | ToolContent
+    | string
+    | number
+    | boolean
+    | null
+    | undefined;
 }> = (props) => (
   <pre style="margin:0;padding:8px 10px;background:#121212;border-radius:6px;color:#bbb;font-size:12px;white-space:pre-wrap;word-break:break-all;">
     {renderContent(props.value)}

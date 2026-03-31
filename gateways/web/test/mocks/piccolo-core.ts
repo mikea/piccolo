@@ -40,6 +40,7 @@ function emptyTurn(): ITurn {
   return {
     getCallback: vi.fn().mockResolvedValue(undefined),
     abort: vi.fn().mockResolvedValue(undefined),
+    complete: vi.fn().mockResolvedValue({ messages: [] }),
   } as unknown as ITurn;
 }
 

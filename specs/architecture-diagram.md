@@ -39,9 +39,9 @@ flowchart LR
       ext_d1["EXTENSION_D1_TOOL (planned)"]
     end
 
-    subgraph telegram_group["Telegram Gateway (planned)"]
-      tg_gateway["Telegram Gateway Worker (planned)"]
-      kv_telegram[("KV chat->session (planned)")]
+    subgraph telegram_group["Telegram Gateway"]
+      tg_gateway["Telegram Gateway Worker"]
+      tg_session_do[("TelegramSessionDO")]
     end
   end
 
@@ -67,8 +67,9 @@ flowchart LR
 
   telegram_user -.->|"webhook"| tg_gateway
   tg_gateway -.->|"Telegram API"| telegram_api
-  tg_gateway -.->|"CORE binding (planned)"| core_worker
-  tg_gateway -.-> kv_telegram
+  tg_gateway -.->|"CORE binding"| core_worker
+  tg_gateway -.-> tg_session_do
+  tg_session_do -.-> core_worker
 
   classDef client fill:#fff4cc,stroke:#b38f00,color:#3d3000,stroke-width:1px;
   classDef worker fill:#d9ecff,stroke:#2b6cb0,color:#0f2f57,stroke-width:1px;
@@ -79,7 +80,7 @@ flowchart LR
   class browser,telegram_user client;
   class web_gateway,core_worker,session_do,ext_fetch,ext_r2,ext_instructions,ext_skills,ext_templates,ext_d1,tg_gateway worker;
   class extension_runner orchestrator;
-  class d1_sessions,do_storage,r2_workspace,d1_instructions,kv_telegram storage;
+  class d1_sessions,do_storage,r2_workspace,d1_instructions,tg_session_do storage;
   class ai_gateway,llm_providers,public_web,telegram_api external;
 
   style core_group fill:#e8f3ff,stroke:#2b6cb0,stroke-width:2px,color:#0f2f57;

@@ -436,7 +436,7 @@ CI fails if any of these steps produce errors or warnings that were not present 
 |---|---|---|
 | Interface (JSRPC surface) | `I` prefix + PascalCase | `IPiccoloCore`, `ISession`, `ITool` |
 | Interface (data/result shape) | PascalCase, no prefix | `SessionRecord`, `ToolResult` |
-| Type alias | PascalCase | `AgentEvent`, `GatewayId` |
+| Type alias | PascalCase | `AgentEvent`, `SessionEvent` |
 | Class | PascalCase | `AgentSessionDO`, `GreetTool` |
 | Function | camelCase | `createMockGateway`, `buildSessionContext` |
 | Constant | SCREAMING_SNAKE_CASE for module-level | `MAX_RETRY_ATTEMPTS`, `DEFAULT_KEEP_TOKENS` |

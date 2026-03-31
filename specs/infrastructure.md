@@ -57,7 +57,7 @@ Gateways declare a service binding to `piccolo-core`. They are deployed independ
 | DO class | Worker | Purpose |
 |---|---|---|
 | `AgentSessionDO` | `piccolo-core` | Per-session state, message history, agent loop |
-| `TelegramChatDO` | `piccolo-telegram-gateway` | Concurrent update serialisation per Telegram chat |
+| `TelegramSessionDO` | `piccolo-telegram-gateway` | Per-chat telegram session orchestration and telegram I/O |
 
 ---
 
@@ -82,13 +82,16 @@ Gateways declare a service binding to `piccolo-core`. They are deployed independ
   "services": [
     { "binding": "CORE", "service": "piccolo-core" }
   ],
-  "kv_namespaces": [
-    { "binding": "KV", "id": "<TELEGRAM_KV_ID>" }
-  ],
   "durable_objects": {
     "bindings": [
-      { "name": "TELEGRAM_CHAT", "class_name": "TelegramChatDO" }
+      { "name": "TELEGRAM_SESSION", "class_name": "TelegramSessionDO" }
     ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TelegramSessionDO"] }
+  ],
+  "vars": {
+    "ALLOWED_TELEGRAM_USER_IDS": "[123456789]"
   }
   // Secrets: TELEGRAM_BOT_TOKEN
 }

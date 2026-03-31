@@ -15,7 +15,7 @@ Piccolo is composed of the following independently deployed Cloudflare Workers:
 | `piccolo-api` | npm package | JSRPC contract types (interfaces only, no implementations) |
 | `piccolo-core` | Worker + DOs | Agent session orchestration, agent loop, and JSRPC hub |
 | Web UI gateway | Worker + DO | Browser chat interface |
-| Telegram gateway | Worker + DO | Telegram bot interface |
+| Telegram gateway | Worker | Telegram bot interface (Phase 1 baseline) |
 | Extensions | Workers (service bindings) | Tools, event handlers, custom capabilities |
 
 LLM calls go through the **Cloudflare AI Gateway** unified API using the `ai` and `ai-gateway-provider` packages. There is no piccolo-owned LLM provider layer.
@@ -82,12 +82,12 @@ Exposes `IPiccoloCore` and `ISession` as JSRPC surfaces. Gateways and extensions
 
 ### Gateways → [gateway.md](gateway.md)
 
-User-facing interface Workers. Each gateway connects a specific user channel to the piccolo-core JSRPC surface. Tools may provide custom rendering for a gateway via `getGatewayUI(gatewayId)`.
+User-facing interface Workers. Each gateway connects a specific user channel to the piccolo-core JSRPC surface.
 
 Two gateways are specified:
 
-- **Web UI Gateway** ([web_gateway.md](web_gateway.md)) — browser-based chat UI served over HTTP + SSE; tools may provide `IWebUI` React components
-- **Telegram Gateway** ([telegram_gateway.md](telegram_gateway.md)) — Telegram bot via webhook; tools may provide `ITelegramUI` message formatters
+- **Web UI Gateway** ([web_gateway.md](web_gateway.md)) — browser-based chat UI served over HTTP + SSE
+- **Telegram Gateway** ([telegram_gateway.md](telegram_gateway.md)) — Telegram bot via webhook; currently text-only with `TelegramSessionDO` routing and typing indicator
 
 Additional gateways (Slack, CLI, API) can be added without modifying the core.
 
@@ -146,15 +146,15 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 
 | Document | Contents |
 |---|---|
-| [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `ITelegramChatDO`, `ITextUI`, `IWebUI`, `ITelegramUI`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
+| [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
 | [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/R2 schema, compaction, fork, listing |
-| [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), gateway UI integration, deployment, checklist |
+| [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), non-interactive gateway output, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |
 | [d1_tool.md](d1_tool.md) | D1 tool (provided): schema, select, insert, update, delete, schema_change, sql |
 | [fetch_tool.md](fetch_tool.md) | Fetch tool (provided): HTTPS GET (with ranged GET support) and HEAD to public internet via `fetch()` |
-| [gateway.md](gateway.md) | Gateway concept, `ITextUI`/`IWebUI`/`ITelegramUI` resolution, comparison table |
+| [gateway.md](gateway.md) | Gateway concept, core session contract, channel rendering model, comparison table |
 | [web_gateway.md](web_gateway.md) | Web UI gateway: `IWebGateway`, `IUser`, `ISession`, SPA spec |
-| [telegram_gateway.md](telegram_gateway.md) | Telegram gateway: `ITelegramUI`, webhook handler, `ITelegramChatDO` |
+| [telegram_gateway.md](telegram_gateway.md) | Telegram gateway: webhook handler, `TelegramSessionDO`, streamed text edits |
 | [extension-system.md](extension-system.md) | Extension use-cases, 12 examples, dispatch, provided extensions |
 | [skills_extension.md](skills_extension.md) | Skills extension: load from URLs, `/skill:name` commands, Agent Skills standard |
 | [prompt_templates_extension.md](prompt_templates_extension.md) | Prompt templates extension: load from URLs, `/template:name` with argument substitution |

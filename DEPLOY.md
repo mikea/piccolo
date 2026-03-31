@@ -1,8 +1,12 @@
 # Deploying Piccolo
 
-This guide covers a full first-time deployment of piccolo to Cloudflare. The
-only component with a deployable UI today is **piccolo-core** + **piccolo-web-gateway**
-(Milestone 11 M1). Telegram gateway and extensions are not yet implemented.
+This guide covers a full first-time deployment of piccolo to Cloudflare.
+
+Currently deployed user-facing components:
+
+- **piccolo-core**
+- **piccolo-web-gateway**
+- **piccolo-telegram-gateway** (Phase 1: text-only webhook gateway)
 
 ---
 

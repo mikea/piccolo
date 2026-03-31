@@ -58,46 +58,9 @@ Each gateway implements `IGatewayCallback` (see [api.md §5](api.md)) and passes
 
 ---
 
-## Tool Gateway UI
+## Tool Output
 
-Tools can provide custom rendering for specific gateways. A gateway calls `tool.getGatewayUI(gatewayId)` before rendering a tool call or result. The returned stub implements the gateway's UI interface. If `getGatewayUI` is absent or returns `undefined`, the gateway uses its default rendering.
-
-See [api.md §3](api.md) for the full `ITextUI`, `IWebUI`, and `ITelegramUI` interface definitions.
-
-### Gateway IDs
-
-| Gateway | `gatewayId` string |
-|---|---|
-| Web UI | `"web"` |
-| Telegram | `"telegram"` |
-
-### Shared interface: `ITextUI`
-
-The minimal interface any gateway can consume. Tools that do not need gateway-specific rendering implement `ITextUI` and return it for any `gatewayId`. Defined in [api.md — Shared Types](api.md).
-
-```typescript
-// What a gateway does when a tool result arrives:
-const ui = await tool.getGatewayUI?.(gatewayId);
-if (ui) {
-  await ui.showResult(formatToolResult(result));
-} else {
-  // default rendering
-}
-```
-
-### Gateway-specific interfaces
-
-- **`IWebUI`** — extends `ITextUI` with `getComponent(phase)` for mounting custom React components in the browser UI. Defined in [api.md §3](api.md), detailed in [web_gateway.md](web_gateway.md).
-- **`ITelegramUI`** — extends `ITextUI` with `formatCall()`, `formatResult()`, and `getInlineKeyboard()` for Telegram-native rendering. Defined in [api.md §3](api.md), detailed in [telegram_gateway.md](telegram_gateway.md).
-
-### Resolution order
-
-When a gateway renders a tool call or result:
-
-1. Call `tool.getGatewayUI(gatewayId)` → stub.
-2. Cast stub to the gateway-specific interface (e.g. `IWebUI`). If the required methods are present, use them.
-3. Fall back to `ITextUI` methods (`showStatus`, `showResult`, `showError`) if gateway-specific methods return `undefined`.
-4. Fall back to built-in default rendering if `getGatewayUI` returned `undefined` or threw.
+Tools are currently non-interactive. Gateways render `ToolResult.content` directly and do not call any tool UI interfaces.
 
 ---
 
@@ -109,8 +72,7 @@ When a gateway renders a tool call or result:
 | Browser→server | `IUser` / `ISession` RPC method calls | N/A |
 | Server→browser events | `ReadableStream<AgentEvent>` from `session.prompt()` | Throttled `editMessageText` |
 | Streaming | Stream consumed directly by browser | Throttled `editMessageText` |
-| Session reference | `ISession` stub via `IUser.getSession(id)` | Chat ID → sessionId (KV) |
-| Custom tool UI interface | `IWebUI` | `ITelegramUI` |
-| Shared fallback UI | `ITextUI` | `ITextUI` |
-| Callback UI | `IGatewayCallback` stubs (modal dialogs) | Inline keyboards |
-| Auth | CF Zero Trust (Access JWT email as userId) | Bot token + KV allowlist |
+| Session reference | `ISession` stub via `IUser.getSession(id)` | `TelegramSessionDO` (`ITelegramSession` extends `ISession`) |
+| Tool output mode | `ToolResult.content` text/image rendering | `ToolResult.content` text rendering |
+| Callback UI | `IGatewayCallback` stubs (modal dialogs) | Not implemented in Phase 1 |
+| Auth | CF Zero Trust (Access JWT email as userId) | Bot token + allowlist var |

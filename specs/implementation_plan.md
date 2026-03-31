@@ -123,9 +123,8 @@ The agent loop library. Pure TypeScript, no Workers-specific globals. The most f
 #### Genericity — minimal types in `packages/agent`
 
 `packages/agent` defines only what the agent loop itself needs. Deliberately excluded from this package:
-- Gateway IDs (`"web"`, `"telegram"`) and UI interfaces (`ITextUI`, `IWebUI`, `ITelegramUI`)
+- Gateway presentation concerns and tool-specific UI contracts
 - System-prompt metadata (`label`, `promptSnippet`, `promptGuidelines`) — used by `SystemPromptAssembler` in core
-- `ITool.getGatewayUI?` — gateway rendering method, not an agent-loop concern
 - `details?` in `ToolResult` — stored in session entries by core
 - Session/model/context types (`ModelInfo`, `SessionRecord`, `ContextUsage`)
 
@@ -166,7 +165,7 @@ Same principle: `agentCompact(messages, keepRecentTokens, model)` takes the same
 
 `packages/core` now depends on `@piccolo/agent` (workspace dependency):
 - `ToolDescriptor extends AgentToolDescriptor` — adds `label`, `promptSnippet`, `promptGuidelines`
-- `ITool extends IAgentTool` — adds `descriptor: ToolDescriptor` and `getGatewayUI`
+- `ITool extends IAgentTool` — adds the full core tool contract on top of agent loop types
 - `ToolResult extends AgentToolResult` — adds `details`
 - `AgentEvent`, `IAgentTool`, `AgentToolDescriptor`, `AgentToolResult`, `ModelMessage`, `LanguageModel` etc. are re-exported from `@piccolo/agent` — no duplication.
 - `ai` remains a direct dependency of `packages/core` for non-agent types; tool schemas are JSON Schema.
@@ -213,7 +212,7 @@ The stateless functions that read/write session data. No DO or Worker code yet �
 
 | File | Contents |
 |---|---|
-| `packages/core/src/session/context.ts` | `walkToRoot`, `buildSessionContext`, `DEFAULT_MODEL_ID` |
+| `packages/core/src/session/context.ts` | `walkToRoot`, `buildSessionContext` |
 | `packages/core/src/session/persistence.ts` | `createSession`, `commitSession`, `appendEntry`, `flushPendingEntries`, `listSessions`, `forkSession`, `deleteSession` |
 | `packages/core/src/session/index.ts` | Re-exports from both modules |
 | `packages/core/test/session/context.test.ts` | 30 tests for context reconstruction |
@@ -246,7 +245,7 @@ The Durable Object that owns a live session. Wires `piccolo-agent` to persistenc
 - Cold start / rehydration: `initialize()` loading from D1 via `buildSessionContext`
 - `prompt()` pipeline — all 8 steps from [core.md](core.md), returning `ReadableStream<AgentEvent>`
 - `steer()`, `followUp()`, `abort()` delegating to `Agent`
-- `getInfo()`, `getName()`, `setName()`, `getModel()`, `setModel()`, `getContextUsage()`, `branch()`, `compact()`, `delete()`, `fork()`
+- `getInfo()`, `getName()`, `setName()`, `getModel()`, `setModel()`, `getContextUsage()`, `compact()`, `delete()`, `fork()`
 - `_handleAgentEvent()` — persistence, retry trigger, compaction trigger
 - `checkRetry()` — exponential backoff with jitter, transient error detection
 - `compact()` — threshold and overflow paths, `CompactionEntry` persistence
@@ -500,7 +499,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 - `WebGatewayImpl extends RpcTarget` implementing `IWebGateway` — returns `IUser` stub via `getUser()`
 
 
-- `AgentEvent` enrichment: call `tool.getGatewayUI("web")` per tool and attach `WebComponentDescriptor` to `tool-call`/`tool-result` events
+- `AgentEvent` enrichment: normalize tool call/result events for gateway rendering
 
 - Static file serving: `GET /` → SPA shell, `GET /components/{id}.js` → component modules from R2
 - `wrangler.template.jsonc` for web gateway with `CORE` service binding and `USER_ID` var
@@ -514,10 +513,10 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 **Status:** Complete. 51 tests pass (383 total across all packages), coverage above thresholds. `pnpm biome check .` passes with 1 pre-existing `noNonNullAssertion` warning. `pnpm -r exec tsc --noEmit` had one historical pre-existing error in the former `packages/core/src/gateway.ts` (unrelated to step 10).
 
 **Post-review corrections (all changes fully spec-synced):**
-1. `ITextUI.show*()` → `ITextUI.get*()` — direction fix: tool provides rendering text to gateway (pull), not gateway pushes to tool.
+1. Tool rendering now uses plain `ToolResult.content` in gateways (no tool UI RPC layer).
 2. `ISession.getCallback()` replaced with `ISession.getCurrentTurn(): Promise<ITurn | undefined>` — callback belongs to the active turn, not the session. New `ITurn extends RpcTarget` interface with `getCallback()`. `TurnImpl` class added to `session-impl.ts`.
 
-4. All cross-Worker interfaces now explicitly `extend RpcTarget`: `ITextUI`, `IGatewayCallback`, `ITurn`.
+4. Cross-Worker callback/turn surfaces use explicit RPC-safe interfaces (`IGatewayCallback`, `ITurn`).
 
 #### File layout
 
@@ -531,7 +530,7 @@ The Worker that serves the Cap'n Web RPC endpoint and proxies to `piccolo-core`.
 | `gateways/web/wrangler.test.jsonc` | Minimal test wrangler config |
 | `gateways/web/test/web-gateway.test.ts` | 3 tests: `WebGatewayImpl.getUser()` |
 | `gateways/web/test/mocks/piccolo-core.ts` | `createMockCore()`, `createMockUser()`, `createMockSession()` |
-| `packages/core/src/types.ts` | Added `IGatewayCallback`, `IWebUI`, `WebComponentDescriptor`; updated `ISession.prompt()` + `AgentSessionDO.prompt()` |
+| `packages/core/src/types.ts` | Added `IGatewayCallback`; updated `ISession.prompt()` + `AgentSessionDO.prompt()` |
 | `packages/core/src/do-state.ts` | Added `callback: IGatewayCallback \| undefined` |
 | `packages/core/src/agent-session-do.ts` | `prompt()` accepts `callback?`; stores in `doState.callback`; clears at turn end |
 | `packages/core/src/session-impl.ts` | `getCallback()` implemented; `prompt()` passes callback to `promptFn` |
@@ -631,9 +630,9 @@ Adds tool call rendering and interactive gateway callbacks. Requires `ext-fetch-
 
 **Deliverables:**
 - `tool-call` event: render tool name + collapsible JSON input block; show "running…" spinner
-- `tool-result` event: collapse to summary line; show result or error text from `ITextUI`
+- `tool-result` event: collapse to summary line; show result or error text from tool output
 - `tool_update` event: update the in-progress tool call with intermediate text
-- `WebComponentDescriptor` support: if `tool-call`/`tool-result` event carries `component` field, dynamically `import()` from `/components/{componentId}.js` and mount as React component with supplied `props`
+- component support deferred (tools remain non-interactive for now)
 - Component fallback: if dynamic import fails, render default text block
 - `IGatewayCallback` browser implementation:
   - `requestSelect` → modal with checkbox/radio list, returns selected options
@@ -655,7 +654,7 @@ Adds branching, forking, and deep session navigation. Makes the session tree a f
 **Deliverables:**
 - `session.getContextUsage()` polled after each turn for the context bar (supplements `context_usage` events)
 - Fork session: `/fork` slash command or button → `session.fork()` → navigate to new session
-- Branch navigation: show branch point indicator in message list; button to jump to a branch entry via `session.branch(entryId)`
+- Branch navigation: show branch point indicator in message list and support opening forked session threads
 - Session info panel: created date, message count, current model, context usage
 - Keyboard shortcuts: `Cmd+K` / `Ctrl+K` command palette for session switching and slash commands
 - Slash command autocomplete dropdown in input area: `/new`, `/model <id>`, `/fork`, `/compact`, `/abort`
@@ -751,17 +750,38 @@ The Worker that receives Telegram webhook updates and proxies to `piccolo-core`.
 
 **Deliverables:**
 - `piccolo-telegram-gateway` Worker with webhook handler at `POST /webhook/{token-hash}`
-- `ITelegramChatDO` — `handleUpdate()` serialising concurrent updates per chat
-- Chat → session mapping in KV: first message creates session, subsequent messages look up
-- `AgentEvent` → Telegram message adaptation: typing indicator, throttled edits, message splitting, `tool-call`/`tool-result` status lines
+- `TelegramSessionDO implements ITelegramSession` for per-chat serialisation and Telegram I/O
+- Per-chat TelegramSessionDO mapping: first message initializes immutable context and underlying core session
+- `ITurn.complete()` → Telegram message adaptation: typing indicator, assistant-text extraction, message splitting
 - `IGatewayCallback` implementation: inline keyboards for `requestSelect`, `requestConfirm`; message-wait for `requestInput`
-- `ITelegramUI` lookup: call `tool.getGatewayUI("telegram")` before rendering tool calls/results
+- `TelegramSessionDO implements ITelegramSession` (`gateways/telegram/src/api.ts`)
 - All gateway slash commands: `/new`, `/model`, `/models`, `/abort`, `/status`, `/compact`, `/help`
-- Auth: bot token hash validation; KV allowlist
+- Auth: bot token hash validation; allowlist var
 - `wrangler.template.jsonc` for telegram gateway
-- Integration tests: webhook verification; chat→session mapping; `AgentEvent` rendering; slash command dispatch; `ITelegramChatDO` serialisation
+- Integration tests: webhook verification; per-chat DO routing; `ITurn.complete()` rendering; slash command dispatch
 
-**Spec refs:** [telegram_gateway.md](telegram_gateway.md), [api.md §5, §7](api.md)
+**Spec refs:** [telegram_gateway.md](telegram_gateway.md), [api.md §5](api.md), `gateways/telegram/src/api.ts`
+
+### 13.1 Implementation Notes (Phase 1)
+
+**Status:** Basic baseline implemented.
+
+Phase 1 scope implemented in `gateways/telegram`:
+
+- Webhook endpoint hardened to `POST /webhook/{token-hash}`
+- `grammy` runtime on Cloudflare Workers (`cloudflare-mod` webhook adapter)
+- One session per Telegram chat via `TelegramSessionDO`
+- Allowlist from Wrangler var `ALLOWED_TELEGRAM_USER_IDS` (JSON array)
+- Assistant text from `TurnResult` sent as plain messages
+- Typing indicator loop (`sendChatAction("typing")`) while turn runs
+
+Deferred to later phases:
+
+- slash commands
+- media/attachments
+- callback queries / inline keyboards
+- `IGatewayCallback` UI
+- gateway-local chat serializer contract
 
 ---
 

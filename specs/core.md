@@ -71,7 +71,6 @@ CREATE TABLE sessions (
   created_at  INTEGER NOT NULL,             -- Unix ms
   updated_at  INTEGER NOT NULL,             -- Unix ms
   name        TEXT,
-  cwd         TEXT,
   model_id    TEXT    NOT NULL,             -- no SQL default; callers always supply explicitly
   leaf_id     TEXT                          -- current active entry ID
 );
@@ -710,7 +709,7 @@ async function forkSession(
 async function listSessions(userId: string, db: D1Database): Promise<SessionInfo[]> {
   const rows = await db.prepare(`
     SELECT
-      s.id, s.user_id, s.name, s.cwd, s.created_at, s.updated_at, s.model_id,
+      s.id, s.user_id, s.name, s.created_at, s.updated_at, s.model_id,
       COUNT(CASE WHEN e.type = 'message' THEN 1 END) AS message_count,
       MIN(CASE WHEN e.type = 'message' AND json_extract(e.data, '$.role') = 'user'
                THEN json_extract(e.data, '$.content') END) AS first_message
@@ -725,7 +724,6 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
     id: r.id,
     userId: r.user_id,
     name: r.name ?? r.id,
-    cwd: r.cwd ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     messageCount: r.message_count,

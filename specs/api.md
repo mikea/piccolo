@@ -36,7 +36,6 @@ interface SessionInfo {
   id: string;
   userId: string;
   name?: string;
-  cwd?: string;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
@@ -46,7 +45,6 @@ interface SessionInfo {
 interface NewSessionOptions {
   name?: string;
   modelId?: string;
-  cwd?: string;
 }
 
 // ─── Attachments ──────────────────────────────────────────────────────────────
@@ -146,13 +144,6 @@ interface ITool {
     signal?: IAbortSignal,         // JSRPC-safe cancellation; convert to AbortController locally
   ): Promise<ToolResult>;
 
-  // Optional. Called by a gateway before rendering a tool call or result.
-  // Return an RpcTarget implementing the UI interface the gateway expects:
-  //   "web"      → IWebUI      (see web_gateway.md)
-  //   "telegram" → ITelegramUI (see telegram_gateway.md)
-  //   any        → ITextUI     (shared minimal interface)
-  // Return undefined to use the gateway's default rendering.
-  getGatewayUI?(gatewayId: GatewayId): Promise<ITextUI | undefined>;
 }
 
 // Returned by tool execute() calls.
@@ -166,28 +157,6 @@ interface ToolResult {
   details?: unknown;
   // Prefer throwing from execute() over setting isError manually.
   isError?: boolean;
-}
-
-// ─── Gateway UI ───────────────────────────────────────────────────────────────
-
-// Well-known gateway identifiers.
-type GatewayId = "web" | "telegram" | (string & {});
-
-// ITextUI — minimal shared interface implemented by tool Workers.
-// Returned by ITool.getGatewayUI("web") or getGatewayUI("telegram")
-// when the tool does not need gateway-specific rendering.
-// The gateway calls these methods to pull rendering text FROM the tool
-// (not to push text TO the tool). The tool provides its own display strings;
-// the gateway decides how and when to render them.
-interface ITextUI {
-  // Return a line of status text to display while the tool is executing.
-  getStatusText(): Promise<string>;
-
-  // Return the formatted result text to display once execute() completes.
-  getResultText(output: unknown): Promise<string>;
-
-  // Return an error message to display when execute() throws.
-  getErrorText(error: unknown): Promise<string>;
 }
 
 // ─── Context / Compaction ─────────────────────────────────────────────────────
@@ -309,7 +278,7 @@ interface ISession extends IObservable<AgentEvent> {
 
   // ─── History & live subscription ────────────────────────────────────────
 
-  // Return the raw entry path persisted in D1 (root->leaf) for the active branch.
+  // Return the raw entry path persisted in D1 (root->leaf) for the active leaf.
   getEntries(): Promise<AnyEntry[]>;
 
   // ─── Context usage ───────────────────────────────────────────────────────
@@ -323,10 +292,7 @@ interface ISession extends IObservable<AgentEvent> {
 
   getSystemPrompt(): Promise<string>;
 
-  // ─── Session tree / branching ────────────────────────────────────────────
-
-  // Set the active leaf to a prior entry. Next prompt branches from there.
-  branch(entryId: string): Promise<void>;
+  // ─── Session tree / forking ──────────────────────────────────────────────
 
   // Fork this session from a given entry (or current leaf).
   // Returns the new sessionId; callers resolve the stub via IUser.getSession().
@@ -369,49 +335,22 @@ interface ITurn {
 
   // Abort this turn if it is still running.
   abort(): Promise<void>;
+
+  // Resolves when the turn fully completes with either final messages
+  // from streamText or an error.
+  complete(): Promise<TurnResult>;
 }
+
+type TurnResult =
+  | { type: "error"; message: string }
+  | { messages: IMessage[] };
 ```
 
 ---
 
-## 3. Gateway UI Interfaces
+## 3. Tool Rendering Policy
 
-Gateway UI interfaces allow tools to provide custom rendering for specific gateways. Each gateway defines its own UI interface extending `ITextUI`. Full details in [web_gateway.md](web_gateway.md) and [telegram_gateway.md](telegram_gateway.md).
-
-```typescript
-// IWebUI — Web UI Gateway rendering interface.
-// Returned by ITool.getGatewayUI("web").
-// Full spec in web_gateway.md.
-interface IWebUI extends ITextUI {
-  // Return a component descriptor for custom React rendering.
-  // componentId must be a stable string registered by the tool's extension Worker.
-  // The gateway loads the component and mounts it in the tool call/result slot.
-  getComponent(phase: "call" | "result"): Promise<WebComponentDescriptor | undefined>;
-}
-
-interface WebComponentDescriptor {
-  componentId: string;         // stable identifier, e.g. "r2-file-tree"
-  props: Record<string, unknown>; // serialisable props passed to the component
-}
-
-// ITelegramUI — Telegram Gateway rendering interface.
-// Returned by ITool.getGatewayUI("telegram").
-// Full spec in telegram_gateway.md.
-interface ITelegramUI extends ITextUI {
-  // Return custom MarkdownV2 text for the tool call summary sent to Telegram.
-  formatCall(toolName: string, input: unknown): Promise<string | undefined>;
-
-  // Return custom MarkdownV2 text for the tool result sent to Telegram.
-  formatResult(toolName: string, output: unknown, isError: boolean): Promise<string | undefined>;
-
-  // Return custom inline keyboard buttons to attach to the result message.
-  getInlineKeyboard(toolName: string, output: unknown): Promise<TelegramInlineKeyboard | undefined>;
-}
-
-interface TelegramInlineKeyboard {
-  rows: Array<Array<{ text: string; callbackData: string }>>;
-}
-```
+Tools are currently non-interactive in all gateways. They return `ToolResult.content`, and gateways render that content directly. There are no tool-specific UI interfaces in `@piccolo/api`.
 
 ---
 
@@ -486,20 +425,27 @@ The browser calls `getUser()` once and then uses `IUser` and `ISession` directly
 
 ---
 
-## 7. Telegram Chat DO API — `ITelegramChatDO`
+## 7. Telegram Gateway-local Interfaces
 
-Internal to the Telegram Gateway. Serialises concurrent Telegram updates per chat.
+Telegram-specific interfaces are gateway-local and intentionally excluded from `@piccolo/api`.
+
+Current location: `gateways/telegram/src/api.ts`
 
 ```typescript
-import { DurableObject } from "cloudflare:workers";
+type TelegramStatus = "typing" | "idle";
 
-class ITelegramChatDO extends DurableObject {
-
-  // Processes a single Telegram Update object.
-  // Internally queues, dispatches to core, and replies via Telegram Bot API.
-  handleUpdate(update: TelegramUpdate): Promise<void>;
+interface ITelegramSession extends ISession {
+  sendMessage(text: string): Promise<void>;
+  changeStatus(status: TelegramStatus): Promise<void>;
 }
 ```
+
+`TelegramSessionDO` in the telegram gateway Worker implements `ITelegramSession` and owns telegram-specific session handling.
+
+Gateway-only methods outside `ITelegramSession`:
+
+- `initialize({ telegramUserId, telegramChatId, piccoloUserId })`
+- `processIncomingText(text)`
 
 ---
 
@@ -632,11 +578,7 @@ Full authoring guide in [tools.md](tools.md). Provided tool specs: [r2_tool.md](
 | `IPiccoloCore` | `WorkerEntrypoint` | Gateways | `piccolo-core` Worker |
 | `IUser` | `RpcTarget` | Gateways | `piccolo-core` Worker |
 | `ISession` | `DurableObject` stub | Gateways, extensions, tools | `AgentSessionDO` in `piccolo-core` |
-| `ITextUI` | `RpcTarget` | Gateways | Each tool Worker (optional) |
-| `IWebUI` | `RpcTarget` | Web UI Gateway | Each tool Worker (optional) |
-| `ITelegramUI` | `RpcTarget` | Telegram Gateway | Each tool Worker (optional) |
 | `IGatewayCallback` | `RpcTarget` | `AgentSessionDO` | Each gateway Worker |
 | `IWebGateway` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
-| `ITelegramChatDO` | `DurableObject` | Telegram Gateway Worker | Telegram Gateway Worker |
 | `IExtensionWorker` | `WorkerEntrypoint` | `ExtensionRunner` (core) | Each extension Worker |
 | `ITool` | Worker class | `IExtensionWorker` (via core) | Each tool Worker |
