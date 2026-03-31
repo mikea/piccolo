@@ -9,7 +9,6 @@
 export {
   buildSessionContext,
   buildSessionContextFromDb,
-  DEFAULT_MODEL_ID,
   walkToRoot,
 } from "./context.ts";
 export { ContextIterator } from "./context-iterator.ts";

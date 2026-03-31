@@ -34,14 +34,13 @@ interface SessionInfo {
   id: string;
   userId: string;
   name?: string;
-  cwd?: string;
   createdAt: number;
   updatedAt: number;
   messageCount: number;
   firstMessage: string;
 }
 
-import { DEFAULT_MODEL_ID, walkToRoot } from "./context.ts";
+import { walkToRoot } from "./context.ts";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -120,8 +119,7 @@ export function createSession(): string {
  */
 export interface CommitSessionOptions {
   name?: string;
-  modelId?: string;
-  cwd?: string;
+  modelId: string;
 }
 
 /**
@@ -145,8 +143,7 @@ export async function commitSession(
     created_at: now,
     updated_at: now,
     name: options.name ?? sessionId,
-    cwd: options.cwd ?? null,
-    model_id: options.modelId ?? DEFAULT_MODEL_ID,
+    model_id: options.modelId,
     leaf_id: null,
   });
 }
@@ -165,7 +162,6 @@ export async function listSessions(userId: string, db: D1Database): Promise<Sess
     id: r.id,
     userId: r.user_id,
     name: r.name ?? r.id,
-    ...(r.cwd !== null ? { cwd: r.cwd } : {}),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     messageCount: r.message_count,
@@ -213,7 +209,6 @@ export async function forkSession(
     created_at: now,
     updated_at: now,
     name: newSessionId,
-    cwd: null,
     model_id: modelId,
     leaf_id: null,
   });

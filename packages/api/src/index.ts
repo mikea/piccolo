@@ -124,7 +124,6 @@ export interface Attachment {
 export interface NewSessionOptions {
   name?: string;
   modelId?: string;
-  cwd?: string;
 }
 
 /**
@@ -232,13 +231,7 @@ export interface ITool {
     ctx: ISession,
     signal?: IAbortSignal,
   ): Promise<ToolResult>;
-
-  /** Optional. Called by a gateway before rendering a tool call or result. */
-  getGatewayUI?(gatewayId: GatewayId): Promise<ITextUI | undefined>;
 }
-
-/** Well-known gateway identifiers. */
-export type GatewayId = "web" | "telegram" | (string & {});
 
 /**
  * ICommand — a slash command contributed by an extension.
@@ -248,31 +241,6 @@ export interface ICommand {
   name: string;
   description: string;
   showInAutocomplete?: boolean;
-}
-
-// ─── Gateway UI interfaces ────────────────────────────────────────────────────
-
-/**
- * ITextUI — minimal shared tool rendering interface.
- * Spec ref: specs/api.md §3
- */
-export interface ITextUI {
-  getStatusText(): Promise<string>;
-  getResultText(output: unknown): Promise<string>;
-  getErrorText(error: unknown): Promise<string>;
-}
-
-/**
- * IWebUI — Web UI Gateway rendering interface.
- * Spec ref: specs/api.md §3
- */
-export interface IWebUI extends ITextUI {
-  getComponent(phase: "call" | "result"): Promise<WebComponentDescriptor | undefined>;
-}
-
-export interface WebComponentDescriptor {
-  componentId: string;
-  props: Record<string, unknown>;
 }
 
 // ─── Gateway Callback ─────────────────────────────────────────────────────────
@@ -395,7 +363,6 @@ export interface ISession extends IObservable<AgentEvent> {
 
   // ─── Session tree / branching ─────────────────────────────────────────────────
 
-  branch(entryId: string): Promise<void>;
   fork(fromEntryId?: string): Promise<string>;
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────────

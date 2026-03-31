@@ -13,7 +13,6 @@ function sessionRow(id: string): SessionRow {
     created_at: Date.now(),
     updated_at: Date.now(),
     name: id,
-    cwd: null,
     model_id: "anthropic/claude-sonnet-4-5",
     leaf_id: null,
   };

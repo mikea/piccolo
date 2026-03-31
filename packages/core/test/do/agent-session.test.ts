@@ -391,32 +391,6 @@ describe("AgentSessionDO — delete and fork", () => {
   });
 });
 
-describe("AgentSessionDO — branch", () => {
-  it("branch(entryId) repoints the in-memory leaf to the given entry", async () => {
-    const sid = uniqueId();
-    await runPrompt(sid, "turn one", "response one");
-
-    const rowAfterTurn1 = await getSession(env.SESSIONS_DB, sid);
-    const leafAfterTurn1 = rowAfterTurn1?.leaf_id;
-    expect(leafAfterTurn1).toBeTruthy();
-
-    // Do a second turn to advance leaf further
-    const stub = getStub(sid);
-    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
-      instance._setModelForTest(createMockModel({ response: "response two" }));
-      const flushed = waitForEvent(instance, (e) => e.type === "turn_flushed");
-      await drainTurn(instance, "turn two");
-      await flushed;
-    });
-
-    // Branch back to leaf after turn 1 — confirm no throw
-    if (!leafAfterTurn1) throw new Error("Expected leafAfterTurn1");
-    await runInDurableObject(stub, async (instance: AgentSessionDO) => {
-      await instance.branch(leafAfterTurn1);
-    });
-  });
-});
-
 describe("AgentSessionDO — compaction", () => {
   it("compact() creates a CompactionEntry in D1", async () => {
     const sid = uniqueId();

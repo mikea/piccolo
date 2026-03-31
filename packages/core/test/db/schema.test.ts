@@ -26,7 +26,6 @@ function makeSession(overrides: Partial<SessionRow> = {}): SessionRow {
     created_at: 1_700_000_000_000,
     updated_at: 1_700_000_000_000,
     name: null,
-    cwd: null,
     model_id: "anthropic/claude-sonnet-4-5",
     leaf_id: null,
     ...overrides,
@@ -59,7 +58,6 @@ describe("insertSession + getSession", () => {
     const session = makeSession({
       id: "s1",
       name: null,
-      cwd: null,
       leaf_id: null,
     });
     await insertSession(env.SESSIONS_DB, session);
@@ -71,7 +69,6 @@ describe("insertSession + getSession", () => {
     const session = makeSession({
       id: "s2",
       name: "My Session",
-      cwd: "/home/user",
       leaf_id: "a1b2c3d4",
     });
     await insertSession(env.SESSIONS_DB, session);

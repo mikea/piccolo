@@ -54,7 +54,7 @@ import { generateEntryId, parseEntry } from "./db/entry-types.ts";
 import { getEntries as getEntryRows, getSession, updateSessionModel } from "./db/schema.ts";
 import { ExtensionRunner } from "./extension-runner.ts";
 import { ObservableImpl } from "./observable-impl.ts";
-import { buildSessionContextFromDb, walkToRoot } from "./session/context.ts";
+import { buildSessionContextFromDb, estimateTokens, walkToRoot } from "./session/context.ts";
 import {
   commitSession,
   deleteSession,
@@ -142,9 +142,6 @@ export class SessionTarget extends RpcTarget implements ISession {
   }
   getSystemPrompt(): Promise<string> {
     return this.#do.getSystemPrompt();
-  }
-  branch(entryId: string): Promise<void> {
-    return this.#do.branch(entryId);
   }
   fork(fromEntryId?: string): Promise<string> {
     return this.#do.fork(fromEntryId);
@@ -540,21 +537,6 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   // ─── ISession: Session tree ───────────────────────────────────────────────
 
-  async branch(entryId: string): Promise<void> {
-    this.#leafId = entryId;
-    const context = await buildSessionContextFromDb({
-      db: this.env.SESSIONS_DB,
-      sessionId: this.#sessionId,
-      leafId: entryId,
-    });
-    if (context.modelId !== this.#modelId) {
-      this.#modelId = context.modelId;
-      if (!this.#modelOverridden) {
-        this.#model = createModel(this.env, context.modelId);
-      }
-    }
-  }
-
   async fork(fromEntryId?: string): Promise<string> {
     const newSessionId = await forkSession(
       this.#sessionId,
@@ -928,32 +910,6 @@ export class TurnImpl extends RpcTarget implements ITurn {
   async abort(): Promise<void> {
     await this.#abort();
   }
-}
-
-// ─── Token estimation ─────────────────────────────────────────────────────────
-
-function estimateTokens(messages: ModelMessage[]): number {
-  let chars = 0;
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      chars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (
-          typeof part === "object" &&
-          part !== null &&
-          "type" in part &&
-          part.type === "text" &&
-          "text" in part
-        ) {
-          chars += String(part.text).length;
-        } else {
-          chars += 50;
-        }
-      }
-    }
-  }
-  return Math.ceil(chars / 4);
 }
 
 function createModel(env: Env, modelId: string): LanguageModel {

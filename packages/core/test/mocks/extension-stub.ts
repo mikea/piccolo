@@ -260,7 +260,6 @@ export function createMockSession(
     }),
     compact: async () => {},
     getSystemPrompt: async () => "",
-    branch: async () => {},
     fork: async () => {
       throw new Error("not implemented in mock");
     },

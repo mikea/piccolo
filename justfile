@@ -1,4 +1,10 @@
+alias w := watch
+
 all: compile test check
+
+
+watch *args="all":
+    watchexec -rc -w . -- just {{args}}
 
 check:
     mise x -- pnpm check
@@ -35,4 +41,4 @@ migrations:
     mise x -- pnpm wrangler d1 migrations apply mikea-piccolo-sessions --remote -c packages/core/wrangler.jsonc
 
 dev:
-    mise x -- pnpm wrangler dev -c packages/core/wrangler.dev.jsonc
+    mise x -- pnpm wrangler dev -c gateways/web/wrangler.dev.jsonc -c packages/core/wrangler.dev.jsonc

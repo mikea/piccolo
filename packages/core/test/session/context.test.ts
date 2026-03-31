@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AnyEntry } from "../../src/db/entry-types.ts";
-import { buildSessionContext, DEFAULT_MODEL_ID, walkToRoot } from "../../src/session/context.ts";
+import { buildSessionContext, walkToRoot } from "../../src/session/context.ts";
 
 // ─── Entry factory helpers ────────────────────────────────────────────────────
 
@@ -133,14 +133,12 @@ describe("buildSessionContext — empty / trivial", () => {
   it("returns default state for empty entries + null leafId", () => {
     const result = buildSessionContext([], null);
     expect(result.messages).toEqual([]);
-    expect(result.modelId).toBe(DEFAULT_MODEL_ID);
   });
 
   it("returns default state when leafId is not found in entries", () => {
     const root = sessionInfo("r");
     const result = buildSessionContext([root], "missing");
     expect(result.messages).toEqual([]);
-    expect(result.modelId).toBe(DEFAULT_MODEL_ID);
   });
 
   it("session_info root produces no messages", () => {
@@ -165,39 +163,6 @@ describe("buildSessionContext — message entries", () => {
       content: [{ type: "text", text: "Hi" }],
       id: "a",
     });
-  });
-});
-
-// ─── buildSessionContext — model extraction ───────────────────────────────────
-
-describe("buildSessionContext — modelId", () => {
-  it("returns DEFAULT_MODEL_ID when no model_change entries exist", () => {
-    const r = sessionInfo("r");
-    const u = userMsg("u", "r", "hi");
-    const { modelId } = buildSessionContext([r, u], "u");
-    expect(modelId).toBe(DEFAULT_MODEL_ID);
-  });
-
-  it("returns modelId from the last model_change entry on the path", () => {
-    const r = sessionInfo("r");
-    const m1 = modelChange("m1", "r", "openai/gpt-4o");
-    const u = userMsg("u", "m1", "hi");
-    const m2 = modelChange("m2", "u", "anthropic/claude-opus-4");
-    const a = assistantMsg("a", "m2", "hello");
-    const { modelId } = buildSessionContext([r, m1, u, m2, a], "a");
-    expect(modelId).toBe("anthropic/claude-opus-4");
-  });
-
-  it("ignores model_change entries on a different branch", () => {
-    const r = sessionInfo("r");
-    const m1 = modelChange("m1", "r", "openai/gpt-4o");
-    // branch A (inactive)
-    const _ua = userMsg("ua", "m1", "branch A");
-    const _ma = modelChange("ma", "ua", "google/gemini-pro");
-    // branch B (active)
-    const ub = userMsg("ub", "m1", "branch B");
-    const { modelId } = buildSessionContext([r, m1, _ua, _ma, ub], "ub");
-    expect(modelId).toBe("openai/gpt-4o");
   });
 });
 
@@ -328,9 +293,7 @@ describe("buildSessionContext — mixed entry types on path", () => {
     const bs = branchSummary("bs", "lb", "Old branch");
 
     const entries = [r, mc, u1, a1, lb, bs];
-    const { messages, modelId } = buildSessionContext(entries, "bs");
-
-    expect(modelId).toBe("openai/gpt-4o");
+    const { messages } = buildSessionContext(entries, "bs");
     expect(messages).toHaveLength(3);
     expect(messages[0]).toEqual({ role: "user", content: "Hello", id: "u1" });
     expect(messages[1]).toEqual({

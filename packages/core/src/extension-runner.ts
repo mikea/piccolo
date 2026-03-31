@@ -23,13 +23,11 @@ import type {
   BeforeCompactResult,
   ContextResult,
   ExtensionEvent,
-  GatewayId,
   IAbortSignal,
   ICommand,
   IExtensionWorker,
   InputResult,
   ISession,
-  ITextUI,
   ITool,
   SystemPromptAddition,
   ToolCallResult,
@@ -41,7 +39,7 @@ import type {
 
 /**
  * Wraps a remote ITool stub (received over JSRPC from an extension Worker) so
- * that any RPC failure in getDescriptor(), execute(), or getGatewayUI() is
+ * that any RPC failure in getDescriptor() or execute() is
  * caught here and never propagates to the browser.
  */
 class SafeToolWrapper implements ITool {
@@ -101,18 +99,6 @@ class SafeToolWrapper implements ITool {
         ],
         isError: true,
       };
-    }
-  }
-
-  async getGatewayUI(gatewayId: GatewayId): Promise<ITextUI | undefined> {
-    if (!this.#remote.getGatewayUI) return undefined;
-    try {
-      return await this.#remote.getGatewayUI(gatewayId);
-    } catch (error) {
-      console.warn(
-        `[extensions] extension=${this.#extensionName} tool=${this.#lastKnownDescriptor?.name ?? this.#fallbackDescriptor.name} getGatewayUI failed error=${formatError(error)}`,
-      );
-      return undefined;
     }
   }
 }

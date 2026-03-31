@@ -18,7 +18,6 @@ import type {
   BranchSummaryEntry,
   CompactionEntry,
   MessageEntry,
-  ModelChangeEntry,
 } from "../db/entry-types.ts";
 import { ContextIterator } from "./context-iterator.ts";
 
@@ -38,10 +37,6 @@ function checkMessage(msg: ModelMessage, entryId: string): void {
     );
   }
 }
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-export const DEFAULT_MODEL_ID = "anthropic/claude-sonnet-4-5";
 
 // ─── Walk ─────────────────────────────────────────────────────────────────────
 
@@ -124,11 +119,11 @@ function entryToMessage(entry: AnyEntry): IMessage | undefined {
 export function buildSessionContext(
   entries: AnyEntry[],
   leafId: string | null,
-): { messages: IMessage[]; modelId: string } {
+): { messages: IMessage[] } {
   const path = walkToRoot(entries, leafId);
 
   if (path.length === 0) {
-    return { messages: [], modelId: DEFAULT_MODEL_ID };
+    return { messages: [] };
   }
 
   // ── Find most recent compaction on the path ────────────────────────────────
@@ -189,17 +184,7 @@ export function buildSessionContext(
     }
   }
 
-  // ── Extract most recent modelId from the full path ────────────────────────
-  let modelId = DEFAULT_MODEL_ID;
-  for (let i = path.length - 1; i >= 0; i--) {
-    const e = path[i];
-    if (e !== undefined && e.type === "model_change") {
-      modelId = (e as ModelChangeEntry).data.modelId;
-      break;
-    }
-  }
-
-  return { messages, modelId };
+  return { messages };
 }
 
 function estimateMessageTokens(msg: IMessage): number {
@@ -239,14 +224,13 @@ interface BuildSessionContextFromDbOptions {
  */
 export async function buildSessionContextFromDb(
   options: BuildSessionContextFromDbOptions,
-): Promise<{ messages: IMessage[]; modelId: string }> {
+): Promise<{ messages: IMessage[] }> {
   const { db, sessionId, leafId, contextTokenLimit } = options;
   if (leafId === null) {
-    return { messages: [], modelId: DEFAULT_MODEL_ID };
+    return { messages: [] };
   }
 
   const newestToOldest: AnyEntry[] = [];
-  let modelId = DEFAULT_MODEL_ID;
   let tokens = 0;
   let compaction: CompactionEntry | undefined;
   let cutoffId: string | undefined;
@@ -254,10 +238,6 @@ export async function buildSessionContextFromDb(
   const iter = new ContextIterator({ db, sessionId, leafId });
   for await (const entry of iter) {
     newestToOldest.push(entry);
-
-    if (modelId === DEFAULT_MODEL_ID && entry.type === "model_change") {
-      modelId = (entry as ModelChangeEntry).data.modelId;
-    }
 
     if (compaction === undefined && entry.type === "compaction") {
       compaction = entry as CompactionEntry;
@@ -308,5 +288,30 @@ export async function buildSessionContextFromDb(
     }
   }
 
-  return { messages, modelId };
+  return { messages };
+}
+
+// ─── Token estimation ─────────────────────────────────────────────────────────
+export function estimateTokens(messages: ModelMessage[]): number {
+  let chars = 0;
+  for (const msg of messages) {
+    if (typeof msg.content === "string") {
+      chars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "text" &&
+          "text" in part
+        ) {
+          chars += String(part.text).length;
+        } else {
+          chars += 50;
+        }
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
 }

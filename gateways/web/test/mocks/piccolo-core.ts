@@ -70,7 +70,6 @@ export function createMockSession(
     getContextUsage: vi.fn().mockResolvedValue({ inputTokens: 0 } satisfies ContextUsage),
     compact: vi.fn().mockResolvedValue(undefined),
     getSystemPrompt: vi.fn().mockResolvedValue(""),
-    branch: vi.fn().mockResolvedValue(undefined),
     fork: vi.fn().mockResolvedValue("forked-session-id"),
     delete: vi.fn().mockResolvedValue(undefined),
     ...overrides,

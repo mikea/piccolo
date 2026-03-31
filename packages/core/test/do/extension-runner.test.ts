@@ -778,7 +778,6 @@ describe("createMockSession() — all methods reachable", () => {
     expect(await s.getContextUsage()).toMatchObject({ inputTokens: 0 });
     await expect(s.compact()).resolves.toBeUndefined();
     expect(await s.getSystemPrompt()).toBe("");
-    await expect(s.branch("e")).resolves.toBeUndefined();
     await expect(s.delete()).resolves.toBeUndefined();
   });
 });

@@ -20,7 +20,6 @@ export interface SessionRow {
   created_at: number; // Unix ms
   updated_at: number; // Unix ms
   name: string | null;
-  cwd: string | null;
   model_id: string;
   leaf_id: string | null;
 }
@@ -41,19 +40,10 @@ export interface SessionListRow extends SessionRow {
 export async function insertSession(db: D1Database, row: SessionRow): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO sessions (id, user_id, created_at, updated_at, name, cwd, model_id, leaf_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (id, user_id, created_at, updated_at, name, model_id, leaf_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(
-      row.id,
-      row.user_id,
-      row.created_at,
-      row.updated_at,
-      row.name,
-      row.cwd,
-      row.model_id,
-      row.leaf_id,
-    )
+    .bind(row.id, row.user_id, row.created_at, row.updated_at, row.name, row.model_id, row.leaf_id)
     .run();
 }
 
@@ -64,19 +54,10 @@ export async function insertSession(db: D1Database, row: SessionRow): Promise<vo
 export async function upsertSession(db: D1Database, row: SessionRow): Promise<void> {
   await db
     .prepare(
-      `INSERT OR IGNORE INTO sessions (id, user_id, created_at, updated_at, name, cwd, model_id, leaf_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO sessions (id, user_id, created_at, updated_at, name, model_id, leaf_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(
-      row.id,
-      row.user_id,
-      row.created_at,
-      row.updated_at,
-      row.name,
-      row.cwd,
-      row.model_id,
-      row.leaf_id,
-    )
+    .bind(row.id, row.user_id, row.created_at, row.updated_at, row.name, row.model_id, row.leaf_id)
     .run();
 }
 
@@ -138,7 +119,7 @@ export async function listSessionsByUser(
   const result = await db
     .prepare(
       `SELECT
-         s.id, s.user_id, s.name, s.cwd, s.created_at, s.updated_at, s.model_id, s.leaf_id,
+         s.id, s.user_id, s.name, s.created_at, s.updated_at, s.model_id, s.leaf_id,
          COUNT(CASE WHEN e.type = 'message' THEN 1 END)                              AS message_count,
          MIN(CASE WHEN e.type = 'message'
                        AND json_extract(e.data, '$.role') = 'user'

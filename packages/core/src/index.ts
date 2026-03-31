@@ -19,7 +19,6 @@ export type {
   ContextUsage,
   ExtensionEvent,
   FinishReason,
-  GatewayId,
   ICommand,
   IDisposable,
   IExtensionListener,
@@ -30,11 +29,9 @@ export type {
   IObservable,
   IObserver,
   ISessionListener,
-  ITextUI,
   ITool,
   ITurn,
   IUser,
-  IWebUI,
   JsonSchema7,
   LanguageModel,
   LanguageModelUsage,
@@ -45,7 +42,6 @@ export type {
   ToolDescriptor,
   ToolResult,
   ToolResultOverride,
-  WebComponentDescriptor,
 } from "@piccolo/api";
 // ── Durable Objects ───────────────────────────────────────────────────────────
 // AgentSessionDO — must be a named export for Wrangler DO registration

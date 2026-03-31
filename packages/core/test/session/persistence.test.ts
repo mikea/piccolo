@@ -142,33 +142,29 @@ describe("createSession", () => {
 describe("commitSession", () => {
   it("creates the sessions row with supplied options", async () => {
     const id = createSession();
-    await commitSession(
-      id,
-      "user-1",
-      { name: "Test", modelId: "openai/gpt-4o", cwd: "/tmp" },
-      env.SESSIONS_DB,
-    );
+    await commitSession(id, "user-1", { name: "Test", modelId: "openai/gpt-4o" }, env.SESSIONS_DB);
     const row = await getSession(env.SESSIONS_DB, id);
     expect(row).not.toBeNull();
     expect(row?.user_id).toBe("user-1");
     expect(row?.name).toBe("Test");
     expect(row?.model_id).toBe("openai/gpt-4o");
-    expect(row?.cwd).toBe("/tmp");
     expect(row?.leaf_id).toBeNull();
-  });
-
-  it("uses DEFAULT_MODEL_ID when modelId is not supplied", async () => {
-    const id = createSession();
-    await commitSession(id, "user-1", {}, env.SESSIONS_DB);
-    const row = await getSession(env.SESSIONS_DB, id);
-    expect(row?.model_id).toBe("anthropic/claude-sonnet-4-5");
-    expect(row?.name).toBe(id);
   });
 
   it("is idempotent — second call with same sessionId is a no-op", async () => {
     const id = createSession();
-    await commitSession(id, "user-1", { name: "Original" }, env.SESSIONS_DB);
-    await commitSession(id, "user-1", { name: "Updated" }, env.SESSIONS_DB);
+    await commitSession(
+      id,
+      "user-1",
+      { name: "Original", modelId: "anthropic/claude-sonnet-4-5" },
+      env.SESSIONS_DB,
+    );
+    await commitSession(
+      id,
+      "user-1",
+      { name: "Updated", modelId: "openai/gpt-4o" },
+      env.SESSIONS_DB,
+    );
     const row = await getSession(env.SESSIONS_DB, id);
     expect(row?.name).toBe("Original"); // second call was a no-op
   });
@@ -266,9 +262,9 @@ describe("listSessions", () => {
     const s3 = createSession();
     // commitSession sets updated_at = now; batch quickly enough they might be equal,
     // so we append entries with different timestamps to force ordering via leaf update.
-    await commitSession(s1, uid, {}, env.SESSIONS_DB);
-    await commitSession(s2, uid, {}, env.SESSIONS_DB);
-    await commitSession(s3, uid, {}, env.SESSIONS_DB);
+    await commitSession(s1, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
+    await commitSession(s2, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
+    await commitSession(s3, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
     // Append entries to bump updated_at in a known order
     await appendEntry(makeMessageEntry(entryId(), s1, null, "user", "hi", 0), env.SESSIONS_DB);
     await appendEntry(makeMessageEntry(entryId(), s3, null, "user", "hi", 0), env.SESSIONS_DB);
@@ -282,7 +278,7 @@ describe("listSessions", () => {
   it("populates messageCount correctly", async () => {
     const uid = "ls-count";
     const sid = createSession();
-    await commitSession(sid, uid, {}, env.SESSIONS_DB);
+    await commitSession(sid, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
     await appendEntry(makeMessageEntry(entryId(), sid, null, "user", "one", 0), env.SESSIONS_DB);
     await appendEntry(
       makeMessageEntry(entryId(), sid, null, "assistant", "two", 1),
@@ -299,7 +295,7 @@ describe("listSessions", () => {
   it("truncates firstMessage to 100 chars", async () => {
     const uid = "ls-truncate";
     const sid = createSession();
-    await commitSession(sid, uid, {}, env.SESSIONS_DB);
+    await commitSession(sid, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
     const longText = "x".repeat(200);
     await appendEntry(makeMessageEntry(entryId(), sid, null, "user", longText, 0), env.SESSIONS_DB);
 
@@ -311,7 +307,7 @@ describe("listSessions", () => {
   it("firstMessage is empty string when no messages exist", async () => {
     const uid = "ls-nomsg";
     const sid = createSession();
-    await commitSession(sid, uid, {}, env.SESSIONS_DB);
+    await commitSession(sid, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
 
     const results = await listSessions(uid, env.SESSIONS_DB);
     const s = results.find((r) => r.id === sid);
@@ -322,19 +318,23 @@ describe("listSessions", () => {
   it("does not include sessions from other users", async () => {
     const uid = "ls-myuser";
     const sid = createSession();
-    await commitSession(sid, uid, {}, env.SESSIONS_DB);
+    await commitSession(sid, uid, { modelId: "anthropic/claude-sonnet-4-5" }, env.SESSIONS_DB);
     const results = await listSessions("other-user", env.SESSIONS_DB);
     expect(results.every((r) => r.id !== sid)).toBe(true);
   });
 
-  it("maps optional name and cwd fields correctly", async () => {
+  it("maps optional name field correctly", async () => {
     const uid = "ls-opts";
     const sid = createSession();
-    await commitSession(sid, uid, { name: "My Session", cwd: "/home/user" }, env.SESSIONS_DB);
+    await commitSession(
+      sid,
+      uid,
+      { name: "My Session", modelId: "anthropic/claude-sonnet-4-5" },
+      env.SESSIONS_DB,
+    );
     const results = await listSessions(uid, env.SESSIONS_DB);
     const s = results.find((r) => r.id === sid);
     expect(s?.name).toBe("My Session");
-    expect(s?.cwd).toBe("/home/user");
   });
 });
 
