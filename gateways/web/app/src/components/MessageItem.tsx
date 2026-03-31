@@ -157,10 +157,10 @@ const AssistantContent: Component<{ content: AssistantContentValue; isStreaming?
                   when={
                     isToolResultPart(part)
                       ? {
-                          toolName: part.toolName !== undefined ? String(part.toolName) : "tool",
-                          output: part.output,
-                          isError: false,
-                        }
+                        toolName: part.toolName !== undefined ? String(part.toolName) : "tool",
+                        output: part.output,
+                        isError: false,
+                      }
                       : null
                   }
                 >
@@ -278,26 +278,24 @@ const ToolMessage: Component<{
         </span>
       </button>
       <Show when={open()}>
-        <>
-          <Show when={props.input !== undefined}>
-            <div style="margin:6px 0 0;color:#8892a0;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
-              Tool Input: {props.toolName}
-            </div>
-            <pre style="margin:6px 0 0;padding:6px 8px;background:#111122;border-radius:3px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#ccc;font-size:11px;">
-              {renderContent(props.input)}
-            </pre>
-          </Show>
-          <Show when={props.output !== undefined}>
-            <div style="margin:6px 0 0;color:#8892a0;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
-              Tool Output: {props.toolName}
-            </div>
-            <pre
-              style={`margin:6px 0 0;padding:6px 8px;background:#111122;border-radius:3px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:${props.isError ? "#ff8888" : "#ccc"};font-size:11px;`}
-            >
-              {props.isStreaming ? "(streaming)" : renderContent(props.output)}
-            </pre>
-          </Show>
-        </>
+        <Show when={props.input !== undefined}>
+          <div style="margin:6px 0 0;color:#8892a0;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+            Tool Input: {props.toolName}
+          </div>
+          <pre style="margin:6px 0 0;padding:6px 8px;background:#111122;border-radius:3px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#ccc;font-size:11px;">
+            {renderContent(props.input)}
+          </pre>
+        </Show>
+        <Show when={props.output !== undefined}>
+          <div style="margin:6px 0 0;color:#8892a0;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+            Tool Output: {props.toolName}
+          </div>
+          <pre
+            style={`margin:6px 0 0;padding:6px 8px;background:#111122;border-radius:3px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:${props.isError ? "#ff8888" : "#ccc"};font-size:11px;`}
+          >
+            {props.isStreaming ? "(streaming)" : renderContent(props.output)}
+          </pre>
+        </Show>
       </Show>
     </div>
   );
@@ -328,17 +326,17 @@ const ToolContentMessage: Component<{ content: ToolContent }> = (props) => (
 
 const JsonMessage: Component<{
   value:
-    | AssistantPart
-    | AssistantContentValue
-    | UIEntry
-    | ToolInput
-    | ToolOutput
-    | ToolContent
-    | string
-    | number
-    | boolean
-    | null
-    | undefined;
+  | AssistantPart
+  | AssistantContentValue
+  | UIEntry
+  | ToolInput
+  | ToolOutput
+  | ToolContent
+  | string
+  | number
+  | boolean
+  | null
+  | undefined;
 }> = (props) => (
   <pre style="margin:0;padding:8px 10px;background:#121212;border-radius:6px;color:#bbb;font-size:12px;white-space:pre-wrap;word-break:break-all;">
     {renderContent(props.value)}
