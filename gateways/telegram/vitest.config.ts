@@ -7,4 +7,16 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.test.jsonc" },
     }),
   ],
+  test: {
+    coverage: {
+      // v8 coverage requires node:inspector/promises, unsupported in workerd.
+      provider: "istanbul",
+      exclude: ["**/test/**"],
+      thresholds: {
+        lines: 80,
+        functions: 80,
+        branches: 70,
+      },
+    },
+  },
 });

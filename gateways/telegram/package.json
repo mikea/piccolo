@@ -19,7 +19,8 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.4",
-    "vitest": "*",
+    "@vitest/coverage-istanbul": "^4.1.2",
+    "vitest": "^4.1.2",
     "wrangler": "^4.78.0"
   }
 }
