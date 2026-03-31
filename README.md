@@ -36,6 +36,12 @@ Each extension is a Cloudflare Worker deployed as a normal service and wired int
 
 ---
 
+## Screenshots
+
+<img width="380" height="193" alt="image" src="https://github.com/user-attachments/assets/aa11ff7f-dc45-4e95-9076-51c21e16d9aa" />
+
+---
+
 ## Deploy
 
 See [DEPLOY.md](DEPLOY.md).
