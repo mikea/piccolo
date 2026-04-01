@@ -40,6 +40,21 @@ Each extension is a Cloudflare Worker deployed as a normal service and wired int
 
 <img width="380" height="193" alt="image" src="https://github.com/user-attachments/assets/aa11ff7f-dc45-4e95-9076-51c21e16d9aa" />
 
+
+---
+
+## Extensions
+
+The following piccolo extensions are available as part of this repository:
+
+- [Web Gateway](gateways/web/) - browser-based UI
+- [Telegram Gateway](gateways/telegram/) - telegram UI
+- [Fetch Tool](extensions/fetch-tool/) - agent internet access
+- [R2 Tools](extensions/r2-tool/) - set of tools to read/write/manager R2 bucket
+- [Instructions](extensions/instructions/) - persistent agent instructions
+- [Skills](extensions/skills/) - support for skills according to
+    [open Agent Skills specification](https://agentskills.io/specification)
+
 ---
 
 ## Deploy

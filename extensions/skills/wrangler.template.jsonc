@@ -4,12 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-03-24",
 
-  // ── KV ─────────────────────────────────────────────────────────────────
-  "kv_namespaces": [
+  "d1_databases": [
     {
-      // Cache for fetched skill documents (TTL-based).
-      "binding": "SKILLS_CACHE",
-      "id": "<SKILLS_CACHE_KV_ID>"
+      "binding": "SKILLS_DB",
+      "database_name": "piccolo-skills",
+      "database_id": "<SKILLS_DB_ID>"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "piccolo-assets"
     }
   ]
 }

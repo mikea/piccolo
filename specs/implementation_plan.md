@@ -819,15 +819,21 @@ Deferred to later phases:
 
 **Deliverables:**
 - `SkillsExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
-- `onSessionStart`: fetch skills from source list, parse frontmatter, build registry
-- `getSystemPromptAdditions()`: return `skills` section listing names + descriptions
-- `getCommands()`: one `ICommand` per skill
-- `onInput()`: handle `/skill:{name}` commands — fetch full content, optionally append args, return `transform`
-- KV caching with TTL
-- JSRPC admin endpoints: `addSource()`, `removeSource()`, `listSources()`, `reloadSkills()`, `listSkills()`, `getSkillContent()`
-- Frontmatter validation per Agent Skills spec
-- `wrangler.template.jsonc` with `SKILLS_CACHE` KV
-- Unit tests: source loading, frontmatter parsing, validation rules, command registration, input transform, KV cache hit/miss
+- D1 schema for skills (`user_id`/`session_id` scope model, `active`, `sha256`, `file_name` upsert key)
+- `import_skills` tool: recursive R2 `SKILL.md` import, lenient frontmatter parsing, SHA-256 skip-on-unchanged
+- `list_skills` tool: visible skills listing with scope labels (`global`/`user`/`session`)
+- `activate_skill` tool: return full stored `SKILL.md` content with precedence `session > user > global`
+- `getSystemPromptAdditions()`: XML `<available_skills>` catalog with escaped values and deterministic ordering
+- Lenient Agent Skills parsing (standard fields persisted; unknown fields ignored)
+- `wrangler.template.jsonc` with `SKILLS_DB` (D1) and `BUCKET` (R2)
+- Unit tests: import recursion/pagination, lenient parsing behavior, sha skip, scope precedence, list/activate tools, prompt XML escaping
+- TODO tracked in spec: migrate from tool-first UX to command UX when command/autocomplete support is available
+
+**Implementation notes:**
+- Import flow is split into two helpers (`listSkillKeys`, `importSingleSkill`) to keep recursion/listing separate from per-file parsing/upsert logic.
+- Parser is intentionally lenient for robustness: malformed lines are skipped, unknown keys ignored, and missing values coerced to safe defaults.
+- `activate_skill` descriptor includes a direct reference to integration guidance step 4 so behavior stays aligned with tool-based activation guidance.
+- ext-skills tests live under `extensions/skills/test/` (not `src/`) and run in Workers runtime with D1-backed integration-style coverage.
 
 **Spec refs:** [skills_extension.md](skills_extension.md)
 

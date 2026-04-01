@@ -1,251 +1,276 @@
 # Skills Extension — Specification
 
-The skills extension loads agent skills from a configurable list of URLs and makes them available as `/skill:name` commands. It implements the [Agent Skills standard](https://agentskills.io/specification).
+The skills extension imports `SKILL.md` files from R2, stores them in D1, discloses a compact skills catalog in the system prompt, and provides tools to import, list, and activate skills.
 
----
-
-## What is a Skill?
-
-A skill is a Markdown document (`SKILL.md`) that provides the agent with specialised instructions, workflows, and reference material for a specific task. Only the skill's name and description are always in the system prompt; the full content is loaded on-demand when the agent invokes the skill, keeping context usage low (progressive disclosure).
+This extension follows:
+- Agent Skills format specification: <https://agentskills.io/specification>
+- Agent Skills integration guidance: <https://agentskills.io/client-implementation/adding-skills-support>
 
 ---
 
 ## Extension Worker
 
-**Name:** `ext-skills`  
-**Implements:** `IExtensionWorker` (see [api.md §8](api.md))  
-**Bindings required:** KV for cache (`env.SKILLS_CACHE`), optionally R2 for assets
+**Name:** `ext-skills`
+**Implements:** `IExtensionWorker` (see [api.md §8](api.md))
+**Bindings required:**
+- D1: `env.SKILLS_DB`
+- R2: `env.BUCKET`
 
 ### `wrangler.template.jsonc`
 
 ```jsonc
 {
   "name": "ext-skills",
-  "kv_namespaces": [
-    { "binding": "SKILLS_CACHE", "id": "..." }
+  "d1_databases": [
+    { "binding": "SKILLS_DB", "database_name": "piccolo-skills", "database_id": "<SKILLS_DB_ID>" }
   ],
-  "vars": {
-    // JSON array of skill source URLs (each pointing to a SKILL.md or a skills index)
-    "SKILL_SOURCES": "[]"
+  "r2_buckets": [
+    { "binding": "BUCKET", "bucket_name": "piccolo-assets" }
+  ]
+}
+```
+
+---
+
+## D1 Schema
+
+Database: `piccolo-skills`.
+Migration: `extensions/skills/migrations/0001_initial.sql`.
+
+```sql
+CREATE TABLE skills (
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT,
+  session_id    TEXT,
+  file_name     TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  description   TEXT NOT NULL,
+  license       TEXT,
+  compatibility TEXT,
+  metadata_json TEXT,
+  allowed_tools TEXT,
+  content       TEXT NOT NULL,
+  sha256        TEXT NOT NULL,
+  active        INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  CHECK (
+    (user_id IS NULL AND session_id IS NULL) OR
+    (user_id IS NOT NULL AND session_id IS NULL) OR
+    (user_id IS NULL AND session_id IS NOT NULL)
+  )
+);
+
+CREATE UNIQUE INDEX skills_scope_file_unique
+  ON skills(user_id, session_id, file_name);
+```
+
+### Scope model
+
+Rows are scoped by nullable `user_id` and `session_id`:
+
+| Scope | `user_id` | `session_id` |
+|---|---|---|
+| global | `NULL` | `NULL` |
+| user | current user ID | `NULL` |
+| session | `NULL` | current session ID |
+
+Visible rows for a session are the union of global + current user + current session rows.
+
+`active` defaults to `1` (active).
+
+---
+
+## Skill format and lenient validation
+
+Imported documents must be valid `SKILL.md` files with YAML frontmatter and only standard Agent Skills fields:
+
+Required:
+- `name`
+- `description`
+
+Optional:
+- `license`
+- `compatibility`
+- `metadata`
+- `allowed-tools`
+
+Lenient rules:
+- Unknown/non-standard frontmatter fields are ignored and never persisted.
+- Malformed lines are skipped when possible.
+- Missing required fields are coerced to safe fallback values for storage.
+
+On successful import:
+- The original full file is stored in `content`.
+- Parsed frontmatter values are stored in dedicated columns (`name`, `description`, `license`, `compatibility`, `metadata_json`, `allowed_tools`).
+
+---
+
+## Tool: `import_skills`
+
+Recursively imports `SKILL.md` files from an R2 path into D1.
+
+Input:
+
+```typescript
+{
+  path: string;
+  scope: "global" | "user" | "session";
+  max_files?: number;
+  max_file_bytes?: number;
+}
+```
+
+### Scope resolution
+
+`scope` determines persisted IDs:
+- `global` → `user_id = NULL`, `session_id = NULL`
+- `user` → `user_id = ctx.userId()`, `session_id = NULL`
+- `session` → `user_id = NULL`, `session_id = ctx.sessionId()`
+
+### Import algorithm
+
+1. List R2 objects recursively using `path` prefix (paginated).
+2. Keep only keys ending with `SKILL.md`.
+3. Read full file text.
+4. Compute SHA-256 over full file text.
+5. If existing row for `(user_id, session_id, file_name)` has same `sha256`, skip.
+6. Parse and validate frontmatter (lenient mode).
+7. Insert/update row by `(user_id, session_id, file_name)`.
+
+Returns counts (`scanned`, `inserted`, `updated`, `skipped`, `errors`) and diagnostics.
+
+---
+
+## Tool: `list_skills`
+
+Lists currently visible skills for the active session context.
+
+Input:
+
+```typescript
+{
+  query?: string;
+  limit?: number;
+  offset?: number;
+  include_inactive?: boolean;
+}
+```
+
+Output includes at least:
+- `name`
+- `description`
+- `scope` (`global` | `user` | `session`)
+- `active`
+- `file_name`
+
+---
+
+## Tool: `activate_skill`
+
+Loads full stored `SKILL.md` content for a visible active skill name.
+
+Input:
+
+```typescript
+{
+  name: string;
+  arguments?: string;
+}
+```
+
+Resolution precedence when multiple visible rows share the same name:
+1. session-scoped
+2. user-scoped
+3. global-scoped
+
+Returns full `content` text (original `SKILL.md` file). If `arguments` is provided, it is appended as a trailing user-arguments note.
+
+`activate_skill` schema keeps `name` as plain string (no enum list) to avoid schema/token bloat when thousands of skills exist.
+
+---
+
+## System prompt contribution
+
+`getSystemPromptAdditions()` contributes a compact skills catalog (progressive disclosure tier 1) for visible active skills.
+
+The catalog format is XML:
+
+```xml
+<available_skills>
+  <skill>
+    <name>...</name>
+    <description>...</description>
+    <location>...</location>
+  </skill>
+</available_skills>
+```
+
+### Prompt algorithm
+
+```typescript
+function buildSkillsPromptCatalog(visibleSkills: Skill[]): string {
+  const skills = [...visibleSkills].sort((a, b) =>
+    a.name.localeCompare(b.name) || a.file_name.localeCompare(b.file_name),
+  );
+  if (skills.length === 0) return "";
+
+  const lines = [
+    "The following skills provide specialized instructions for specific tasks.",
+    "Call activate_skill with a skill name when the task matches its description.",
+    "",
+    "<available_skills>",
+  ];
+
+  for (const skill of skills) {
+    lines.push("  <skill>");
+    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+    lines.push(`    <description>${escapeXml(skill.description)}</description>`);
+    lines.push(`    <location>${escapeXml(`r2://skills/${skill.file_name}`)}</location>`);
+    lines.push("  </skill>");
   }
-  // or store SKILL_SOURCES in a KV key for runtime reconfiguration without redeployment
+
+  lines.push("</available_skills>");
+  return lines.join("\n");
 }
 ```
 
+`escapeXml` must escape: `&`, `<`, `>`, `"`, `'`.
+
 ---
 
-## Skill Sources
+## File layout
 
-Skills are loaded from a **source list** — a JSON array of URLs stored in the extension's `SKILLS_CACHE` KV under the key `config:sources`, or falling back to the `SKILL_SOURCES` env var. Each entry is one of:
-
-| Source type | URL format | Description |
-|---|---|---|
-| Single skill | `https://.../SKILL.md` | Loads a single skill document |
-| Index file | `https://.../skills.json` | JSON array of `{ name, url }` entries pointing to individual `SKILL.md` URLs |
-| GitHub repo root | `https://raw.githubusercontent.com/{owner}/{repo}/{ref}/` | Fetches a `skills.json` index from that root |
-
-### Source list management
-
-The source list is updated at runtime via a JSRPC endpoint on the extension itself — no redeployment needed:
-
-```typescript
-// Gateways or admin tools call this directly via a service binding
-await env.EXTENSION_SKILLS.addSource("https://example.com/skills/skills.json");
-await env.EXTENSION_SKILLS.removeSource("https://example.com/skills/skills.json");
-await env.EXTENSION_SKILLS.listSources(); // → string[]
-await env.EXTENSION_SKILLS.reloadSkills(); // force re-fetch all sources
+```
+extensions/skills/
+├── migrations/
+│   └── 0001_initial.sql
+└── src/
+    ├── index.ts
+    ├── extension.ts
+    ├── db.ts
+    └── parser.ts
 ```
 
 ---
 
-## Skill Document Format
-
-Each skill is a Markdown file conforming to the [Agent Skills specification](https://agentskills.io/specification):
-
-```markdown
----
-name: brave-search
-description: Web search and content extraction via Brave Search API. Use for searching documentation, facts, or any web content.
-license: MIT
-compatibility: Requires BRAVE_API_KEY environment variable.
----
-
-# Brave Search
-
-## Setup
-
-Set the `BRAVE_API_KEY` environment variable in your session context.
-
-## Usage
-
-Ask the agent to search for anything:
-
-> "Search for the latest Cloudflare Workers documentation"
-> "Find information about the Zod v4 release"
-```
-
-### Frontmatter Fields
-
-| Field | Required | Description |
-|---|---|---|
-| `name` | Yes | 1–64 chars. Lowercase letters, digits, hyphens. Must match the skill's identifier. |
-| `description` | Yes | Max 1024 chars. What the skill does and when the agent should use it. Be specific. |
-| `license` | No | License name or URL. |
-| `compatibility` | No | Max 500 chars. Environment requirements, API keys needed, etc. |
-| `metadata` | No | Arbitrary key-value pairs. |
-| `allowed-tools` | No | Space-delimited tool names the skill pre-approves. |
-| `disable-model-invocation` | No | When `true`, skill is omitted from the system prompt. Only invokable via `/skill:name`. |
-
-### Name Rules
-
-- 1–64 characters
-- Lowercase letters `[a-z]`, digits `[0-9]`, hyphens `-`
-- No leading or trailing hyphens
-- No consecutive hyphens (`--`)
-
-Valid: `pdf-tools`, `code-review`, `data-analysis`  
-Invalid: `PDF-Tools`, `-search`, `brave--search`
-
----
-
-## Extension Behaviour
-
-### Session start
-
-On `onSessionStart`, the extension:
-1. Reads the source list from `SKILLS_CACHE:config:sources`.
-2. For each source URL, fetches skills (honouring cache TTL via `SKILLS_CACHE`).
-3. Parses frontmatter from each `SKILL.md`.
-4. Builds a name → `{ url, name, description, disableModelInvocation }` registry.
-5. Validates each skill: missing `description` skips the skill; other violations warn but load.
-6. Stores the registry in memory for the session lifetime.
-
-### System prompt contribution
-
-`getSystemPromptAdditions` returns a `skills` section listing all skills where `disable-model-invocation` is not `true`:
-
-```
-## Available Skills
-
-The following skills provide specialised capabilities. Use `/skill:{name}` to load full instructions.
-
-- **brave-search** — Web search and content extraction via Brave Search API. Use for searching documentation, facts, or any web content.
-- **pdf-tools** — Extract text and tables from PDF files, merge and fill PDF forms.
-```
-
-This is added to the system prompt at the `"skills"` section with `priority: 100`.
-
-### Command registration
-
-`getCommands` returns one `ICommand` per skill:
-
-```typescript
-[
-  { name: "skill:brave-search", description: "Web search and content extraction via Brave Search API." },
-  { name: "skill:pdf-tools",    description: "Extract text and tables from PDF files." },
-  // ...
-]
-```
-
-### Input handling
-
-`onInput` handles `/skill:{name}` commands:
-
-```
-if event.commandName starts with "skill:":
-  skillName = event.commandName.slice("skill:".length)
-  fullContent = await fetchSkillContent(skillName)
-  if commandArgs present:
-    append "\n\nUser: {commandArgs}" to fullContent
-  return { action: "transform", text: fullContent }
-```
-
-The transformed text (the full `SKILL.md` content + optional user args) becomes the user message sent to the agent. The agent reads the instructions and executes the skill.
-
----
-
-## Caching
-
-Skill content is cached in `SKILLS_CACHE` KV:
-
-| Key | Value | TTL |
-|---|---|---|
-| `skill:{name}:content` | Raw `SKILL.md` text | 1 hour (default) |
-| `skill:{name}:meta` | `{ name, description, url, fetchedAt }` | 1 hour |
-| `config:sources` | JSON source list | No TTL (manual update only) |
-
-Cache TTL is configurable via `SKILL_CACHE_TTL_SECONDS` env var (default: `3600`).
-
-On `reloadSkills()` JSRPC call, all `skill:*` cache entries are purged before re-fetching.
-
----
-
-## JSRPC Extension Endpoints
-
-The extension exposes additional JSRPC methods beyond `IExtensionWorker`, callable from gateways or admin tools via a service binding:
-
-```typescript
-class SkillsExtension extends WorkerEntrypoint {
-
-  // IExtensionWorker implementation (getTools, onSessionStart, getSystemPromptAdditions, getCommands, onInput)
-  // ...
-
-  // ─── Admin endpoints ──────────────────────────────────────────────────────
-
-  // List all configured source URLs.
-  async listSources(): Promise<string[]>
-
-  // Add a skill source URL.
-  async addSource(url: string): Promise<void>
-
-  // Remove a skill source URL.
-  async removeSource(url: string): Promise<void>
-
-  // Force re-fetch all skills from all sources.
-  async reloadSkills(): Promise<void>
-
-  // List all currently loaded skills (name + description).
-  async listSkills(): Promise<Array<{ name: string; description: string; url: string }>>
-
-  // Fetch the full content of a named skill.
-  async getSkillContent(name: string): Promise<string | null>
-}
-```
-
----
-
-## Validation
-
-The extension validates each `SKILL.md` against the Agent Skills specification:
-
-| Violation | Behaviour |
-|---|---|
-| Missing `description` | Skip skill entirely (not loaded) |
-| Name > 64 chars or invalid characters | Warn in session start log; load anyway |
-| Name collision (same name, different source) | Warn; keep first occurrence |
-| `description` > 1024 chars | Warn; load anyway |
-| Unknown frontmatter fields | Ignore |
-
----
-
-## Example: Adding Skills
+## Deployment
 
 ```bash
-# Point the skills extension at the pi-skills repository index
-curl -X POST https://piccolo.example.com/api/extensions/ext-skills/addSource \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"url": "https://raw.githubusercontent.com/badlogic/pi-skills/main/skills.json"}'
+# Create D1 database
+wrangler d1 create piccolo-skills
 
-# Or call from an admin Worker bound to EXTENSION_SKILLS
-# await env.EXTENSION_SKILLS.addSource("https://raw.githubusercontent.com/badlogic/pi-skills/main/skills.json")
+# Apply migrations
+wrangler d1 migrations apply piccolo-skills
+
+# Deploy extension
+wrangler deploy --name ext-skills
 ```
+
+Bind extension service in core as `EXTENSION_SKILLS` and re-deploy core if the binding is added or changed.
 
 ---
 
-## Compatible Skill Sources
+## TODO
 
-The extension is compatible with any source that follows the [Agent Skills standard](https://agentskills.io/specification):
-
-- [Anthropic Skills](https://github.com/anthropics/skills) — document processing, web development
-- [Pi Skills](https://github.com/badlogic/pi-skills) — web search, browser automation, Google APIs, transcription
-- Any custom `SKILL.md` document served over HTTPS
+- Replace tool-first UX with custom command UX (`/skill`, `/skills`) once command support and autocomplete integration is implemented.

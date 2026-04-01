@@ -38,7 +38,7 @@ All piccolo components run on the **Cloudflare Workers runtime** (V8 isolates). 
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  KV: piccolo-config  R2: piccolo-assets                         │
-│  D1: piccolo-sessions  D1: piccolo-instructions                 │
+│  D1: piccolo-sessions  D1: piccolo-instructions  D1: piccolo-skills │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

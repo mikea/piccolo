@@ -398,14 +398,85 @@ pnpm deploy:core
 
 ---
 
+## Step 11 — Deploy `ext-skills`
+
+The skills extension imports `SKILL.md` files from an R2 prefix into D1, exposes
+`import_skills` / `list_skills` / `activate_skill` tools, and contributes an
+`<available_skills>` catalog to the system prompt.
+
+### 11a. Create the D1 database
+
+```bash
+pnpm wrangler d1 create piccolo-skills
+```
+
+Copy the `database_id` from the output.
+
+### 11b. Configure `ext-skills`
+
+```bash
+cp extensions/skills/wrangler.template.jsonc extensions/skills/wrangler.jsonc
+```
+
+Open `extensions/skills/wrangler.jsonc` and set:
+
+```jsonc
+"d1_databases": [
+  {
+    "binding": "SKILLS_DB",
+    "database_name": "piccolo-skills",
+    "database_id": "PASTE_D1_ID_HERE"   // ← from Step 11a
+  }
+],
+"r2_buckets": [
+  {
+    "binding": "BUCKET",
+    "bucket_name": "piccolo-assets"     // ← bucket containing SKILL.md sources
+  }
+]
+```
+
+If your skills are stored in a different bucket, replace `bucket_name` accordingly.
+
+### 11c. Apply D1 migrations
+
+```bash
+pnpm wrangler d1 migrations apply piccolo-skills \
+  --config extensions/skills/wrangler.jsonc --remote
+```
+
+### 11d. Deploy the extension Worker
+
+```bash
+pnpm wrangler deploy --config extensions/skills/wrangler.jsonc
+```
+
+### 11e. Add binding in core config and redeploy core
+
+Add this binding in `packages/core/wrangler.jsonc`:
+
+```jsonc
+{ "binding": "EXTENSION_SKILLS", "service": "ext-skills" }
+```
+
+Then redeploy core:
+
+```bash
+pnpm deploy:core
+```
+
+---
+
 ## Summary of resources created
 
 | Resource | Name | Used by |
 |---|---|---|
 | D1 database | `piccolo-sessions` | piccolo-core (`SESSIONS_DB`) |
 | D1 database | `piccolo-instructions` | ext-instructions (`INSTRUCTIONS_DB`) |
+| D1 database | `piccolo-skills` | ext-skills (`SKILLS_DB`) |
 | R2 bucket | `piccolo-assets` | piccolo-core (`ASSETS`) — infrastructure / SPA assets |
 | R2 bucket | your bucket name (e.g. `piccolo-workspace`) | ext-r2-tool (`BUCKET`) — agent-writable workspace |
+| R2 bucket | skills source bucket (e.g. `piccolo-assets`) | ext-skills (`BUCKET`) — skill import source |
 | Service binding | `EXTENSION_*` in core config | piccolo-core extension discovery |
 | AI Gateway | `piccolo` (or your slug) | piccolo-core via `CF_AI_GATEWAY_NAME` |
 

@@ -156,7 +156,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 | [web_gateway.md](web_gateway.md) | Web UI gateway: `IWebGateway`, `IUser`, `ISession`, SPA spec |
 | [telegram_gateway.md](telegram_gateway.md) | Telegram gateway: webhook handler, `TelegramSessionDO`, streamed text edits |
 | [extension-system.md](extension-system.md) | Extension use-cases, 12 examples, dispatch, provided extensions |
-| [skills_extension.md](skills_extension.md) | Skills extension: load from URLs, `/skill:name` commands, Agent Skills standard |
+| [skills_extension.md](skills_extension.md) | Skills extension: import from R2 to D1, strict Agent Skills parsing, list/activate tools, prompt catalog |
 | [prompt_templates_extension.md](prompt_templates_extension.md) | Prompt templates extension: load from URLs, `/template:name` with argument substitution |
 | [instructions_extension.md](instructions_extension.md) | Instructions extension: persistent per-scope instructions appended to the system prompt |
 | [session-format.md](session-format.md) | Redirect → core.md (session schema now in core.md) |

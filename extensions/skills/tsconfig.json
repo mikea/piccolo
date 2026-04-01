@@ -1,4 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*", "test/**/*"]
+  "compilerOptions": {
+    "types": ["./src/worker-configuration.d.ts"],
+    "paths": {
+      "@piccolo/api": ["../../packages/api/src/index.ts"]
+    },
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
 }

@@ -34,7 +34,11 @@ flowchart LR
         ext_instructions["EXTENSION_INSTRUCTIONS"]
         d1_instructions[("D1: instructions")]
       end
-      ext_skills["EXTENSION_SKILLS (planned)"]
+      subgraph skills_group["Skills Extension"]
+        ext_skills["EXTENSION_SKILLS"]
+        d1_skills[("D1: skills")]
+        r2_skills_source[("R2: skills source")]
+      end
       ext_templates["EXTENSION_TEMPLATES (planned)"]
       ext_d1["EXTENSION_D1_TOOL (planned)"]
     end
@@ -57,13 +61,15 @@ flowchart LR
   extension_runner --> ext_fetch
   extension_runner --> ext_r2
   extension_runner --> ext_instructions
-  extension_runner -.-> ext_skills
+  extension_runner --> ext_skills
   extension_runner -.-> ext_templates
   extension_runner -.-> ext_d1
 
   ext_fetch --> public_web
   ext_r2 --> r2_workspace
   ext_instructions --> d1_instructions
+  ext_skills --> d1_skills
+  ext_skills --> r2_skills_source
 
   telegram_user -.->|"webhook"| tg_gateway
   tg_gateway -.->|"Telegram API"| telegram_api
@@ -80,7 +86,7 @@ flowchart LR
   class browser,telegram_user client;
   class web_gateway,core_worker,session_do,ext_fetch,ext_r2,ext_instructions,ext_skills,ext_templates,ext_d1,tg_gateway worker;
   class extension_runner orchestrator;
-  class d1_sessions,do_storage,r2_workspace,d1_instructions,tg_session_do storage;
+  class d1_sessions,do_storage,r2_workspace,d1_instructions,d1_skills,r2_skills_source,tg_session_do storage;
   class ai_gateway,llm_providers,public_web,telegram_api external;
 
   style core_group fill:#e8f3ff,stroke:#2b6cb0,stroke-width:2px,color:#0f2f57;
