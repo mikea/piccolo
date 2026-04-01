@@ -25,18 +25,27 @@ console.debug("[app] connecting to", url);
 
 const [wsError, setWsError] = createSignal<string | null>(null);
 
+const showConnectionError = (message: string) => {
+  setWsError(message);
+};
+
 const ws = new WebSocket(url);
 ws.addEventListener("error", () => {
   console.error("[ws] connection error");
-  setWsError("Connection error. Please reload the page.");
+  showConnectionError("Connection error. Please reload the page.");
 });
 ws.addEventListener("close", (event) => {
   if (event.wasClean) return;
   console.error("[ws] connection closed unexpectedly", event.code, event.reason);
-  setWsError(`Connection lost (code ${event.code}). Please reload the page.`);
+  showConnectionError(`Connection lost (code ${event.code}). Please reload the page.`);
 });
 
 const gateway = newWebSocketRpcSession<IWebGateway>(ws);
+gateway.onRpcBroken((error) => {
+  console.error("[rpc] session broken", error);
+  showConnectionError("Connection error. Please reload the page.");
+});
+
 const user: IUser = gateway.getUser();
 
 console.debug("[app] user ready");
