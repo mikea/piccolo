@@ -23,7 +23,7 @@ deploy-all: deploy-core deploy-web deploy-extensions
 deploy-core:
     mise x -- pnpm deploy:core
 
-deploy-extensions: deploy-fetch deploy-r2 deploy-instructions
+deploy-extensions: deploy-fetch deploy-r2 deploy-instructions deploy-skills
 
 deploy-web:
     mise x -- pnpm deploy:web
