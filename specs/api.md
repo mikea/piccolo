@@ -449,25 +449,25 @@ Gateway-only methods outside `ITelegramSession`:
 
 ---
 
-## 8. Extension API — `IExtensionWorker`
+## 8. Extension API — `IExtension`
 
-Implemented by each extension Worker. Called by `ExtensionRunner` inside `piccolo-core` via core service bindings whose names start with `EXTENSION_`.
+Implemented by each extension binding. Called by `ExtensionRunner` inside `piccolo-core` via core service bindings whose names start with `EXTENSION_` plus built-in core extensions.
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-// IExtensionListener — handles interception events that require return values.
+// IExtensionListener — handles interception events.
 // AgentEvents are no longer dispatched here; extensions observe them by calling
 // ctx.subscribe() inside init().
 interface IExtensionListener {
   onEvent?(event: ExtensionEvent, ctx: ISession): Promise<
     | InputResult | BeforeAgentStartResult | ContextResult
-    | ToolCallResult | ToolResultOverride | BeforeCompactResult
+    | ToolCallResult | ToolResultOverride
     | undefined
   >;
 }
 
-class IExtensionWorker extends WorkerEntrypoint implements IExtensionListener {
+interface IExtension extends IExtensionListener {
   // Called once at session start with the full ISession.
   // Extension may call ctx.subscribe() to observe AgentEvents for the session lifetime.
   init?(ctx: ISession): Promise<void>;
@@ -480,6 +480,14 @@ class IExtensionWorker extends WorkerEntrypoint implements IExtensionListener {
 
   // Called at session start. Returns commands this extension exposes.
   getCommands?(ctx: ISession): Promise<ICommand[] | undefined>;
+
+  // Called when the core requests a compaction decision.
+  // Evaluated in extension registration order; first cancel/compaction wins.
+  compact?(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined>;
 }
 ```
 
@@ -527,9 +535,12 @@ interface InputResult {
   text?: string;   // replacement text when action === "transform"
 }
 
-interface BeforeCompactResult {
+interface CompactResult {
   cancel?: boolean;
-  summary?: string;   // provide a ready-made summary to skip LLM compaction call
+  compaction?: {
+    summary: string;
+    firstKeptEntryId: string | undefined;
+  };
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
@@ -580,5 +591,5 @@ Full authoring guide in [tools.md](tools.md). Provided tool specs: [r2_tool.md](
 | `ISession` | `DurableObject` stub | Gateways, extensions, tools | `AgentSessionDO` in `piccolo-core` |
 | `IGatewayCallback` | `RpcTarget` | `AgentSessionDO` | Each gateway Worker |
 | `IWebGateway` | `RpcTarget` (capnweb) | Browser | Web UI Gateway Worker |
-| `IExtensionWorker` | `WorkerEntrypoint` | `ExtensionRunner` (core) | Each extension Worker |
-| `ITool` | Worker class | `IExtensionWorker` (via core) | Each tool Worker |
+| `IExtension` | Extension binding surface | `ExtensionRunner` (core) | Each extension binding |
+| `ITool` | Worker class | `IExtension` (via core) | Each tool Worker |

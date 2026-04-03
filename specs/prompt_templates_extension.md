@@ -15,7 +15,7 @@ Templates support positional arguments (`$1`, `$2`, `$@`) identically to the pi 
 ## Extension Worker
 
 **Name:** `ext-templates`  
-**Implements:** `IExtensionWorker` (see [api.md §8](api.md))  
+**Implements:** `IExtension` (see [api.md §8](api.md))  
 **Bindings required:** KV for cache (`env.TEMPLATES_CACHE`)
 
 ### `wrangler.template.jsonc`
@@ -234,7 +234,7 @@ Additional methods callable from gateways or admin tools:
 ```typescript
 class TemplatesExtension extends WorkerEntrypoint {
 
-  // IExtensionWorker: onSessionStart, getSystemPromptAdditions, getCommands, onInput
+  // IExtension: onSessionStart, getSystemPromptAdditions, getCommands, onInput
   // ...
 
   // ─── Admin endpoints ──────────────────────────────────────────────────────

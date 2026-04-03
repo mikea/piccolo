@@ -473,9 +473,12 @@ export interface ToolCallResult {
 
 export type ToolResultOverride = Partial<ToolResult>;
 
-export interface BeforeCompactResult {
+export interface CompactResult {
   cancel?: boolean;
-  summary?: string;
+  compaction?: {
+    summary: string;
+    firstKeptEntryId: string | undefined;
+  };
 }
 
 // ─── Extension interfaces ─────────────────────────────────────────────────────
@@ -483,8 +486,11 @@ export interface BeforeCompactResult {
 /**
  * IExtensionListener — interception event handler implemented by extensions.
  *
- * onEvent receives only interception events (input, before_start, context,
- * tool_call, tool_result, before_compact) that require a structured return value.
+ * onEvent receives interception events (input, before_start, context,
+ * tool_call, tool_result, before_compact).
+ *
+ * before_compact is notification-only via onEvent; compaction decisions are
+ * returned by compact().
  *
  * For observing AgentEvents, extensions subscribe to ISession via init(ctx).
  *
@@ -500,16 +506,15 @@ export interface IExtensionListener {
     | ContextResult
     | ToolCallResult
     | ToolResultOverride
-    | BeforeCompactResult
     | undefined
   >;
 }
 
 /**
- * IExtensionWorker — the WorkerEntrypoint interface every extension must implement.
+ * IExtension — the extension interface implemented by extension bindings.
  * Spec ref: specs/api.md §8
  */
-export interface IExtensionWorker extends IExtensionListener {
+export interface IExtension extends IExtensionListener {
   /**
    * Called once when the session starts. The extension receives the full ISession
    * and may call session.subscribe() to observe AgentEvents for the session lifetime.
@@ -518,4 +523,9 @@ export interface IExtensionWorker extends IExtensionListener {
   getTools?(ctx: ISession): Promise<ITool[] | undefined>;
   getCommands?(ctx: ISession): Promise<ICommand[] | undefined>;
   getSystemPromptAdditions?(ctx: ISession): Promise<SystemPromptAddition[] | undefined>;
+  compact?(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined>;
 }

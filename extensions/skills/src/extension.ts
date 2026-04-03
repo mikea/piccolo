@@ -1,6 +1,6 @@
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
-  IExtensionWorker,
+  IExtension,
   ISession,
   ITool,
   SystemPromptAddition,
@@ -286,7 +286,7 @@ export class ActivateSkillTool extends RpcTarget implements ITool {
   }
 }
 
-export class SkillsExtension extends WorkerEntrypoint<Env> implements IExtensionWorker {
+export class SkillsExtension extends WorkerEntrypoint<Env> implements IExtension {
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }

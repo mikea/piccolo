@@ -295,14 +295,14 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 **Deliverables:**
 - `ExtensionRunner` class with `initialize(ctx)` loading from `CONFIG` KV
-- All 6 emit methods with correct merge semantics from [core.md](core.md): `emitInput`, `emitBeforeAgentStart`, `emitContext`, `emitToolCall`, `emitToolResult`, `emitBeforeCompact`
+- All emit methods with correct merge semantics from [core.md](core.md), plus ordered `compact()` probing for compaction decisions.
 - Fire-and-forget emit for all other events (`onAgentStart`, `onAgentEnd`, `onTurnStart`, etc.)
 - `getSystemPromptAdditions()` — collect from all extensions, sort by priority
 - `getCommands()` — collect all `ICommand[]` from extensions
 - `getTools()` — collect all `ITool[]` from extensions
 - `parseCommand(text, commands)` — `/name args` parsing
 - Unit tests: all merge rules with mock extension stubs; command parsing; empty extension list; single extension error isolation (one extension throws, others proceed)
-- `test/mocks/extension-stub.ts` — configurable mock `IExtensionWorker`
+- `test/mocks/extension-stub.ts` — configurable mock `IExtension`
 
 **Spec refs:** [core.md — `ExtensionRunner`](core.md), [api.md §8](api.md)
 
@@ -314,7 +314,7 @@ The component that discovers, initialises, and dispatches to extension Workers.
 
 | File | Contents |
 |---|---|
-| `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; `parseCommand()`; extension contracts extracted to `extension-types.ts` (`IExtensionRunner`, `IExtensionWorker`, event/result types) |
+| `packages/core/src/do/extension-runner.ts` | `ExtensionRunner` class; `parseCommand()`; extension contracts extracted to `extension-types.ts` (`IExtensionRunner`, `IExtension`, event/result types) |
 | `packages/core/src/do/stubs.ts` | `SystemPromptAssemblerStub` only (removed in step 7; `IExtensionContextLike` removed in step 8) |
 | `packages/core/src/do/compaction.ts` | Updated to use `IExtensionRunner` interface (not `ExtensionRunnerStub`) |
 | `packages/core/src/do/agent-session.ts` | Updated to instantiate and call `ExtensionRunner`; `DOState.extensionRunner` typed as `ExtensionRunner` |
@@ -687,7 +687,7 @@ Gives the LLM the ability to make HTTPS GET/HEAD requests to the public internet
 
 **Deliverables:**
 - `FetchTool extends WorkerEntrypoint` implementing `ITool`
-- `FetchTool extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `FetchTool extends WorkerEntrypoint` implementing `IExtension`
 - `getTools()` returning the fetch `ToolDescriptor`
 - `execute()` on `ITool` handles fetch runtime implementation directly
 - `descriptor` with `inputSchema` (action, url, byteStart, byteEnd, maxBytes)
@@ -788,7 +788,7 @@ Deferred to later phases:
 ## 14. `ext-r2-tool` — R2 Storage Tool
 
 **Deliverables:**
-- `R2ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `R2ToolExtension extends WorkerEntrypoint` implementing `IExtension`
 - `getTools()` returning the R2 `ToolDescriptor` with full `inputSchema`
 - `execute()` on returned `ITool` handles all 7 actions: `read`, `write`, `delete`, `list`, `stat`, `copy`, `move`
 - All result `details` types: `R2ReadDetails`, `R2WriteDetails`, `R2DeleteDetails`, `R2ListDetails`, `R2StatDetails`, `R2CopyDetails`
@@ -802,7 +802,7 @@ Deferred to later phases:
 ## 15. `ext-d1-tool` — D1 Database Tool
 
 **Deliverables:**
-- `D1ToolExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `D1ToolExtension extends WorkerEntrypoint` implementing `IExtension`
 - `getTools()` returning the D1 `ToolDescriptor`
 - `execute()` on returned `ITool` handles all 7 actions: `schema`, `select`, `insert`, `update`, `delete`, `schema_change`, `sql`
 - All result `details` types: `D1SchemaDetails`, `D1SelectDetails`, `D1InsertDetails`, `D1UpdateDetails`, `D1DeleteDetails`, `D1SchemaChangeDetails`, `D1SqlDetails`
@@ -818,7 +818,7 @@ Deferred to later phases:
 ## 16. `ext-skills` — Skills Extension
 
 **Deliverables:**
-- `SkillsExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `SkillsExtension extends WorkerEntrypoint` implementing `IExtension`
 - D1 schema for skills (`user_id`/`session_id` scope model, `active`, `sha256`, `file_name` upsert key)
 - `import_skills` tool: recursive R2 `SKILL.md` import, lenient frontmatter parsing, SHA-256 skip-on-unchanged
 - `list_skills` tool: visible skills listing with scope labels (`global`/`user`/`session`)
@@ -842,7 +842,7 @@ Deferred to later phases:
 ## 17. `ext-templates` — Prompt Templates Extension
 
 **Deliverables:**
-- `TemplatesExtension extends WorkerEntrypoint` implementing `IExtensionWorker`
+- `TemplatesExtension extends WorkerEntrypoint` implementing `IExtension`
 - `onSessionStart`: fetch templates from source list, extract name + description
 - `getSystemPromptAdditions()`: return `context` section listing templates
 - `getCommands()`: one `ICommand` per template

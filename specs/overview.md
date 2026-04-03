@@ -63,7 +63,7 @@ The `ai` and `ai-gateway-provider` packages are the client libraries used to cal
 
 ### `piccolo-api` → [api.md](api.md)
 
-JSRPC contract type library. Contains only TypeScript interface and type declarations — no implementations, no logic, no runtime code. All public interfaces (`ISession`, `ITool`, `IExtensionWorker`, etc.) are defined here. Extensions and gateways depend on this package, not on `piccolo-core`.
+JSRPC contract type library. Contains only TypeScript interface and type declarations — no implementations, no logic, no runtime code. All public interfaces (`ISession`, `ITool`, `IExtension`, etc.) are defined here. Extensions and gateways depend on this package, not on `piccolo-core`.
 
 ### `piccolo-core` → [core.md](core.md)
 
@@ -73,8 +73,8 @@ Agent loop and session coordination layer. Provides:
 - **Steering queue**: mid-turn message injection via `prepareStep`
 - **`AgentEvent` stream**: events flow through `#observable` for gateway consumption and DO side-effects
 - **Session persistence** backed by Cloudflare Durable Objects + D1
-- **Context compaction** (LLM-based summarisation when context window fills, inlined as `#compact()` on the DO)
-- **Extension host**: discovers extensions from `EXTENSION_*` service bindings, dispatches events via JSRPC
+- **Context compaction orchestration** (strategy delegated to extensions; default built-in `piccolo/compact`)
+- **Extension host**: discovers `EXTENSION_*` service bindings, appends built-in extensions, dispatches extension hooks
 - **System prompt assembly** from registered skills, agent context, and tool guidelines
 - **Model management**: active model stored per session, switchable at runtime
 
@@ -146,7 +146,7 @@ See [api.md — Shared Types](api.md) for the full `AgentEvent` union. Events st
 
 | Document | Contents |
 |---|---|
-| [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `IGatewayCallback`, `IExtensionWorker`, `ITool`, `ToolDescriptor`, shared types |
+| [api.md](api.md) | **All public JSRPC/capnweb APIs** (`@piccolo/api` package): `IPiccoloCore`, `ISession`, `IWebGateway`, `IGatewayCallback`, `IExtension`, `ITool`, `ToolDescriptor`, shared types |
 | [core.md](core.md) | **piccolo-core implementation**: `Agent` loop, `AgentTurn`, `SessionTransformStream`, `AgentSessionDO`, `ExtensionRunner`, `SystemPromptAssembler`, session tree, entry types, D1/R2 schema, compaction, fork, listing |
 | [tools.md](tools.md) | Tool authoring contract (`ITool` / `ToolDescriptor`), non-interactive gateway output, deployment, checklist |
 | [r2_tool.md](r2_tool.md) | R2 tool (provided): read, write, delete, list, stat, copy, move |

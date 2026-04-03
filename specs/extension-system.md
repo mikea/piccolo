@@ -6,11 +6,11 @@ Complete reference for writing, deploying, and integrating extensions in piccolo
 
 ## Overview
 
-Extensions are independent Cloudflare Workers deployed as normal services. Each extension implements `IExtensionWorker` — a typed `WorkerEntrypoint` surface defined in [api.md §8](api.md) — and is invoked by the core via JSRPC through a service binding.
+Extensions are capabilities invoked by the core extension host. Most are independent Cloudflare Workers deployed as normal services. Each extension implements `IExtension` — a typed surface defined in [api.md §8](api.md) — and is invoked by the core via JSRPC through a service binding. The core may also register built-in extensions.
 
 There is no in-process extension loading, no TypeScript evaluation at runtime, and no filesystem scanning. The core discovers extensions by enumerating bindings named `EXTENSION_<something>` in its own environment.
 
-All types (`IExtensionWorker`, `ISession`, `ToolDescriptor`, event and result types) are defined in [api.md](api.md).
+All types (`IExtension`, `ISession`, `ToolDescriptor`, event and result types) are defined in [api.md](api.md).
 
 ---
 
@@ -55,7 +55,7 @@ Changing the extension set (add/remove/rename `EXTENSION_*` bindings) requires r
 
 ## Extension API Summary
 
-Extensions implement any subset of `IExtensionWorker`. The core checks method existence before dispatching by probing `await stub.method` on first use, caches that decision per extension+method for the session lifetime, and silently skips unimplemented methods thereafter.
+Extensions implement any subset of `IExtension`. The core checks method existence before dispatching by probing `await stub.method` on first use, caches that decision per extension+method for the session lifetime, and silently skips unimplemented methods thereafter.
 
 **Registration methods** (called at session start):
 
@@ -64,6 +64,7 @@ Extensions implement any subset of `IExtensionWorker`. The core checks method ex
 | `getTools()` | Declare tools the LLM can call |
 | `getCommands()` | Declare `/commands` shown in gateway autocomplete |
 | `getSystemPromptAdditions()` | Contribute snippets to the assembled system prompt |
+| `compact()` | Provide compaction decision (`cancel` or `compaction`) |
 
 **Event handlers**:
 
@@ -79,7 +80,7 @@ Extensions implement any subset of `IExtensionWorker`. The core checks method ex
 | `onToolCall` | Before tool executes | `ToolCallResult` (block with reason) |
 | `onToolResult` | After tool executes | `ToolResultOverride` (replace content/details/isError) |
 | `onInput` | User types any input | `InputResult` (handle, transform, or continue) |
-| `onBeforeCompact` | Before compaction | `BeforeCompactResult` (cancel or provide summary) |
+| `onBeforeCompact` | Before compaction | — (notification only) |
 | `onCompact` | After compaction | — |
 
 ---
@@ -201,7 +202,7 @@ Replace the default LLM-based summarisation with a custom strategy (e.g., struct
 ```typescript
 export default class CustomCompactionExtension extends WorkerEntrypoint {
 
-  async onBeforeCompact(event, ctx) {
+  async compact(ctx, messages, keepRecentTokens) {
     // Use a cheaper / faster model for summarisation
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -213,12 +214,17 @@ export default class CustomCompactionExtension extends WorkerEntrypoint {
         model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "Summarise this conversation concisely." },
-          { role: "user", content: serializeMessages(event.messages) },
+          { role: "user", content: serializeMessages(messages) },
         ],
       }),
     });
     const { choices } = await response.json() as any;
-    return { summary: choices[0].message.content };
+    return {
+      compaction: {
+        summary: choices[0].message.content,
+        firstKeptEntryId: messages.at(-1)?.id,
+      },
+    };
   }
 }
 ```
@@ -434,12 +440,12 @@ export default class ModelRouterExtension extends WorkerEntrypoint {
 
 ### 12. JSRPC-Exposed Extension Endpoints
 
-Extensions can expose additional JSRPC methods beyond `IExtensionWorker` — gateways or other extensions can call these directly via service bindings. This is how extensions provide rich capabilities without users installing anything.
+Extensions can expose additional JSRPC methods beyond `IExtension` — gateways or other extensions can call these directly via service bindings. This is how extensions provide rich capabilities without users installing anything.
 
 ```typescript
 export default class SearchExtension extends WorkerEntrypoint {
 
-  // Standard IExtensionWorker tools
+  // Standard IExtension tools
   async getTools() { return [SearchExtension.searchDescriptor]; }
   async execute(toolCallId, params, ctx) { /* ... */ }
 

@@ -1,7 +1,7 @@
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
   IAbortSignal,
-  IExtensionWorker,
+  IExtension,
   ISession,
   ITool,
   ToolDescriptor,
@@ -537,10 +537,7 @@ export class R2Tool extends RpcTarget implements ITool {
  * WorkerEntrypoint for the r2-tool extension.
  * Exported as the default export of index.ts.
  */
-export class R2ToolExtension
-  extends WorkerEntrypoint<{ BUCKET: R2Bucket }>
-  implements IExtensionWorker
-{
+export class R2ToolExtension extends WorkerEntrypoint<{ BUCKET: R2Bucket }> implements IExtension {
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }

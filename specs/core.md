@@ -14,12 +14,12 @@ The agent loop (`AgentSessionDO`, `toAiSdkTools`, `agentCompact`) lives directly
 |---|---|
 | Expose `IPiccoloCore` and `ISession` to gateways | `WorkerEntrypoint` JSRPC |
 | Own one `AgentSessionDO` per session | Durable Object |
-| Run the agent loop | `AgentSessionDO` private methods + helpers in `compact.ts` / `agent-tools.ts` |
+| Run the agent loop | `AgentSessionDO` private methods + helpers in `@piccolo/compact` / `agent-tools.ts` |
 | Persist conversation history | D1 + DO storage |
 | Dispatch events to extensions | `ExtensionRunner` via `EXTENSION_*` service bindings |
 | Assemble the system prompt | `SystemPromptAssembler` |
 | Manage model selection | Stored per session in D1 |
-| Trigger and persist context compaction | `compact()` in `compact.ts`, called by DO |
+| Trigger and persist context compaction | `compact()` on the DO, strategy resolved via `IExtension.compact()` |
 
 ---
 
@@ -400,9 +400,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 
 ## `ExtensionRunner` — Implementation
 
-Manages dispatch to all installed extension Workers.
+Manages dispatch to all installed extensions.
 
-Extension discovery order is deterministic: bindings are sorted lexicographically by binding name (for example `EXTENSION_10_GUARD` before `EXTENSION_20_SKILLS`). This order controls all "first wins" merge rules.
+Extension registration order is deterministic:
+1. External bindings discovered from `EXTENSION_*`, sorted lexicographically by binding name (for example `EXTENSION_10_GUARD` before `EXTENSION_20_SKILLS`)
+2. Built-in extensions appended after all external bindings (currently `piccolo/compact`)
+
+This order controls all "first wins" merge rules.
 
 ### Initialization (per session start)
 
@@ -411,8 +415,8 @@ Extension discovery order is deterministic: bindings are sorted lexicographicall
 calls pass `ISession` (an RPC stub) to remote Workers, which may call back into the
 session DO. Calling them inside `blockConcurrencyWhile` would deadlock.
 
-For each optional `IExtensionWorker` method (`init`, `getTools`, `getCommands`,
-`getSystemPromptAdditions`, `onEvent`), `ExtensionRunner` probes support on first use via
+For each optional `IExtension` method (`init`, `getTools`, `getCommands`,
+`getSystemPromptAdditions`, `onEvent`, `compact`), `ExtensionRunner` probes support on first use via
 `await worker.<method>`. The boolean result is cached per extension for the rest of the
 session; methods determined to be unimplemented are never called again.
 
@@ -425,7 +429,8 @@ class ExtensionRunner {
     // 1. Enumerate Object.entries(env)
     // 2. Keep entries where bindingName starts with "EXTENSION_"
     // 3. Sort by bindingName lexicographically
-    // 4. Treat each binding value as an extension worker and push to #extensions list
+  // 4. Treat each binding value as an extension and push to #extensions list
+  // 5. Append built-in extensions (piccolo/compact)
   }
 
   // Called by AgentSessionDO outside blockConcurrencyWhile.
@@ -444,7 +449,7 @@ No adapter layer is used. Extension workers return `ITool[]` directly.
 
 ### Dispatch and merge rules
 
-All dispatch calls are `Promise.all` across all extension workers. Each method follows specific merge semantics:
+Dispatch semantics by method:
 
 | Method | Merge rule |
 |---|---|
@@ -453,8 +458,9 @@ All dispatch calls are `Promise.all` across all extension workers. Each method f
 | `emitContext` | Last extension that returns a non-void `ContextResult.messages` wins |
 | `emitToolCall` | First result with `block === true` wins; if none, call proceeds |
 | `emitToolResult` | Results chained: each handler sees previous handler's output |
-| `emitBeforeCompact` | First result with `cancel === true` wins; or first with a `summary` string wins |
-| All fire-and-forget events | All stubs called concurrently; results discarded |
+| `emitBeforeCompact` | Notification-only broadcast (`Promise.all`), return ignored |
+| `compact` | Sequential by registration order; first `{ cancel: true }` or `{ compaction: ... }` wins |
+| All other interception dispatch | Event-specific merge rules above |
 
 ```typescript
 // All emit methods accept the full SessionImpl (not a minimal stub).
@@ -599,21 +605,15 @@ Compaction is triggered in two cases:
 
 ### Compaction algorithm
 
-Compaction is implemented by `compact()` in `packages/core/src/compact.ts`, called by `AgentSessionDO.compact()`. The DO first reconstructs context from D1, then compacts that reconstructed message list.
+Compaction orchestration is implemented by `AgentSessionDO.compact()`. The compaction strategy is implemented by extensions. The core ships one built-in extension, `piccolo/compact`, that runs the default LLM summarisation strategy.
 
 ```
-1. Emit before_compact to extensions → BeforeCompactResult
-   - If cancel: return (no entry written)
-   - If summary provided: use it, skip LLM call
-   - Otherwise: call agentCompact(reconstructedMessages, keepRecentTokens, #model)
-
-2. If summary === "" and no extension summary: return (nothing to summarise)
-
-3. Set `firstKeptEntryId` from `toKeep[0]?.id`
-
-4. Build CompactionEntry, persist immediately, advance #leafId
-
-5. Persist the compaction entry immediately (no deferred flush)
+1. Emit `before_compact` to all extensions via `onEvent` (notification-only)
+2. Ask extensions via `compact(ctx, messages, keepRecentTokens)` in registration order
+   - Stop at first `{ cancel: true }` → return (no entry written)
+   - Stop at first `{ compaction: { summary, firstKeptEntryId } }` → persist this compaction entry
+3. If no extension returns compaction, return (no entry written)
+4. Persist the compaction entry immediately (no deferred flush)
 ```
 
 No deferred flush is required — compaction entries are persisted immediately.
@@ -736,7 +736,7 @@ async function listSessions(userId: string, db: D1Database): Promise<SessionInfo
 
 ## Agent Loop — Implementation
 
-The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`, with helper functions in `packages/core/src/compact.ts` and `packages/core/src/agent-tools.ts`.
+The agent loop is implemented directly inside `AgentSessionDO` in `packages/core/src/agent-session-do.ts`, with helper functions in `packages/compact/src/index.ts` and `packages/core/src/agent-tools.ts`.
 
 The DO does not keep a persistent in-memory conversation cache. For each turn it reconstructs context from D1, keeps only turn-local streaming state in memory, and discards it after persistence.
 
@@ -798,7 +798,7 @@ Converts `ITool[]` to the AI SDK `ToolSet` format. `ctx` (the live `ISession` vi
 
 ### `agentCompact(messages, keepRecentTokens, model): Promise<{ summary, toKeep }>`
 
-Uses `generateText` (non-streaming) with the same `LanguageModel` as the DO. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by `#compact()` on the DO.
+Uses `generateText` (non-streaming) with the same `LanguageModel` as the DO. Calls `splitForCompaction()` to determine which messages to summarise. Returns the summary text and the messages to keep verbatim. Called by the built-in `piccolo/compact` extension.
 
 ### LLM Backend
 

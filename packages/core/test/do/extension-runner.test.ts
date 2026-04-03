@@ -13,18 +13,19 @@
  *   5. emitContext() — last wins
  *   6. emitToolCall() — first block wins
  *   7. emitToolResult() — chaining
- *   8. emitBeforeCompact() — cancel/summary merge
- *   9. emit() — fire-and-forget
+ *   8. emitBeforeCompact() — fire-and-forget
+ *   9. compact() — first cancel/compaction wins (ordered)
+ *   10. emit() — interception dispatch
  *
  * Spec ref: specs/core.md §ExtensionRunner
  */
 
 import type {
   BeforeAgentStartResult,
-  BeforeCompactResult,
+  CompactResult,
   ContextResult,
   ExtensionEvent,
-  IExtensionWorker,
+  IExtension,
   InputResult,
   ISession,
   ToolCallResult,
@@ -86,8 +87,16 @@ async function emitBeforeCompact(
   runner: ExtensionRunner,
   event: Extract<ExtensionEvent, { type: "before_compact" }>,
   session: ISession,
-): Promise<BeforeCompactResult> {
-  return (await runner.emit(event, session)) as BeforeCompactResult;
+): Promise<undefined> {
+  return (await runner.emit(event, session)) as undefined;
+}
+
+async function compact(
+  runner: ExtensionRunner,
+  event: Extract<ExtensionEvent, { type: "before_compact" }>,
+  session: ISession,
+): Promise<CompactResult | undefined> {
+  return runner.compact(session, event.messages, event.keepRecentTokens);
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -318,7 +327,7 @@ describe("initialize()", () => {
         probes += 1;
         return undefined;
       },
-    } as unknown as IExtensionWorker;
+    } as unknown as IExtension;
 
     const runner = new ExtensionRunner();
     await runner.initialize(createMockExtensionEnv({ EXTENSION_MISSING: missingCommands }), ctx);
@@ -667,50 +676,64 @@ describe("emitBeforeCompact()", () => {
     keepRecentTokens: 20_000,
   };
 
-  it("no extensions → {}", async () => {
+  it("no extensions → undefined", async () => {
     const runner = await makeRunner({});
-    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toEqual({});
+    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toBeUndefined();
   });
 
-  it("all return void → {}", async () => {
-    const ext = createMockExtension({ name: "a", onBeforeCompact: () => undefined });
+  it("all return values are ignored", async () => {
+    const ext = createMockExtension({
+      name: "a",
+      onBeforeCompact: () => {
+        throw new Error("before_compact must not return");
+      },
+    });
     const runner = await makeRunner({ a: ext });
-    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toEqual({});
-  });
-
-  it("first returns { cancel: true } → cancellation returned", async () => {
-    const extA = createMockExtension({ name: "a", onBeforeCompact: () => ({ cancel: true }) });
-    const extB = createMockExtension({ name: "b", onBeforeCompact: () => ({ summary: "x" }) });
-    const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeCompact(runner, compactEvent, ctx);
-    expect(result.cancel).toBe(true);
-  });
-
-  it("first returns {} second returns { summary } → summary returned", async () => {
-    const extA = createMockExtension({ name: "a", onBeforeCompact: () => ({}) });
-    const extB = createMockExtension({
-      name: "b",
-      onBeforeCompact: () => ({ summary: "pre-built summary" }),
-    });
-    const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeCompact(runner, compactEvent, ctx);
-    expect(result.summary).toBe("pre-built summary");
-  });
-
-  it("cancel wins over summary when first", async () => {
-    const extA = createMockExtension({ name: "a", onBeforeCompact: () => ({ cancel: true }) });
-    const extB = createMockExtension({
-      name: "b",
-      onBeforeCompact: () => ({ summary: "ignored" }),
-    });
-    const runner = await makeRunner({ a: extA, b: extB });
-    const result = await emitBeforeCompact(runner, compactEvent, ctx);
-    expect(result.cancel).toBe(true);
-    expect(result.summary).toBeUndefined();
+    expect(await emitBeforeCompact(runner, compactEvent, ctx)).toBeUndefined();
+    expect(ext.calls.onBeforeCompact).toHaveLength(1);
   });
 });
 
-// ─── 9. emit() (interception only) ───────────────────────────────────────────
+// ─── 9. compact() ─────────────────────────────────────────────────────────────
+
+describe("compact()", () => {
+  const compactEvent = {
+    type: "before_compact" as const,
+    messages: [] as never[],
+    keepRecentTokens: 20_000,
+  };
+
+  it("no extensions return compact result → undefined", async () => {
+    const runner = await makeRunner({});
+    expect(await compact(runner, compactEvent, ctx)).toBeUndefined();
+  });
+
+  it("first cancel wins and short-circuits", async () => {
+    const extA = createMockExtension({ name: "a", onCompact: () => ({ cancel: true }) });
+    const extB = createMockExtension({
+      name: "b",
+      onCompact: () => ({ compaction: { summary: "ignored", firstKeptEntryId: undefined } }),
+    });
+    const runner = await makeRunner({ a: extA, b: extB });
+    expect(await compact(runner, compactEvent, ctx)).toEqual({ cancel: true });
+    expect(extB.calls.onCompact).toHaveLength(0);
+  });
+
+  it("first compaction wins and short-circuits", async () => {
+    const extA = createMockExtension({
+      name: "a",
+      onCompact: () => ({ compaction: { summary: "ok", firstKeptEntryId: "m1" } }),
+    });
+    const extB = createMockExtension({ name: "b", onCompact: () => ({ cancel: true }) });
+    const runner = await makeRunner({ a: extA, b: extB });
+    expect(await compact(runner, compactEvent, ctx)).toEqual({
+      compaction: { summary: "ok", firstKeptEntryId: "m1" },
+    });
+    expect(extB.calls.onCompact).toHaveLength(0);
+  });
+});
+
+// ─── 10. emit() (interception only) ──────────────────────────────────────────
 
 describe("emit()", () => {
   it("no extensions → resolves without error for interception events", async () => {
@@ -741,7 +764,7 @@ describe("emit()", () => {
         probes += 1;
         return undefined;
       },
-    } as unknown as IExtensionWorker;
+    } as unknown as IExtension;
 
     const runner = new ExtensionRunner();
     await runner.initialize(createMockExtensionEnv({ EXTENSION_MISSING: missingOnEvent }), ctx);

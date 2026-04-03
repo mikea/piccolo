@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@piccolo/api": "workspace:*",
+    "@piccolo/compact": "workspace:*",
     "ai": "^6.0.138",
     "ai-gateway-provider": "^3.1.2"
   },

@@ -1,31 +1,32 @@
 /**
- * ExtensionRunner — discovers, initialises, and dispatches to extension Workers.
+ * ExtensionRunner — discovers, initialises, and dispatches to extensions.
  *
  * initialize() discovers extension bindings from the core Worker environment
  * (all bindings named EXTENSION_<something>). It does NOT call getTools(),
  * getCommands(), or getSystemPromptAdditions() — those are driven by the caller
  * (AgentSessionDO) outside blockConcurrencyWhile, passing ISession at call time.
  *
- * Extensions implement IExtensionWorker.onEvent(). The ExtensionRunner handles
+ * Extensions implement IExtension.onEvent(). The ExtensionRunner handles
  * all merge semantics internally, keyed on event.type.
  *
- * There is a single emit(event, ctx) method — the caller passes any ExtensionEvent
- * (including AgentEvent variants) and receives the merged result for that event
- * type. For fire-and-forget events the result is undefined.
+ * There is a single emit(event, ctx) method — the caller passes an ExtensionEvent
+ * and receives the merged result for that event type. before_compact is
+ * notification-only through emit().
  *
  * Spec refs:
  *   specs/core.md §ExtensionRunner
- *   specs/api.md  §8 (IExtensionWorker, ExtensionEvent)
+ *   specs/api.md  §8 (IExtension, ExtensionEvent)
  */
 
 import type {
   BeforeAgentStartResult,
-  BeforeCompactResult,
+  CompactResult,
   ContextResult,
   ExtensionEvent,
   IAbortSignal,
   ICommand,
-  IExtensionWorker,
+  IExtension,
+  IMessage,
   InputResult,
   ISession,
   ITool,
@@ -34,6 +35,8 @@ import type {
   ToolDescriptor,
   ToolResultOverride,
 } from "@piccolo/api";
+import type { LanguageModel } from "ai";
+import { builtinExtensions } from "./builtin-extensions.ts";
 
 // ─── SafeToolWrapper ──────────────────────────────────────────────────────────
 
@@ -109,8 +112,7 @@ class SafeToolWrapper implements ITool {
  * The union of all possible return values from emit().
  * Callers narrow by knowing which event type they dispatched.
  *
- * For fire-and-forget events (start, finish, turn_*, tool_*, compact,
- * session_start, session_shutdown) the result is always undefined.
+ * before_compact via emit() is notification-only and returns undefined.
  */
 export type ExtensionEventResult =
   | InputResult
@@ -118,7 +120,6 @@ export type ExtensionEventResult =
   | ContextResult
   | ToolCallResult
   | ToolResultOverride
-  | BeforeCompactResult
   | undefined;
 
 async function withTimeout<T>(
@@ -145,9 +146,9 @@ async function withTimeout<T>(
   }
 }
 
-class ExtensionWorkerWrapper implements IExtensionWorker {
+class ExtensionWrapper implements IExtension {
   readonly #bindingName: string;
-  readonly #remote: IExtensionWorker;
+  readonly #remote: IExtension;
   readonly #timeoutMs: number;
 
   #hasInit: boolean | undefined;
@@ -155,8 +156,9 @@ class ExtensionWorkerWrapper implements IExtensionWorker {
   #hasGetCommands: boolean | undefined;
   #hasGetSystemPromptAdditions: boolean | undefined;
   #hasOnEvent: boolean | undefined;
+  #hasCompact: boolean | undefined;
 
-  constructor(bindingName: string, remote: IExtensionWorker, timeoutMs: number) {
+  constructor(bindingName: string, remote: IExtension, timeoutMs: number) {
     this.#bindingName = bindingName;
     this.#remote = remote;
     this.#timeoutMs = timeoutMs;
@@ -299,6 +301,36 @@ class ExtensionWorkerWrapper implements IExtensionWorker {
       return undefined;
     }
   }
+
+  async compact(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined> {
+    if (this.#hasCompact === undefined) {
+      try {
+        const candidate = await this.#remote.compact;
+        this.#hasCompact = typeof candidate === "function";
+      } catch (error) {
+        console.warn(
+          `[extensions] extension=${this.#bindingName} op=compact_probe failed error=${formatError(error)}`,
+        );
+        this.#hasCompact = false;
+      }
+    }
+    if (!this.#hasCompact) return undefined;
+
+    try {
+      const result = this.#remote.compact?.(ctx, messages, keepRecentTokens);
+      if (result === undefined) return undefined;
+      return await withTimeout(this.#bindingName, "compact", result, this.#timeoutMs);
+    } catch (error) {
+      console.warn(
+        `[extensions] extension=${this.#bindingName} op=compact failed error=${formatError(error)}`,
+      );
+      return undefined;
+    }
+  }
 }
 
 // ─── IExtensionRunner ─────────────────────────────────────────────────────────
@@ -317,6 +349,11 @@ class ExtensionWorkerWrapper implements IExtensionWorker {
  */
 export interface IExtensionRunner {
   emit(event: ExtensionEvent, ctx: ISession): Promise<ExtensionEventResult>;
+  compact(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined>;
   getTools(ctx: ISession): Promise<ITool[]>;
   getCommands(ctx: ISession): Promise<ICommand[]>;
   getSystemPromptAdditions(ctx: ISession): Promise<SystemPromptAddition[]>;
@@ -357,8 +394,8 @@ export function parseCommand(
 // ─── ExtensionRunner ──────────────────────────────────────────────────────────
 
 /**
- * Real ExtensionRunner — discovers extension Workers from env bindings named
- * EXTENSION_<something>.
+ * Real ExtensionRunner — discovers external extensions from env bindings named
+ * EXTENSION_<something>, then appends built-in extensions.
  *
  * initialize() only loads workers; it does not call getTools/getCommands/
  * getSystemPromptAdditions. Those are driven by the caller with ISession.
@@ -368,7 +405,12 @@ export function parseCommand(
 export class ExtensionRunner implements IExtensionRunner {
   static readonly CALL_TIMEOUT_MS = 5000;
 
-  #extensions: ExtensionWorkerWrapper[] = [];
+  readonly #getModel: (() => LanguageModel) | undefined;
+  #extensions: ExtensionWrapper[] = [];
+
+  constructor(getModel?: () => LanguageModel) {
+    this.#getModel = getModel;
+  }
 
   /**
    * Discover extension bindings, build worker stubs, and fire init(ctx) on each.
@@ -388,21 +430,32 @@ export class ExtensionRunner implements IExtensionRunner {
       .filter(([bindingName, binding]) => bindingName.startsWith("EXTENSION_") && binding != null)
       .sort(([a], [b]) => a.localeCompare(b));
 
-    if (discovered.length === 0) return;
-
     for (const [bindingName, binding] of discovered) {
       this.#extensions.push(
-        new ExtensionWorkerWrapper(
-          bindingName,
-          binding as IExtensionWorker,
-          ExtensionRunner.CALL_TIMEOUT_MS,
-        ),
+        new ExtensionWrapper(bindingName, binding as IExtension, ExtensionRunner.CALL_TIMEOUT_MS),
       );
     }
+
+    this.#extensions.push(
+      ...builtinExtensions(this.#getModel).map(
+        ({ bindingName, extension }) =>
+          new ExtensionWrapper(bindingName, extension, ExtensionRunner.CALL_TIMEOUT_MS),
+      ),
+    );
+
+    if (this.#extensions.length === 0) return;
 
     await Promise.all(this.#extensions.map((extension) => extension.init(ctx)));
 
     console.log(`[extensions] loaded=${this.#extensions.length}`);
+  }
+
+  compact(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined> {
+    return this.#dispatchCompact(ctx, messages, keepRecentTokens);
   }
 
   // ─── Registration methods (caller-driven, ctx passed at call time) ─────────
@@ -460,11 +513,8 @@ export class ExtensionRunner implements IExtensionRunner {
    *   context          — last non-void ContextResult wins
    *   tool_call        — first block=true wins; default { block: false }
    *   tool_result      — chained: each extension sees previous output
-   *   before_compact   — first cancel=true wins; else first summary wins; else {}
-   *   all others       — fire-and-forget (results discarded); returns undefined
-   *
-   * AgentEvent variants (start, finish, turn_*, tool_*, error) are
-   * valid ExtensionEvents and fire-and-forget.
+   *   before_compact   — notification-only; return ignored
+   *   all others       — event-specific merge rules above
    *
    * Spec ref: specs/core.md §Dispatch and merge rules
    */
@@ -596,7 +646,7 @@ export class ExtensionRunner implements IExtensionRunner {
         !("action" in result) &&
         !("messages" in result) &&
         !("cancel" in result) &&
-        !("summary" in result)
+        !("compaction" in result)
       ) {
         current = result as ToolResultOverride;
       }
@@ -604,22 +654,26 @@ export class ExtensionRunner implements IExtensionRunner {
     return current;
   }
 
-  /** before_compact — first cancel=true wins; else first summary wins; else {}. */
+  /** before_compact — notification-only; all extension return values ignored. */
   async #dispatchBeforeCompact(
     event: Extract<ExtensionEvent, { type: "before_compact" }>,
     ctx: ISession,
-  ): Promise<BeforeCompactResult> {
-    const results = await Promise.all(
-      this.#extensions.map((extension) => extension.onEvent(event, ctx)),
-    );
-    const typed = results.filter(
-      (r): r is BeforeCompactResult =>
-        r !== undefined && r !== null && typeof r === "object" && ("cancel" in r || "summary" in r),
-    );
-    const cancellation = typed.find((r) => r.cancel === true);
-    if (cancellation) return cancellation;
-    const withSummary = typed.find((r) => r.summary != null);
-    if (withSummary) return withSummary;
-    return {};
+  ): Promise<undefined> {
+    await Promise.all(this.#extensions.map((extension) => extension.onEvent(event, ctx)));
+    return undefined;
+  }
+
+  /** compact — ask extensions in registration order; first cancel/compaction wins. */
+  async #dispatchCompact(
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ): Promise<CompactResult | undefined> {
+    for (const extension of this.#extensions) {
+      const result = await extension.compact(ctx, messages, keepRecentTokens);
+      if (result?.cancel === true) return { cancel: true };
+      if (result?.compaction !== undefined) return result;
+    }
+    return undefined;
   }
 }

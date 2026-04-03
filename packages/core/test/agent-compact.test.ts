@@ -5,13 +5,13 @@
  */
 
 import type { IMessage } from "@piccolo/api";
-import { describe, expect, it, vi } from "vitest";
 import {
   agentCompact,
   SUMMARIZATION_SYSTEM_PROMPT,
   serializeConversation,
   splitForCompaction,
-} from "../src/compact.ts";
+} from "@piccolo/compact";
+import { describe, expect, it, vi } from "vitest";
 import { createMockModel } from "./do/mock-model.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -110,6 +110,7 @@ describe("serializeConversation", () => {
     const msgs: IMessage[] = [
       {
         role: "assistant",
+        id: nextMessageId(),
         content: [
           { type: "tool-call", toolCallId: "call_1", toolName: "my_tool", input: { key: "val" } },
         ],

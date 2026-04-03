@@ -9,7 +9,7 @@ See [tools.md](tools.md) for the general tool authoring contract (`ITool` / `Too
 ## Worker
 
 **Name:** `ext-fetch-tool`  
-**Implements:** `IExtensionWorker` (see [api.md](api.md))  
+**Implements:** `IExtension` (see [api.md](api.md))  
 **Bindings required:** none — uses the runtime `fetch()` Web API directly.
 
 ### `wrangler.template.jsonc`
@@ -127,11 +127,11 @@ Errors:
 
 ---
 
-## `IExtensionWorker` implementation
+## `IExtension` implementation
 
 ```typescript
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { IExtensionWorker, ISession, ToolDescriptor, ToolResult } from "piccolo-core";
+import type { IExtension, ISession, ToolDescriptor, ToolResult } from "piccolo-core";
 
 /** Hard ceiling on maxBytes regardless of what the LLM requests. */
 const MAX_BYTES_HARD_CAP = 10 * 1_048_576; // 10 MiB
@@ -157,7 +157,7 @@ function validateNotSsrf(url: URL): void {
   }
 }
 
-export default class FetchTool extends WorkerEntrypoint implements IExtensionWorker, ITool {
+export default class FetchTool extends WorkerEntrypoint implements IExtension, ITool {
 
   readonly descriptor: ToolDescriptor = descriptor;
 

@@ -1,7 +1,7 @@
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
   IAbortSignal,
-  IExtensionWorker,
+  IExtension,
   ISession,
   ITool,
   ToolDescriptor,
@@ -287,7 +287,7 @@ export class FetchTool extends RpcTarget implements ITool {
  * Exported as the default export of index.ts — only one export in that module
  * so the dispatch namespace always uses the default entrypoint.
  */
-export class FetchToolExtension extends WorkerEntrypoint implements IExtensionWorker {
+export class FetchToolExtension extends WorkerEntrypoint implements IExtension {
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }

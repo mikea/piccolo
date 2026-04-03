@@ -11,7 +11,7 @@ This extension follows:
 ## Extension Worker
 
 **Name:** `ext-skills`
-**Implements:** `IExtensionWorker` (see [api.md §8](api.md))
+**Implements:** `IExtension` (see [api.md §8](api.md))
 **Bindings required:**
 - D1: `env.SKILLS_DB`
 - R2: `env.BUCKET`

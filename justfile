@@ -37,8 +37,13 @@ deploy-r2:
 deploy-instructions:
     mise x -- pnpm wrangler deploy --config extensions/instructions/wrangler.jsonc
 
+deploy-skills:
+    mise x -- pnpm wrangler deploy --config extensions/skills/wrangler.jsonc
+
 migrations:
     mise x -- pnpm wrangler d1 migrations apply mikea-piccolo-sessions --remote -c packages/core/wrangler.jsonc
+    mise x -- pnpm wrangler d1 migrations apply mikea-piccolo-skills --remote -c extensions/skills/wrangler.jsonc
+    mise x -- pnpm wrangler d1 migrations apply mikea-piccolo-instructions --remote -c extensions/instructions/wrangler.jsonc
 
 dev:
     mise x -- pnpm wrangler dev -c gateways/web/wrangler.dev.jsonc -c packages/core/wrangler.dev.jsonc

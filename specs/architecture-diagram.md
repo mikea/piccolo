@@ -41,6 +41,7 @@ flowchart LR
       end
       ext_templates["EXTENSION_TEMPLATES (planned)"]
       ext_d1["EXTENSION_D1_TOOL (planned)"]
+      ext_builtin_compact["BUILTIN piccolo/compact"]
     end
 
     subgraph telegram_group["Telegram Gateway"]
@@ -64,6 +65,7 @@ flowchart LR
   extension_runner --> ext_skills
   extension_runner -.-> ext_templates
   extension_runner -.-> ext_d1
+  extension_runner --> ext_builtin_compact
 
   ext_fetch --> public_web
   ext_r2 --> r2_workspace
@@ -84,7 +86,7 @@ flowchart LR
   classDef external fill:#ffe2ef,stroke:#b83280,color:#5c1a3e,stroke-width:2px;
 
   class browser,telegram_user client;
-  class web_gateway,core_worker,session_do,ext_fetch,ext_r2,ext_instructions,ext_skills,ext_templates,ext_d1,tg_gateway worker;
+  class web_gateway,core_worker,session_do,ext_fetch,ext_r2,ext_instructions,ext_skills,ext_templates,ext_d1,ext_builtin_compact,tg_gateway worker;
   class extension_runner orchestrator;
   class d1_sessions,do_storage,r2_workspace,d1_instructions,d1_skills,r2_skills_source,tg_session_do storage;
   class ai_gateway,llm_providers,public_web,telegram_api external;

@@ -7,7 +7,7 @@ The instructions extension maintains a persistent list of user-authored instruct
 ## Extension Worker
 
 **Name:** `ext-instructions`
-**Implements:** `IExtensionWorker` (see [api.md §8](api.md))
+**Implements:** `IExtension` (see [api.md §8](api.md))
 **Bindings required:** D1 database (`env.INSTRUCTIONS_DB`)
 
 ### `wrangler.template.jsonc`

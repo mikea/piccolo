@@ -92,7 +92,7 @@ All communication between piccolo's internal components — and between the core
 
 - Each extension is a normal Worker service (e.g. `ext-skills`, `ext-r2-tool`).
 - `piccolo-core` declares one service binding per enabled extension (e.g. `EXTENSION_10_GUARD`, `EXTENSION_20_SKILLS`).
-- At runtime, `ExtensionRunner` enumerates env keys prefixed `EXTENSION_`, sorts them lexicographically, and calls each binding as an `IExtensionWorker` RPC stub.
+- At runtime, `ExtensionRunner` enumerates env keys prefixed `EXTENSION_`, sorts them lexicographically, and calls each binding as an `IExtension` RPC stub.
 - Installing/uninstalling an extension in the core means editing `piccolo-core` service bindings and redeploying core.
 - Updating extension code does not require a core redeploy as long as binding and service names are unchanged.
 

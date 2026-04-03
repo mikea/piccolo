@@ -7,7 +7,7 @@
  * One DO instance per session. This is where all live session logic runs:
  *   - Agent loop (inlined: #runStream, #startTurn)
  *   - Persistence (D1 via session/persistence.ts)
- *   - Context compaction (via compact.ts)
+ *   - Context compaction orchestration (strategy delegated to extensions)
  *   - Extension dispatch (ExtensionRunner)
  *   - System prompt assembly (SystemPromptAssembler)
  *
@@ -44,7 +44,6 @@ import { stepCountIs, streamText } from "ai";
 import { createAiGateway } from "ai-gateway-provider";
 import { createUnified } from "ai-gateway-provider/providers/unified";
 import { toAiSdkTools } from "./agent-tools.ts";
-import { compact as compactImpl } from "./compact.ts";
 import type {
   AnyEntry,
   MessageEntry,
@@ -267,7 +266,7 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
     // initialize() only discovers extension bindings and builds worker stubs — it does
     // NOT call getTools/getCommands/getSystemPromptAdditions, which would make
     // reverse RPC calls back into this DO and deadlock inside blockConcurrencyWhile.
-    this.#extensionRunner = new ExtensionRunner();
+    this.#extensionRunner = new ExtensionRunner(() => this.#model);
     this.#assembler = new SystemPromptAssembler();
     this.#rpcCtx = new SessionTarget(this);
 
@@ -503,22 +502,38 @@ export class AgentSessionDO extends DurableObject<Env> implements ISession {
 
   async compact(options?: CompactOptions): Promise<void> {
     const messages = await this.#loadContextMessages();
-    const result = await compactImpl({
-      keepRecentTokens: options?.keepRecentTokens ?? 20_000,
+    const keepRecentTokens = options?.keepRecentTokens ?? 20_000;
+    const event = {
+      type: "before_compact" as const,
       messages,
-      extensionRunner: this.#extensionRunner,
-      ctx: this.#rpcCtx,
-      model: this.#model,
-      sessionId: this.#sessionId,
-      parentId: this.#leafId,
-      tokensBefore: this.#lastInputTokens,
-    });
+      keepRecentTokens,
+    };
 
-    if (!result) {
+    await this.#extensionRunner.emit(event, this.#rpcCtx);
+    const result = await this.#extensionRunner.compact(this.#rpcCtx, messages, keepRecentTokens);
+
+    if (result === undefined || result.cancel === true || result.compaction === undefined) {
       return;
     }
 
-    const { compactionEntry } = result;
+    const { summary, firstKeptEntryId } = result.compaction;
+    if (summary === "") {
+      return;
+    }
+
+    const compactionEntry: AnyEntry = {
+      id: generateEntryId(),
+      sessionId: this.#sessionId,
+      parentId: this.#leafId,
+      type: "compaction",
+      timestamp: new Date().toISOString(),
+      data: {
+        summary,
+        firstKeptEntryId,
+        tokensBefore: this.#lastInputTokens,
+      },
+    };
+
     await this.#appendEntry(compactionEntry);
   }
 

@@ -1,5 +1,5 @@
 /**
- * Configurable mock IExtensionWorker for ExtensionRunner unit tests.
+ * Configurable mock IExtension for ExtensionRunner unit tests.
  *
  * Pass options to control what onEvent returns for each event type.
  * Set `shouldThrow: true` to make all handlers throw — useful for
@@ -11,16 +11,17 @@
  *     onInput: (e) => ({ action: "handled" }),
  *   });
  *
- * Spec ref: specs/api.md §8 IExtensionWorker
+ * Spec ref: specs/api.md §8 IExtension
  */
 
 import type {
   BeforeAgentStartResult,
-  BeforeCompactResult,
+  CompactResult,
   ContextResult,
   ExtensionEvent,
   ICommand,
-  IExtensionWorker,
+  IExtension,
+  IMessage,
   InputResult,
   ISession,
   ITool,
@@ -71,7 +72,13 @@ export interface MockExtensionOptions {
   /** Handler for tool_result events. */
   onToolResult?: (event: ToolResultEv) => ToolResultOverride | undefined;
   /** Handler for before_compact events. */
-  onBeforeCompact?: (event: BeforeCompactEv) => BeforeCompactResult | undefined;
+  onBeforeCompact?: (event: BeforeCompactEv) => void;
+  /** Optional compaction decision handler used by extension.compact(). */
+  onCompact?: (
+    ctx: ISession,
+    messages: IMessage[],
+    keepRecentTokens: number,
+  ) => CompactResult | undefined;
   /** Called when init(ctx) is invoked. */
   onInit?: (ctx: ISession) => void;
   /**
@@ -88,6 +95,7 @@ export interface MockExtensionOptions {
     onToolCall: ToolCallEv[];
     onToolResult: ToolResultEv[];
     onBeforeCompact: BeforeCompactEv[];
+    onCompact: Array<{ ctx: ISession; messages: IMessage[]; keepRecentTokens: number }>;
     emit: ExtensionEvent[];
   };
 }
@@ -113,7 +121,7 @@ function isToolInstance(
   );
 }
 
-export interface MockExtension extends IExtensionWorker {
+export interface MockExtension extends IExtension {
   /** Access tracked calls for assertions. */
   readonly calls: NonNullable<MockExtensionOptions["calls"]>;
 }
@@ -127,6 +135,7 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
     onToolCall: [],
     onToolResult: [],
     onBeforeCompact: [],
+    onCompact: [],
     emit: [],
   };
 
@@ -195,8 +204,15 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
 
         case "before_compact":
           calls.onBeforeCompact.push(event);
-          return options.onBeforeCompact?.(event);
+          options.onBeforeCompact?.(event);
+          return undefined;
       }
+    },
+
+    async compact(ctx: ISession, messages: IMessage[], keepRecentTokens: number) {
+      if (options.shouldThrow) maybeThrow();
+      calls.onCompact.push({ ctx, messages, keepRecentTokens });
+      return options.onCompact?.(ctx, messages, keepRecentTokens);
     },
   };
 
@@ -211,7 +227,7 @@ export function createMockExtension(options: MockExtensionOptions): MockExtensio
  * Every key beginning with EXTENSION_ is treated as an extension binding.
  */
 export function createMockExtensionEnv(
-  extensionBindings: Record<string, IExtensionWorker>,
+  extensionBindings: Record<string, IExtension>,
   extraBindings: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {

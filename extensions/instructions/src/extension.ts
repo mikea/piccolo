@@ -13,7 +13,7 @@
 
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
-  IExtensionWorker,
+  IExtension,
   ISession,
   ITool,
   SystemPromptAddition,
@@ -218,7 +218,7 @@ export class InstructionsTool extends RpcTarget implements ITool {
  *
  * Spec ref: specs/instructions_extension.md §Extension Worker
  */
-export class InstructionsExtension extends WorkerEntrypoint<Env> implements IExtensionWorker {
+export class InstructionsExtension extends WorkerEntrypoint<Env> implements IExtension {
   override fetch(): Response {
     return new Response("OK", { status: 200 });
   }
